@@ -3,8 +3,15 @@ on:
   push:
   pull_request:
 
+# Two gate mechanisms, kept distinct (consistency pass §3, scope & guarantees §5):
+#   currency-gate  — the static boundary contract is a pure function of the code,
+#                    so it is regenerated and checked for drift (`boundary --check`).
+#   snapshot-gate  — the behavioral goldens are a function of running the code, so
+#                    they ride `go test`; a stale golden fails the suite.
+# Both are unified only by CODEOWNERS routing + fail-on-unexpected-change + the
+# human-as-oracle; neither lets an AI judge.
 jobs:
-  build-test:
+  snapshot-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,12 +20,24 @@ jobs:
           go-version: "1.25"
       - run: go build ./...
       - run: go vet ./...
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
+          golangci-lint run
       - name: gofmt
         run: test -z "$(gofmt -l . | grep -v '^testdata/fixtures/loansvc/')"
-      - run: go test ./...
-      - name: build fixture module
-        run: cd testdata/fixtures/loansvc && go build ./...
+      - run: go test -race ./...
+      - name: behavioral gate (fixture flow goldens)
+        run: cd testdata/fixtures/loansvc && go build ./... && go test -race ./...
 
-# Phase 8 adds the two gate jobs:
-#   currency-gate:  flowmap boundary --check   (regenerate boundary contract + git diff --exit-code)
-#   snapshot-gate:  go test ./...              (in-process flow goldens; -update to re-baseline)
+  currency-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # Regenerate the gated boundary contract from code and fail if it drifted
+      # from the committed artifact — the static currency check.
+      - name: boundary currency
+        run: go run ./cmd/flowmap boundary --check testdata/fixtures/loansvc

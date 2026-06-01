@@ -1,0 +1,103 @@
+{
+  "flow": "POST /loan-application",
+  "service": "loansvc",
+  "schema_version": "flowmap.trace/v1",
+  "root": {
+    "op": "HTTP POST /loan-application",
+    "kind": "server",
+    "peer": "",
+    "tier": 1,
+    "children": [
+      {
+        "concurrent": true,
+        "members": [
+          {
+            "op": "DB postgres SELECT applicants",
+            "kind": "client",
+            "peer": "postgres",
+            "tier": 2,
+            "attrs": {
+              "db.statement": "SELECT name , income FROM applicants WHERE id = ?"
+            }
+          },
+          {
+            "op": "HTTP GET credit-bureau /score/{id}",
+            "kind": "client",
+            "peer": "credit-bureau",
+            "tier": 1
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "HTTP POST payment-gw /charge/{id}",
+            "kind": "client",
+            "peer": "payment-gw",
+            "tier": 1
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "PUBLISH loan.approved",
+            "kind": "producer",
+            "peer": "Bus",
+            "tier": 1
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "PUBLISH disbursement.initiated",
+            "kind": "producer",
+            "peer": "Bus",
+            "tier": 1
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "PUBLISH loan.review",
+            "kind": "producer",
+            "peer": "Bus",
+            "tier": 1
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "DB postgres INSERT ledger",
+            "kind": "client",
+            "peer": "postgres",
+            "tier": 1,
+            "attrs": {
+              "db.statement": "INSERT INTO ledger ( loan_id , amount ) VALUES (?)"
+            }
+          }
+        ]
+      },
+      {
+        "members": [
+          {
+            "op": "DB postgres INSERT audit_log",
+            "kind": "client",
+            "peer": "postgres",
+            "tier": 1,
+            "attrs": {
+              "db.statement": "INSERT INTO audit_log ( loan_id ) VALUES (?)"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "discards": {
+    "ids": "dropped",
+    "timing": "dropped"
+  }
+}

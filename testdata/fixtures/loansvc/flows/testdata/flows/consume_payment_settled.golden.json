@@ -1,0 +1,30 @@
+{
+  "flow": "consume payment.settled",
+  "service": "loansvc",
+  "schema_version": "flowmap.trace/v1",
+  "root": {
+    "op": "CONSUME payment.settled",
+    "kind": "consumer",
+    "peer": "Bus",
+    "tier": 1,
+    "children": [
+      {
+        "members": [
+          {
+            "op": "DB postgres UPDATE loans",
+            "kind": "client",
+            "peer": "postgres",
+            "tier": 1,
+            "attrs": {
+              "db.statement": "UPDATE loans SET status = ? WHERE id = ?"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "discards": {
+    "ids": "dropped",
+    "timing": "dropped"
+  }
+}

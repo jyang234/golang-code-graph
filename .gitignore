@@ -4,6 +4,6 @@
 # test & build detritus
 *.test
 *.out
-coverage.*
+coverage.html
 # macOS
 .DS_Store

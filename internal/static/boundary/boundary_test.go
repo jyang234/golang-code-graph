@@ -231,3 +231,43 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestCurrencyGateDetectsStaleCommit proves the inject-drift case for the static
+// currency gate: when the committed contract no longer matches a fresh
+// regeneration (here, as if a published event was added in code after the
+// artifact was last committed), Check reports a mismatch — the signal that fails
+// `flowmap boundary --check` in CI.
+func TestCurrencyGateDetectsStaleCommit(t *testing.T) {
+	dir := t.TempDir()
+	current := generateFixture(t)
+	if len(current.Published) == 0 {
+		t.Skip("fixture has no published events to drop")
+	}
+
+	// Commit a stale artifact: the current contract minus one published event.
+	stale := *current
+	stale.Published = append([]boundary.Event(nil), current.Published[1:]...)
+	if err := boundary.Write(dir, &stale); err != nil {
+		t.Fatal(err)
+	}
+
+	match, err := boundary.Check(dir, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match {
+		t.Error("a stale committed contract must be detected by the currency gate")
+	}
+
+	// And regenerating (writing the current contract) clears it.
+	if err := boundary.Write(dir, current); err != nil {
+		t.Fatal(err)
+	}
+	match, err = boundary.Check(dir, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !match {
+		t.Error("after regeneration the currency gate should pass")
+	}
+}

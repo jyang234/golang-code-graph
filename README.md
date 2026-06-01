@@ -31,17 +31,57 @@ Under construction, phase by phase. See:
 ## Layout
 
 ```
-cmd/flowmap/   CLI: boundary [--check] | graph --entry | version (diff/coverage arrive later)
+cmd/flowmap/   CLI: boundary [--check] | graph --entry | diff a b | coverage [--flows D] | version
 harness/       PUBLIC: in-process capture harness for flow tests
 flow/          PUBLIC: the flow test DSL
 ir/            PUBLIC: the authoritative canonical IR (golden file shape)
-internal/      the analysis engine (canonjson, glob, model, tiermap, static/, canon/, …)
+internal/      the analysis engine (canonjson, glob, model, tiermap, static/, canon/, diff/, coverage/, …)
 testdata/      hermetic fixture service (its own module) + committed goldens
 ```
+
+## Adopting flowmap
+
+`docs/adopting-flowmap.md` is the end-to-end recipe for wiring flowmap into a
+service (instrument with OTel → commit the boundary contract → write a flow test
+→ check coverage → wire CI/CODEOWNERS). The `testdata/fixtures/loansvc` fixture
+is a complete worked example.
+
+## The two gates (and how to keep them green)
+
+flowmap has **two distinct gate mechanisms**, unified only by CODEOWNERS routing
+and the human-as-oracle:
+
+- **Currency gate (static).** The boundary contract is a pure function of the
+  code, so CI regenerates it and fails on drift:
+  `flowmap boundary --check <service-dir>`. Author workflow: after a boundary
+  change, run `flowmap boundary <service-dir>` and commit the updated
+  `.flowmap/boundary-contract.json` alongside the code.
+- **Snapshot-assertion gate (behavioral).** The goldens are a function of
+  *running* the code, so they ride `go test`; a stale golden fails the suite.
+  Author workflow: after an intended behavior change, re-run the flow test with
+  `-update` to rebase `*.golden.json` + `*.flow.md`, and commit them.
+
+CODEOWNERS routes both gated artifacts, `.flowmap.yaml`, and the per-flow test
+files to a human reviewer — a golden/contract change is unbypassable.
+
+## Coverage
+
+`flowmap coverage --flows <goldens-dir> <service-dir>` reports the boundary
+effects (published/consumed events, external dependencies) that no committed
+flow exercises — the delta between the static boundary (all reachable effects)
+and the union of behavioral snapshots (tested effects). It is informational, not
+a gate: a gap means "write a flow for this," not "fail the build."
+
+## Schema versioning & regeneration
+
+Gated artifacts carry a schema version (e.g. the boundary contract's
+`flowmap.boundary/v1`). When flowmap changes a canonical form, it bumps the
+version and **all adopting services must regenerate** the affected artifacts
+(`flowmap boundary` for contracts, `go test -update` for goldens) in a
+coordinated change — the real blast radius, made explicit rather than silent.
 
 ## Develop
 
 ```
-make verify    # build + vet + test + fixture build + gofmt check (the per-phase gate)
+make verify    # build + vet + lint + test + fixture gate + gofmt (the per-phase gate)
 ```
-# golang-code-graph

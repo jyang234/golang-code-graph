@@ -74,7 +74,7 @@ func TestAttrsKeysSorted(t *testing.T) {
 	}
 	got := string(b)
 	ai, mi, zi := strings.Index(got, "a.first"), strings.Index(got, "m.mid"), strings.Index(got, "z.last")
-	if !(ai >= 0 && ai < mi && mi < zi) {
+	if ai < 0 || ai >= mi || mi >= zi {
 		t.Fatalf("attrs keys not sorted: %s", got)
 	}
 }

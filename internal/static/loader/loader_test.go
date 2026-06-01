@@ -70,3 +70,22 @@ func TestLoadDeterministicPackageOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadExcludesTestOnlyPackages guards the rule that a directory holding only
+// *_test.go files (the fixture's flows/ behavioral-gate package) is not part of
+// the analyzed service unit: it has no production code and must not perturb the
+// call graph or boundary.
+func TestLoadExcludesTestOnlyPackages(t *testing.T) {
+	svc, err := loader.Load(fixtureDir())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, p := range svc.Packages {
+		if p.PkgPath == "example.com/loansvc/flows" {
+			t.Errorf("test-only package %q should not be in the service unit", p.PkgPath)
+		}
+		if len(p.CompiledGoFiles) == 0 {
+			t.Errorf("package %q has no production Go files and should have been filtered", p.PkgPath)
+		}
+	}
+}

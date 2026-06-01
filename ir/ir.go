@@ -26,13 +26,21 @@ const (
 	KindConsumer Kind = "consumer"
 )
 
+// SchemaVersion identifies the canonical trace's on-disk form. A flowmap change
+// to that form bumps it; because the version participates in snapshot equality, a
+// bump makes every committed golden mismatch and must be cleared by a coordinated
+// regeneration (`go test -update`) — the real blast radius, made explicit rather
+// than silent (plan [H6]).
+const SchemaVersion = "flowmap.trace/v1"
+
 // CanonicalTrace is the deterministic representation of one exercised flow.
 // Equality of two traces (ignoring Discards) is the snapshot assertion.
 type CanonicalTrace struct {
-	Flow     string          `json:"flow"`
-	Service  string          `json:"service"`
-	Root     *CanonicalSpan  `json:"root"`
-	Discards DiscardManifest `json:"discards"`
+	Flow          string          `json:"flow"`
+	Service       string          `json:"service"`
+	SchemaVersion string          `json:"schema_version"`
+	Root          *CanonicalSpan  `json:"root"`
+	Discards      DiscardManifest `json:"discards"`
 }
 
 // CanonicalSpan is one normalized operation in the flow tree.

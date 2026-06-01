@@ -12,7 +12,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tracer is fetched per span (never cached at package init): the OTel
+// global binds a cached delegating tracer to the first provider installed,
+// which would route a second in-process test's spans to the first test's
+// recorder. Fetching per span always resolves the current provider.
+func tracer() trace.Tracer { return otel.Tracer("loansvc") }
 
 // Client performs outbound HTTP requests to peer services.
 type Client struct {
@@ -22,10 +32,24 @@ type Client struct {
 // New returns a Client using the default HTTP client.
 func New() *Client { return &Client{hc: http.DefaultClient} }
 
+// NewWithClient returns a Client over a caller-supplied *http.Client. The
+// behavioral harness injects one with a fake transport so outbound calls to peer
+// services resolve hermetically; production uses New.
+func NewWithClient(hc *http.Client) *Client { return &Client{hc: hc} }
+
 // Call issues method to peer at the route template (e.g. "/score/{id}"), filling
 // the template from params. peer, method, and route are passed as constants at
-// every call site so the static extractor can record the dependency.
+// every call site so the static extractor can record the dependency. The call is
+// wrapped in a client-kind span the behavioral pipeline canonicalizes to
+// "HTTP <METHOD> <peer> <route>".
 func (c *Client) Call(ctx context.Context, peer, method, route string, params ...any) ([]byte, error) {
+	ctx, span := tracer().Start(ctx, "http.client", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("http.request.method", method),
+		attribute.String("peer.service", peer),
+		attribute.String("http.route", route),
+	)
 	url := "http://" + peer + expand(route, params...)
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {

@@ -10,9 +10,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
+
+// FileName is the per-service config document's name. It is the single source of
+// truth for the filename across both pipelines: the static analyzer and the
+// behavioral flow runner both discover and load it through this package.
+const FileName = ".flowmap.yaml"
 
 // Config mirrors .flowmap.yaml. Tier rules and pins are ordered slices, never
 // maps, because map iteration order is non-deterministic and first-match wins.
@@ -26,6 +34,52 @@ type Config struct {
 	CatchAll    int    `yaml:"catchAll"`    // 0 => default 3
 	Rules       []Rule `yaml:"rules"`
 	Pins        []Pin  `yaml:"pins"`
+
+	// Canonicalization layer (canon spec §4).
+	Canon CanonConfig `yaml:"canon"`
+
+	// Static-analysis layer (static-extractor spec).
+	Static StaticConfig `yaml:"static"`
+}
+
+// StaticConfig holds knobs for the static pipeline.
+type StaticConfig struct {
+	// HighFanOutThreshold is the callee count above which a single dynamic-dispatch
+	// site is flagged as likely over-approximation in the (non-gated) graph
+	// blind-spots. 0 => the built-in default. Interface-dense services may raise it.
+	HighFanOutThreshold int `yaml:"highFanOutThreshold"`
+}
+
+// defaultHighFanOutThreshold is the built-in fan-out flag threshold.
+const defaultHighFanOutThreshold = 8
+
+// FanOutThreshold returns the configured high-fan-out threshold, or the default.
+func (c *Config) FanOutThreshold() int {
+	if c.Static.HighFanOutThreshold > 0 {
+		return c.Static.HighFanOutThreshold
+	}
+	return defaultHighFanOutThreshold
+}
+
+// CanonConfig holds the policies the behavioral canonicalizer applies (canon
+// spec §4). Every field defaults, so an empty document yields the spec's
+// recommended defaults: retain tiers 1–2, the OTel-semconv attribute allowlist,
+// and the built-in redaction matchers.
+type CanonConfig struct {
+	// SalienceTier is the minimum tier retained in the snapshot: "warn" keeps
+	// tiers 1–2 (default), "info" keeps 1–3, "debug"/"all" keep everything. Spans
+	// above the threshold are dropped and their survivors promoted.
+	SalienceTier string `yaml:"salienceTier"`
+	// AttributeAllowlist names extra attribute keys to retain in the snapshot.
+	// By default the canonicalizer folds identity-bearing attributes into the op
+	// key and keeps only a normalized db.statement, so the snapshot stays small;
+	// listing a key here keeps it (after redaction) alongside the op.
+	AttributeAllowlist []string `yaml:"attributeAllowlist"`
+	// RedactKeys names retained attribute keys whose values are always replaced
+	// with a type placeholder, on top of the built-in UUID / numeric-id /
+	// timestamp value matchers. Only attributes that are retained (an allowlisted
+	// key) are projected, so a redact key has effect only when it is also kept.
+	RedactKeys []string `yaml:"redactKeys"`
 }
 
 // ClassifyHints name the libraries flowmap cannot infer: loggers, the bus client,
@@ -69,6 +123,53 @@ type Pin struct {
 	Tier     int    `yaml:"tier"`
 }
 
+// LoadDir reads and validates the FileName document in dir. It is the single
+// config-loading path both the static and behavioral pipelines use, so they
+// always agree on a service's tier rules, pins, and canon knobs. A missing file
+// is not an error — it yields the zero Config (defaults apply); an unreadable or
+// malformed file is a hard error.
+func LoadDir(dir string) (*Config, error) {
+	path := filepath.Join(dir, FileName)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &Config{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("flowmap config: read %s: %w", path, err)
+	}
+	return Load(b)
+}
+
+// Discover walks up from startDir for a FileName document and returns the
+// directory holding it. The search is bounded to the enclosing module: it stops
+// at the first directory containing a go.mod (the module root), so a stray
+// .flowmap.yaml in a parent module, the repository root, or a developer's home
+// directory is never picked up. This mirrors how a per-service config lives at
+// its service module root. Returns ok=false when no in-module config exists.
+func Discover(startDir string) (dir string, ok bool) {
+	d := startDir
+	for {
+		if fileExists(filepath.Join(d, FileName)) {
+			return d, true
+		}
+		// The module root bounds the search: the config is a per-service document
+		// at or below its module root, never above it.
+		if fileExists(filepath.Join(d, "go.mod")) {
+			return "", false
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return "", false
+		}
+		d = parent
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // Load parses and validates a .flowmap.yaml document. Unknown keys are rejected.
 // An empty document is valid and yields the zero config (all defaults).
 func Load(b []byte) (*Config, error) {
@@ -85,6 +186,9 @@ func Load(b []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.Static.HighFanOutThreshold < 0 {
+		return fmt.Errorf("flowmap config: static.highFanOutThreshold %d must be >= 0", c.Static.HighFanOutThreshold)
+	}
 	if c.CatchAll < 0 || c.CatchAll > 4 {
 		return fmt.Errorf("flowmap config: catchAll %d out of range 0..4", c.CatchAll)
 	}
@@ -98,7 +202,23 @@ func (c *Config) validate() error {
 			return fmt.Errorf("flowmap config: pins[%d].tier %d out of range 1..4", i, p.Tier)
 		}
 	}
+	if _, ok := salienceTiers[c.Canon.SalienceTier]; c.Canon.SalienceTier != "" && !ok {
+		return fmt.Errorf("flowmap config: canon.salienceTier %q not one of warn|info|debug|all", c.Canon.SalienceTier)
+	}
 	return nil
+}
+
+// salienceTiers maps a salience name to the maximum tier retained in a snapshot.
+var salienceTiers = map[string]int{"warn": 2, "info": 3, "debug": 4, "all": 4}
+
+// SalienceThreshold is the maximum (least consequential) tier kept in the
+// canonical snapshot; spans with a higher tier number are dropped and promoted.
+// Absent in config => "warn" => 2 (canon spec §4).
+func (c *Config) SalienceThreshold() int {
+	if t, ok := salienceTiers[c.Canon.SalienceTier]; ok {
+		return t
+	}
+	return 2
 }
 
 // UsesDefaults reports whether the built-in tier rules layer beneath user rules.

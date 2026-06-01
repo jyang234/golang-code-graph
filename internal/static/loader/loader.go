@@ -61,11 +61,25 @@ func Load(dir string) (*Service, error) {
 		return nil, err
 	}
 
+	// Keep only packages with production code. A directory holding solely
+	// *_test.go files (e.g. an adopter's flows/ behavioral-gate package) loads as
+	// a package with no compiled files; it contributes nothing to the call graph
+	// or boundary and must not count toward the analyzed service unit.
+	unit := pkgs[:0]
+	for _, p := range pkgs {
+		if len(p.CompiledGoFiles) > 0 {
+			unit = append(unit, p)
+		}
+	}
+	if len(unit) == 0 {
+		return nil, fmt.Errorf("loader: no packages with Go source found under %q", dir)
+	}
+
 	// packages.Load does not guarantee a stable order; sort so every downstream
 	// stage sees the same sequence.
-	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].PkgPath < pkgs[j].PkgPath })
+	sort.Slice(unit, func(i, j int) bool { return unit[i].PkgPath < unit[j].PkgPath })
 
-	return &Service{Dir: dir, Module: moduleOf(pkgs), Packages: pkgs}, nil
+	return &Service{Dir: dir, Module: moduleOf(unit), Packages: unit}, nil
 }
 
 // collectErrors walks the whole loaded graph and returns a single error

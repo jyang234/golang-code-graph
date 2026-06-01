@@ -1,0 +1,21 @@
+# The human is the oracle: no AI sits in the verdict path (scope & guarantees §5).
+# These paths are flowmap's gated artifacts plus the config and per-flow tests
+# that legitimately move their baseline — every change to them routes to a human
+# reviewer, who judges "is this the behavior I expect?".
+#
+# A test-only change (swapping a mock, changing a stub's return) can shift a
+# golden with no production-code change; that is a legitimate baseline shift, so
+# the per-flow test files are owned here too (consistency pass).
+
+# Gated static artifact: the inter-service boundary contract + blind-spot manifest.
+**/.flowmap/boundary-contract.json   @jyang234
+
+# Tier-map / classification config that drives both pipelines.
+**/.flowmap.yaml                     @jyang234
+
+# Gated behavioral artifacts: the canonical golden IR and its rendered view.
+**/testdata/flows/*.golden.json      @jyang234
+**/testdata/flows/*.flow.md          @jyang234
+
+# Per-flow tests: a test change is a deliberate baseline shift, not noise.
+**/flows/*_test.go                   @jyang234

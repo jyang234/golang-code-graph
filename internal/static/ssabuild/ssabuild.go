@@ -66,6 +66,16 @@ func (p *Program) IsFirstParty(pkg *ssa.Package) bool {
 	return path == p.ModulePath || hasPathPrefix(path, p.ModulePath)
 }
 
+// IsFirstPartyPath reports whether an import path belongs to the service unit's
+// module — the string-keyed counterpart of IsFirstParty, for callers that hold a
+// package path rather than an *ssa.Package.
+func (p *Program) IsFirstPartyPath(path string) bool {
+	if path == "" || p.ModulePath == "" {
+		return false
+	}
+	return path == p.ModulePath || hasPathPrefix(path, p.ModulePath)
+}
+
 // hasPathPrefix reports whether importPath is the module path followed by a "/"
 // segment boundary, so "example.com/loansvc" matches its sub-packages but not an
 // unrelated "example.com/loansvc-extra".

@@ -8,6 +8,8 @@ package origination
 import (
 	"context"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"example.com/loansvc/internal/client"
@@ -15,6 +17,12 @@ import (
 	"example.com/loansvc/internal/scoring"
 	"example.com/loansvc/internal/store"
 )
+
+// tracer is fetched per span (never cached at package init): the OTel
+// global binds a cached delegating tracer to the first provider installed,
+// which would route a second in-process test's spans to the first test's
+// recorder. Fetching per span always resolves the current provider.
+func tracer() trace.Tracer { return otel.Tracer("loansvc") }
 
 // threshold is the minimum credit score for approval.
 const threshold = 600
@@ -53,10 +61,16 @@ func (e *Evaluator) Evaluate(ctx context.Context, app Application) (Decision, er
 	var applicant store.Applicant
 	var score scoring.Score
 
-	g, gctx := errgroup.WithContext(ctx)
+	// evaluateApplication wraps just the concurrent read+score so the behavioral
+	// pipeline sees a tier-3 internal node over a concurrent pair: salience
+	// filtering drops it and promotes the pair directly under the entry.
+	evalCtx, evalSpan := tracer().Start(ctx, "evaluateApplication", trace.WithSpanKind(trace.SpanKindInternal))
+	g, gctx := errgroup.WithContext(evalCtx)
 	g.Go(func() error { return e.store.SelectApplicant(gctx, app.ApplicantID, &applicant) })
 	g.Go(func() error { return e.scorer.Score(gctx, app.ApplicantID, &score) })
-	if err := g.Wait(); err != nil {
+	err := g.Wait()
+	evalSpan.End()
+	if err != nil {
 		return Decision{}, err
 	}
 
