@@ -77,6 +77,45 @@ func TestConcurrentMemberWrapperPromoted(t *testing.T) {
 	}
 }
 
+// TestConcurrentMemberWrapperKeepsSequentialChildren is the regression for the
+// flatten bug: a dropped concurrent member whose subtree is an ordered sequence
+// (ledger then audit) must NOT have its children spliced into the race, which
+// would assert a happens-before pair as concurrent. The wrapper is retained as
+// the minimal structure that preserves the ordering.
+func TestConcurrentMemberWrapperKeepsSequentialChildren(t *testing.T) {
+	root := span("root", 1,
+		conc(
+			span("DB postgresql SELECT applicants", 2),
+			span("disburse", 3, // tier-3 wrapper with an ORDERED sub-sequence
+				seq(span("DB postgres INSERT ledger", 1)),
+				seq(span("DB postgres INSERT audit", 1)),
+			),
+		),
+	)
+	Filter(root, keepTier1and2)
+
+	if len(root.Children) != 1 || !root.Children[0].Concurrent {
+		t.Fatalf("expected one concurrent group, got %+v", root.Children)
+	}
+	members := root.Children[0].Members
+	if len(members) != 2 {
+		t.Fatalf("expected the SELECT and the retained wrapper, got %d members", len(members))
+	}
+	// The wrapper is retained (sorted by op: "DB ..." < "disburse").
+	wrapper := members[1]
+	if wrapper.Op != "disburse" {
+		t.Fatalf("expected the wrapper retained to preserve order, got %q", wrapper.Op)
+	}
+	if len(wrapper.Children) != 2 ||
+		wrapper.Children[0].Members[0].Op != "DB postgres INSERT ledger" ||
+		wrapper.Children[1].Members[0].Op != "DB postgres INSERT audit" {
+		t.Errorf("ledger-before-audit ordering lost: %+v", wrapper.Children)
+	}
+	if wrapper.Children[0].Concurrent || wrapper.Children[1].Concurrent {
+		t.Error("sequential children must not have become a race")
+	}
+}
+
 // TestSequentialChainContraction drops a tier-3 node in a sequential chain and
 // splices its sequential children into the parent in order.
 func TestSequentialChainContraction(t *testing.T) {

@@ -125,15 +125,34 @@ func operationAndTable(toks []string) (op, table string) {
 	case "INSERT", "DELETE":
 		table = identAfter(toks, map[string]bool{"INTO": true, "FROM": true})
 	case "UPDATE":
-		if len(toks) > 1 {
-			table = toks[1]
-		}
+		table = updateTable(toks)
 	case "SELECT":
 		table = identAfter(toks, map[string]bool{"FROM": true})
 	default:
 		return op, ""
 	}
 	return op, table
+}
+
+// updateQualifiers are dialect qualifier words that can sit between UPDATE and
+// the target table (Postgres ONLY; MySQL LOW_PRIORITY / IGNORE). They tokenize
+// as bare identifiers, so they must be skipped to reach the real table.
+var updateQualifiers = map[string]bool{"only": true, "low_priority": true, "ignore": true}
+
+// updateTable returns the target table of an UPDATE, skipping any leading
+// qualifier words so "UPDATE ONLY loans SET ..." yields "loans", not "only".
+func updateTable(toks []string) string {
+	for i := 1; i < len(toks); i++ {
+		t := toks[i]
+		if updateQualifiers[t] {
+			continue
+		}
+		if t != "" && isIdent(t[0]) && t == strings.ToLower(t) {
+			return t
+		}
+		break
+	}
+	return ""
 }
 
 // identAfter returns the first non-keyword identifier token following any of the

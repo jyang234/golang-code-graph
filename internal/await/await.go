@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jyang234/golang-code-graph/internal/capture"
+	"github.com/jyang234/golang-code-graph/ir"
 )
 
 // Options configures one await. Markers and Match together encode the flow's
@@ -84,18 +85,23 @@ func Await(snapshot func() []capture.Span, opt Options) (spans []capture.Span, c
 	}
 }
 
-// rootEnded reports whether the reconstructed entry has ended. Because the
-// recorder only surfaces spans on End, the presence of a parentless span means
-// it has ended. In-process synchronous completion ≈ "the handler returned," but
-// a fire-and-forget goroutine span can still arrive after the root, which the
-// quiet-period drain catches.
+// rootEnded reports whether the flow's entry span has ended. The recorder only
+// surfaces spans on End, so a span's presence means it ended — but a parentless
+// span is not necessarily the root: while the flow is still running, a leaf
+// whose intermediate parent has not yet ended is transiently parentless too.
+// Keying completion on "any orphan" would fire mid-flow and snapshot a truncated
+// trace (the worst failure mode). The flow's entry is always a server (HTTP) or
+// consumer (event) span whose parent is outside the scoped set, so we require an
+// ended span of that kind. A fire-and-forget goroutine span arriving after the
+// root is still caught by the quiet-period drain.
 func rootEnded(spans []capture.Span) bool {
 	ids := make(map[string]bool, len(spans))
 	for i := range spans {
 		ids[spans[i].ID] = true
 	}
 	for i := range spans {
-		if !ids[spans[i].ParentID] {
+		s := &spans[i]
+		if (s.Kind == ir.KindServer || s.Kind == ir.KindConsumer) && !ids[s.ParentID] {
 			return true
 		}
 	}

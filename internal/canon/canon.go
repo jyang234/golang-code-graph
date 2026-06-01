@@ -256,7 +256,16 @@ func (c *canonicalizer) features(s *capture.Span, op string) model.Features {
 			f.Effect = model.EffectIO
 		}
 	default: // internal
-		f.Boundary, f.Effect, f.Origin = model.BoundaryInternal, model.EffectCompute, model.OriginFirstParty
+		// An internal-kind span carrying db attributes is a DB operation —
+		// opkey.Of keys it as one, so it must tier as one (ext-read / mutate),
+		// not as ordinary compute, or it would be mis-tiered and dropped. Some
+		// instrumentations (notably ORMs) open DB spans as internal rather than
+		// client.
+		if dbOp := dbOperation(s.Attrs); dbOp != "" {
+			f.Boundary, f.Effect, f.Origin = model.BoundaryOutboundSync, dbEffect(dbOp), model.OriginThirdParty
+		} else {
+			f.Boundary, f.Effect, f.Origin = model.BoundaryInternal, model.EffectCompute, model.OriginFirstParty
+		}
 	}
 	return f
 }

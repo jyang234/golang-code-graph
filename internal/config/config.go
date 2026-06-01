@@ -40,13 +40,15 @@ type CanonConfig struct {
 	// tiers 1–2 (default), "info" keeps 1–3, "debug"/"all" keep everything. Spans
 	// above the threshold are dropped and their survivors promoted.
 	SalienceTier string `yaml:"salienceTier"`
-	// AttributeAllowlist adds keys to the built-in OTel-semconv allowlist rather
-	// than replacing it, so a service can keep one extra salient attribute without
-	// having to restate the defaults.
+	// AttributeAllowlist names extra attribute keys to retain in the snapshot.
+	// By default the canonicalizer folds identity-bearing attributes into the op
+	// key and keeps only a normalized db.statement, so the snapshot stays small;
+	// listing a key here keeps it (after redaction) alongside the op.
 	AttributeAllowlist []string `yaml:"attributeAllowlist"`
-	// RedactKeys names attribute keys whose values are always replaced with a type
-	// placeholder, on top of the built-in UUID / numeric-id / timestamp value
-	// matchers.
+	// RedactKeys names retained attribute keys whose values are always replaced
+	// with a type placeholder, on top of the built-in UUID / numeric-id /
+	// timestamp value matchers. Only attributes that are retained (an allowlisted
+	// key) are projected, so a redact key has effect only when it is also kept.
 	RedactKeys []string `yaml:"redactKeys"`
 }
 

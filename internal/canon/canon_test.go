@@ -253,6 +253,33 @@ func TestRedaction(t *testing.T) {
 	}
 }
 
+// TestInternalKindDBSpanTiered is the regression for DB spans opened as
+// internal-kind (some ORMs do this): opkey keys them as DB operations, so the
+// classifier must tier them as DB (ext-read = 2 / mutate = 1) and retain them,
+// not treat them as ordinary internal compute (tier 3) and drop them.
+func TestInternalKindDBSpanTiered(t *testing.T) {
+	spans := []capture.Span{
+		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+			Attrs: map[string]string{"http.request.method": "GET", "http.route": "/loans/{id}"}},
+		{ID: "read", ParentID: "root", Kind: ir.KindInternal, Name: "ormSelect", Start: ms(0, 1), End: ms(0, 5),
+			Attrs: map[string]string{"db.system": "postgresql", "db.statement": "SELECT id, status FROM loans WHERE id = $1"}},
+		{ID: "write", ParentID: "root", Kind: ir.KindInternal, Name: "ormUpdate", Start: ms(0, 6), End: ms(0, 9),
+			Attrs: map[string]string{"db.system": "postgresql", "db.statement": "UPDATE loans SET status = 'paid' WHERE id = $1"}},
+	}
+	tr := mustCanon(t, capture.CapturedFlow{Flow: "GET /loans/{id}", Service: "loansvc", Spans: spans, Root: &spans[0], Complete: true})
+	if len(tr.Root.Children) != 2 {
+		t.Fatalf("both DB spans should survive salience, got %d groups: %s", len(tr.Root.Children), marshal(t, tr))
+	}
+	read := tr.Root.Children[0].Members[0]
+	if read.Op != "DB postgresql SELECT loans" || read.Tier != 2 {
+		t.Errorf("internal-kind SELECT = {op:%q tier:%d}, want DB op at tier 2", read.Op, read.Tier)
+	}
+	write := tr.Root.Children[1].Members[0]
+	if write.Op != "DB postgresql UPDATE loans" || write.Tier != 1 {
+		t.Errorf("internal-kind UPDATE = {op:%q tier:%d}, want DB op at tier 1", write.Op, write.Tier)
+	}
+}
+
 func shuffleSpans(s []capture.Span) {
 	r := rand.New(rand.NewSource(42))
 	r.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })

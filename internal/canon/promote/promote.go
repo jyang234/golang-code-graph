@@ -44,9 +44,21 @@ func Filter(span *ir.CanonicalSpan, keep func(*ir.CanonicalSpan) bool) {
 					members = append(members, m)
 					continue
 				}
-				// Drop the wrapper, promote its children as concurrent peers.
-				for _, cg := range m.Children {
-					members = append(members, cg.Members...)
+				// Promote the dropped wrapper's children into the race only when it
+				// is lossless. A concurrent group holds racing branches, not ordered
+				// steps, so a wrapper whose surviving subtree is more than one
+				// child-group carries a happens-before sequence that flattening would
+				// turn into a race. In that case the node is the minimal structure
+				// that preserves the ordering, so we retain it rather than corrupt
+				// the snapshot (canon §3.3, plan [C3]). A wrapper with one child-group
+				// (its members are a single span or an already-concurrent set)
+				// promotes cleanly.
+				if len(m.Children) <= 1 {
+					for _, cg := range m.Children {
+						members = append(members, cg.Members...)
+					}
+				} else {
+					members = append(members, m)
 				}
 			}
 			switch len(members) {

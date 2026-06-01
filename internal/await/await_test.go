@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jyang234/golang-code-graph/internal/capture"
+	"github.com/jyang234/golang-code-graph/ir"
 )
 
 // fakeClock advances only when Sleep is called, so the loop runs without real
@@ -27,7 +28,7 @@ func TestAwaitCompletesAfterQuietDrain(t *testing.T) {
 	// span lands 20ms in. Completion must wait for it plus the quiet period.
 	snapshot := func() []capture.Span {
 		base := []capture.Span{
-			{ID: "root", Name: "POST /x"},
+			{ID: "root", Kind: ir.KindServer, Name: "POST /x"},
 			{ID: "pub", ParentID: "root", Name: "PUBLISH loan.approved"},
 		}
 		if clk.now.Sub(time.Unix(0, 0)) >= 20*time.Millisecond {
@@ -58,7 +59,7 @@ func TestAwaitCompletesAfterQuietDrain(t *testing.T) {
 func TestAwaitTimesOutOnMissingMarker(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(0, 0)}
 	snapshot := func() []capture.Span {
-		return []capture.Span{{ID: "root", Name: "POST /x"}}
+		return []capture.Span{{ID: "root", Kind: ir.KindServer, Name: "POST /x"}}
 	}
 	_, complete := Await(snapshot, Options{
 		Markers: []string{"PUBLISH loan.approved"}, // never appears
@@ -83,7 +84,7 @@ func TestAwaitWaitsForRoot(t *testing.T) {
 		}
 		return []capture.Span{
 			{ID: "child", ParentID: "root", Name: "work"},
-			{ID: "root", Name: "POST /x"},
+			{ID: "root", Kind: ir.KindServer, Name: "POST /x"},
 		}
 	}
 	_, complete := Await(snapshot, Options{
@@ -98,10 +99,58 @@ func TestAwaitWaitsForRoot(t *testing.T) {
 	}
 }
 
+// TestAwaitNotFooledByOrphanLeaf is the regression for the premature-completion
+// bug: while the flow runs, a leaf whose intermediate parent has not yet ended
+// is transiently parentless. Completion must wait for the actual entry (the
+// server span), not fire on any orphan — otherwise it would snapshot a truncated
+// trace mid-flow.
+func TestAwaitNotFooledByOrphanLeaf(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(0, 0)}
+	snapshot := func() []capture.Span {
+		// A DB leaf whose parent ("mid") has not ended is visible from the start;
+		// it is parentless in the scoped set but it is NOT the entry. The server
+		// root only ends (appears) at 30ms.
+		base := []capture.Span{
+			{ID: "leaf", ParentID: "mid", Kind: ir.KindClient, Name: "DB SELECT"},
+		}
+		if clk.now.Sub(time.Unix(0, 0)) >= 30*time.Millisecond {
+			base = append(base,
+				capture.Span{ID: "mid", ParentID: "root", Kind: ir.KindInternal, Name: "work"},
+				capture.Span{ID: "root", Kind: ir.KindServer, Name: "POST /x"},
+			)
+		}
+		return base
+	}
+	spans, complete := Await(snapshot, Options{
+		Quiet:   5 * time.Millisecond,
+		Timeout: time.Second,
+		Poll:    5 * time.Millisecond,
+		Now:     clk.Now,
+		Sleep:   clk.Sleep,
+	})
+	if !complete {
+		t.Fatal("should eventually complete once the server root ends")
+	}
+	// It must not have completed at 0ms on the orphan leaf alone; by the time it
+	// did complete, the real root must be present.
+	hasRoot := false
+	for _, s := range spans {
+		if s.Kind == ir.KindServer {
+			hasRoot = true
+		}
+	}
+	if !hasRoot {
+		t.Fatal("completed on an orphan leaf before the server root ended (truncated)")
+	}
+	if clk.now.Sub(time.Unix(0, 0)) < 30*time.Millisecond {
+		t.Fatalf("completed too early at %v, before the root ended at 30ms", clk.now.Sub(time.Unix(0, 0)))
+	}
+}
+
 func TestAwaitMinSpansFloor(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(0, 0)}
 	snapshot := func() []capture.Span {
-		return []capture.Span{{ID: "root", Name: "POST /x"}}
+		return []capture.Span{{ID: "root", Kind: ir.KindServer, Name: "POST /x"}}
 	}
 	_, complete := Await(snapshot, Options{
 		Quiet:    5 * time.Millisecond,

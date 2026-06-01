@@ -61,6 +61,25 @@ func TestOperationAndTable(t *testing.T) {
 	}
 }
 
+// TestOperationAndTableUpdateQualifier covers UPDATE statements with a leading
+// dialect qualifier (Postgres ONLY, MySQL LOW_PRIORITY/IGNORE): the table must
+// be the real target, not the qualifier word.
+func TestOperationAndTableUpdateQualifier(t *testing.T) {
+	cases := []struct {
+		raw, table string
+	}{
+		{"UPDATE ONLY loans SET status = 'paid' WHERE id = $1", "loans"},
+		{"UPDATE LOW_PRIORITY accounts SET balance = 0", "accounts"},
+		{"UPDATE loans SET status = 'paid'", "loans"},
+	}
+	for _, c := range cases {
+		n := Normalize(c.raw)
+		if n.Operation != "UPDATE" || n.Table != c.table {
+			t.Errorf("Normalize(%q) = {op:%q table:%q}, want UPDATE/%q", c.raw, n.Operation, n.Table, c.table)
+		}
+	}
+}
+
 func TestNormalizeDeterministic(t *testing.T) {
 	// Whitespace and placeholder-style variations of the same logical statement
 	// converge.
