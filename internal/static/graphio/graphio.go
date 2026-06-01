@@ -13,16 +13,21 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/canonjson"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	cg "github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
 	"github.com/jyang234/golang-code-graph/internal/static/signatures"
 )
 
 // Graph is the non-gated call-graph view, optionally scoped to one entry point.
+// It carries the graph-completeness blind spots (reflect, high fan-out,
+// unsafe/cgo/linkname) — disclosures that belong with the "what can happen" map
+// rather than the gated boundary contract.
 type Graph struct {
-	Entrypoint string `json:"entrypoint,omitempty"`
-	Nodes      []Node `json:"nodes"`
-	Edges      []Edge `json:"edges"`
+	Entrypoint string                 `json:"entrypoint,omitempty"`
+	Nodes      []Node                 `json:"nodes"`
+	Edges      []Edge                 `json:"edges"`
+	BlindSpots []blindspots.BlindSpot `json:"blind_spots"`
 }
 
 // Node is one first-party function.
@@ -58,7 +63,10 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 		scope = reachableFirstParty(res, root)
 	}
 
-	g := &Graph{Entrypoint: entry, Nodes: []Node{}, Edges: []Edge{}}
+	g := &Graph{Entrypoint: entry, Nodes: []Node{}, Edges: []Edge{}, BlindSpots: []blindspots.BlindSpot{}}
+	if gs := blindspots.Graph(blindspots.Detect(res, hints)); len(gs) > 0 {
+		g.BlindSpots = gs
+	}
 	rootFns := rootFuncSet(res)
 
 	for _, n := range res.Graph.Nodes {

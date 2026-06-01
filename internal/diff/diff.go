@@ -80,6 +80,13 @@ func Diff(a, b *ir.CanonicalTrace) []Change {
 	if a == nil || b == nil {
 		return nil
 	}
+	// A schema-version change means flowmap's canonical form moved under the
+	// golden; it is not a behavioral change but it requires a coordinated
+	// regeneration, so surface it as the headline.
+	if a.SchemaVersion != b.SchemaVersion {
+		d.add(Changed, PriorityContract, "",
+			"schema version "+orNone(a.SchemaVersion)+"→"+orNone(b.SchemaVersion)+" (canonical form changed; regenerate goldens)")
+	}
 	// Flow and service identity are part of the trace; a change here means a
 	// different flow or self-lifeline, which the per-flow golden should surface.
 	if a.Flow != b.Flow {

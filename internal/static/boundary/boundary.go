@@ -134,7 +134,10 @@ func Extract(res *analyze.Result) *Contract {
 		c.ExternalDeps = append(c.ExternalDeps, *d)
 	}
 
-	c.BlindSpots = blindspots.Detect(res, hints)
+	// Only the boundary subset gates; the graph-completeness disclosures (reflect,
+	// fan-out, unsafe/cgo/linkname) ride the non-gated graph view, so an internal
+	// refactor never churns the contract (static-extractor §7).
+	c.BlindSpots = blindspots.Boundary(blindspots.Detect(res, hints))
 	c.normalize()
 	return c
 }

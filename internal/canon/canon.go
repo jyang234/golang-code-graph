@@ -88,10 +88,11 @@ func Canonicalize(cf capture.CapturedFlow, cfg *config.Config) (*ir.CanonicalTra
 		service = cfg.Service
 	}
 	trace := &ir.CanonicalTrace{
-		Flow:     cf.Flow,
-		Service:  service,
-		Root:     rootSpan,
-		Discards: c.discards(),
+		Flow:          cf.Flow,
+		Service:       service,
+		SchemaVersion: ir.SchemaVersion,
+		Root:          rootSpan,
+		Discards:      c.discards(),
 	}
 	return trace, nil
 }

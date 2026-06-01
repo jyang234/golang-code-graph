@@ -39,6 +39,13 @@ internal/      the analysis engine (canonjson, glob, model, tiermap, static/, ca
 testdata/      hermetic fixture service (its own module) + committed goldens
 ```
 
+## Adopting flowmap
+
+`docs/adopting-flowmap.md` is the end-to-end recipe for wiring flowmap into a
+service (instrument with OTel → commit the boundary contract → write a flow test
+→ check coverage → wire CI/CODEOWNERS). The `testdata/fixtures/loansvc` fixture
+is a complete worked example.
+
 ## The two gates (and how to keep them green)
 
 flowmap has **two distinct gate mechanisms**, unified only by CODEOWNERS routing

@@ -331,3 +331,16 @@ func priorityOf(t *testing.T, cs []Change, op string, want Priority) bool {
 	}
 	return false
 }
+
+// TestSchemaVersionChangeIsHeadline proves a canonical-form bump surfaces as a
+// top-priority change directing the reviewer to regenerate.
+func TestSchemaVersionChangeIsHeadline(t *testing.T) {
+	a := tr(root())
+	a.SchemaVersion = "flowmap.trace/v1"
+	b := tr(root())
+	b.SchemaVersion = "flowmap.trace/v2"
+	got := Diff(a, b)
+	if len(got) == 0 || got[0].Priority != PriorityContract || !strings.Contains(got[0].Detail, "schema version") {
+		t.Fatalf("schema bump should be the headline contract change, got %v", lines(got))
+	}
+}

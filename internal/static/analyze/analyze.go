@@ -27,6 +27,7 @@ const ConfigFile = ".flowmap.yaml"
 type Result struct {
 	Dir     string
 	Config  *config.Config
+	Service *loader.Service
 	Program *ssabuild.Program
 	Roots   *roots.Result
 	Graph   *callgraph.Graph
@@ -52,7 +53,7 @@ func Analyze(dir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Dir: dir, Config: cfg, Program: prog, Roots: rs, Graph: g}, nil
+	return &Result{Dir: dir, Config: cfg, Service: svc, Program: prog, Roots: rs, Graph: g}, nil
 }
 
 // ServiceName is the config's service name, or the module path's last segment.

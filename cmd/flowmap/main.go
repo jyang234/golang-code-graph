@@ -160,7 +160,7 @@ func cmdCoverage(args []string) error {
 	dir := dirArg(fs)
 	gdir := *flowsDir
 	if gdir == "" {
-		gdir = filepath.Join(dir, "testdata", "flows")
+		gdir = defaultFlowsDir(dir)
 	}
 
 	c, err := boundary.Generate(dir)
@@ -182,6 +182,22 @@ func cmdCoverage(args []string) error {
 		fmt.Printf("  [%s] %s\n", e.Category, e.Key)
 	}
 	return nil
+}
+
+// defaultFlowsDir picks the conventional goldens location: <dir>/testdata/flows
+// (flow tests at the service root), or <dir>/flows/testdata/flows (flow tests in
+// a flows/ package, where `go test` writes goldens package-relative). The first
+// directory that exists wins; otherwise the root convention is returned so the
+// error names a sensible path.
+func defaultFlowsDir(dir string) string {
+	root := filepath.Join(dir, "testdata", "flows")
+	nested := filepath.Join(dir, "flows", "testdata", "flows")
+	if info, err := os.Stat(nested); err == nil && info.IsDir() {
+		if _, err := os.Stat(root); err != nil {
+			return nested
+		}
+	}
+	return root
 }
 
 // loadGoldens loads every *.golden.json in dir as a canonical trace.

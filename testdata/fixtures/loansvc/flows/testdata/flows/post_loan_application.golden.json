@@ -1,6 +1,7 @@
 {
   "flow": "POST /loan-application",
   "service": "loansvc",
+  "schema_version": "flowmap.trace/v1",
   "root": {
     "op": "HTTP POST /loan-application",
     "kind": "server",
