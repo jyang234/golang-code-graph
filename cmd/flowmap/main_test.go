@@ -89,3 +89,27 @@ func write(t *testing.T, dir, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunDiffIdentical(t *testing.T) {
+	silenceStdout(t)
+	g := filepath.Join(fixtureDir(), "flows", "testdata", "flows", "post_loan_application.golden.json")
+	if err := run([]string{"diff", g, g}); err != nil {
+		t.Fatalf("identical traces should diff cleanly, got: %v", err)
+	}
+}
+
+func TestRunDiffDiffers(t *testing.T) {
+	silenceStdout(t)
+	dir := filepath.Join(fixtureDir(), "flows", "testdata", "flows")
+	a := filepath.Join(dir, "post_loan_application.golden.json")
+	b := filepath.Join(dir, "consume_payment_settled.golden.json")
+	if err := run([]string{"diff", a, b}); err == nil {
+		t.Fatal("expected a non-nil error (non-zero exit) when traces differ")
+	}
+}
+
+func TestRunDiffBadArgs(t *testing.T) {
+	if err := run([]string{"diff", "only-one.json"}); err == nil {
+		t.Fatal("expected an error when not given exactly two files")
+	}
+}

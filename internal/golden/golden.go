@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/diff"
 	"github.com/jyang234/golang-code-graph/internal/render"
 	"github.com/jyang234/golang-code-graph/ir"
 )
@@ -65,9 +66,25 @@ func Compare(got *ir.CanonicalTrace, dir, name string, update bool) error {
 	wantBytes := canonicalBytes(want)
 	if string(gotBytes) != string(wantBytes) {
 		return fmt.Errorf("golden: %s does not match the observed flow (run -update to rebase if intended):\n%s",
-			goldenPath, diff(string(wantBytes), string(gotBytes)))
+			goldenPath, changeSet(want, got, string(wantBytes), string(gotBytes)))
 	}
 	return nil
+}
+
+// changeSet renders the prioritized structural diff (the authoritative,
+// reviewer-facing change set). It falls back to a line diff only when the
+// structural diff is empty yet the bytes differ — e.g. a flow-id or service-name
+// edit, which is not part of the behavioral tree.
+func changeSet(want, got *ir.CanonicalTrace, wantBytes, gotBytes string) string {
+	changes := diff.Diff(want, got)
+	if len(changes) == 0 {
+		return diffLines(wantBytes, gotBytes)
+	}
+	var b strings.Builder
+	for _, c := range changes {
+		b.WriteString("  " + c.String() + "\n")
+	}
+	return b.String()
 }
 
 // canonicalBytes serializes a trace with the Discards manifest zeroed, so
@@ -100,11 +117,11 @@ func Slug(name string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-// diff produces a compact line-oriented view of the first divergence between two
-// canonical JSON documents — enough for a reviewer to see what changed. The
-// prioritized, semantic change set is the diff engine's job (Phase 7); this is
-// the readable fallback the gate prints on a raw mismatch.
-func diff(want, got string) string {
+// diffLines produces a compact line-oriented view of the first divergence
+// between two canonical JSON documents. It is only the fallback when the
+// structural diff is empty (a non-behavioral edit such as the flow id or service
+// name); the prioritized structural change set is the primary output.
+func diffLines(want, got string) string {
 	wl := strings.Split(strings.TrimRight(want, "\n"), "\n")
 	gl := strings.Split(strings.TrimRight(got, "\n"), "\n")
 	var b strings.Builder

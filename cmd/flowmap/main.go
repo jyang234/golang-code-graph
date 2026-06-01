@@ -1,7 +1,8 @@
 // Command flowmap is the CLI for the flowmap verification system. Phase 3 adds
 // the static subcommands: `boundary` (generate or --check the gated boundary
-// contract) and `graph` (print the non-gated call-graph view). `diff` and
-// `coverage` arrive in later phases.
+// contract) and `graph` (print the non-gated call-graph view). Phase 7 adds
+// `diff` (the structural change set between two canonical traces); `coverage`
+// arrives in a later phase.
 package main
 
 import (
@@ -9,9 +10,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jyang234/golang-code-graph/internal/diff"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/boundary"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
+	"github.com/jyang234/golang-code-graph/ir"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -37,6 +40,8 @@ func run(args []string) error {
 		return cmdBoundary(args[1:])
 	case "graph":
 		return cmdGraph(args[1:])
+	case "diff":
+		return cmdDiff(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -107,6 +112,50 @@ func cmdGraph(args []string) error {
 	return err
 }
 
+// cmdDiff prints the structural, prioritized change set between two canonical
+// golden traces (a = baseline, b = observed). It exits non-zero when the flows
+// differ, so it can back a CI check, and is renderer-drift-immune because it
+// diffs the IR, not the rendered view.
+func cmdDiff(args []string) error {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: flowmap diff <baseline.golden.json> <observed.golden.json>")
+	}
+	a, err := loadTrace(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	b, err := loadTrace(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	changes := diff.Diff(a, b)
+	if len(changes) == 0 {
+		fmt.Println("no behavioral changes")
+		return nil
+	}
+	for _, c := range changes {
+		fmt.Println(c.String())
+	}
+	return fmt.Errorf("%d behavioral change(s) detected", len(changes))
+}
+
+// loadTrace reads a canonical golden IR from path.
+func loadTrace(path string) (*ir.CanonicalTrace, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	t, err := ir.Load(b)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return t, nil
+}
+
 // dirArg returns the first positional argument, defaulting to the current
 // directory.
 func dirArg(fs *flag.FlagSet) string {
@@ -124,8 +173,9 @@ usage: flowmap <command> [flags] [dir]
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
   graph [--entry R] [dir]    print the non-gated call-graph view
+  diff <a.json> <b.json>     print the structural change set between two golden traces
   version                    print the flowmap version
   help                       show this message
 
-(diff and coverage arrive in later phases)`)
+(coverage arrives in a later phase)`)
 }
