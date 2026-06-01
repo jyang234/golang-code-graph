@@ -59,6 +59,13 @@ type Span struct {
 
 	Start time.Time
 	End   time.Time
+
+	// Goroutine is the id of the goroutine the span started on — the structural
+	// concurrency signal (canon §3.3, plan [C2]). A child that runs on a different
+	// goroutine than its parent was dispatched asynchronously; two such siblings
+	// are a race regardless of how their intervals happen to fall. Zero means the
+	// signal was unavailable, and ordering falls back to caller-clock overlap.
+	Goroutine uint64
 }
 
 // CapturedFlow is the harness's output and the canonicalizer's input
@@ -138,37 +145,31 @@ func sortSpans(spans []Span) {
 	})
 }
 
-// Relation is the happens-before relationship between two sibling spans, decided
-// from the caller's single clock domain.
-type Relation int
-
-const (
-	// Concurrent means the two intervals overlap (or ordering is otherwise
-	// unreliable): determinism wins over fidelity-to-this-run, so they are a
-	// race-ordered group (canon §3.3 rule 3).
-	Concurrent Relation = iota
-	// Before means a reliably precedes b (a.End <= b.Start beyond the guard band).
-	Before
-	// After means b reliably precedes a.
-	After
-)
-
-// Order decides the ordering of two sibling spans from their caller-clock
-// intervals with a guard band (harness §3 / canon §3.3). Because both spans were
-// recorded in the *same* process clock (the in-process exporter, or one
-// service's client spans), interval comparison is reliable here — unlike
-// cross-service server spans, which live in separate clock domains and must
-// never be compared this way. When intervals overlap within the guard band the
-// relationship is treated as concurrent, which is also the default on any
-// ambiguity.
-func Order(a, b Span, guard time.Duration) Relation {
-	switch {
-	case !a.End.Add(guard).After(b.Start):
-		// a.End + guard <= b.Start
-		return Before
-	case !b.End.Add(guard).After(a.Start):
-		return After
-	default:
-		return Concurrent
+// Concurrent reports whether two sibling spans ran concurrently (canon §3.3,
+// plan [C2]). It prefers the structural dispatch signal: when goroutine identity
+// is known for both siblings and their parent, two siblings dispatched onto
+// worker goroutines (each different from the parent's goroutine) are a race
+// regardless of how their intervals happen to fall — robust to scheduling jitter
+// and to one leg finishing before the other starts. It falls back to caller-clock
+// interval overlap when the signal is unavailable (parentGoroutine or either
+// span's goroutine is zero) or when at least one sibling ran inline on the
+// parent's goroutine (its order is then the parent's execution order).
+//
+// All three spans share one process clock here, so interval comparison is sound
+// — unlike cross-service server spans in separate clock domains, which must never
+// be compared this way.
+func Concurrent(a, b Span, parentGoroutine uint64) bool {
+	if parentGoroutine != 0 && a.Goroutine != 0 && b.Goroutine != 0 {
+		aAsync := a.Goroutine != parentGoroutine
+		bAsync := b.Goroutine != parentGoroutine
+		if aAsync && bAsync {
+			return true
+		}
 	}
+	return overlaps(a, b)
+}
+
+// overlaps reports whether two spans' caller-clock intervals intersect.
+func overlaps(a, b Span) bool {
+	return a.Start.Before(b.End) && b.Start.Before(a.End)
 }

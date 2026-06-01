@@ -13,10 +13,12 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -85,7 +87,7 @@ func NewInProcess(t TB, handler http.Handler, opts ...Option) *App {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithResource(res),
-		sdktrace.WithSpanProcessor(baggageToAttr{}),
+		sdktrace.WithSpanProcessor(startProcessor{}),
 		sdktrace.WithSpanProcessor(rec),
 	)
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
@@ -103,20 +105,45 @@ func NewInProcess(t TB, handler http.Handler, opts ...Option) *App {
 	return &App{t: t, handler: handler, rec: rec, tp: tp, prop: prop, service: o.service}
 }
 
-// baggageToAttr copies the test.run.id baggage member onto each span at start, so
-// spans are queryable by the correlation key even when instrumentation begins a
-// fresh trace on entry (harness §3). Baggage is not automatically a span
-// attribute, which is why this small processor exists.
-type baggageToAttr struct{}
+// goroutineAttr is the span attribute the start processor stamps with the
+// goroutine the span began on — flowmap's structural concurrency signal
+// (canon §3.3 / plan [C2]). It is consumed into capture.Span.Goroutine and never
+// reaches the canonical snapshot.
+const goroutineAttr = "flowmap.goid"
 
-func (baggageToAttr) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
+// startProcessor runs synchronously on the goroutine that starts each span. It
+// copies the test.run.id baggage member onto the span (so spans are queryable by
+// the correlation key even when instrumentation begins a fresh trace on entry,
+// harness §3) and records the starting goroutine's id. Baggage is not
+// automatically a span attribute, which is why this small processor exists.
+type startProcessor struct{}
+
+func (startProcessor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	if m := otelbaggage.FromContext(parent).Member(capture.CorrelationKey); m.Value() != "" {
 		s.SetAttributes(attribute.String(capture.CorrelationKey, m.Value()))
 	}
+	s.SetAttributes(attribute.Int64(goroutineAttr, int64(goid())))
 }
-func (baggageToAttr) OnEnd(sdktrace.ReadOnlySpan)      {}
-func (baggageToAttr) Shutdown(context.Context) error   { return nil }
-func (baggageToAttr) ForceFlush(context.Context) error { return nil }
+func (startProcessor) OnEnd(sdktrace.ReadOnlySpan)      {}
+func (startProcessor) Shutdown(context.Context) error   { return nil }
+func (startProcessor) ForceFlush(context.Context) error { return nil }
+
+// goid returns the current goroutine's id by parsing the runtime stack header
+// ("goroutine N [state]:"). There is no public API for this; it is confined to
+// this test-harness boundary and used only as the structural concurrency signal.
+func goid() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	fields := bytes.Fields(buf[:n])
+	if len(fields) < 2 {
+		return 0
+	}
+	id, err := strconv.ParseUint(string(fields[1]), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
 
 // Pending is a triggered-but-not-yet-collected flow. Call Capture to await
 // quiescence and produce the scoped CapturedFlow.
@@ -305,17 +332,23 @@ func (r *statusRecorder) WriteHeader(code int) {
 // fromOTel maps one finished OTel span into the internal model.
 func fromOTel(s sdktrace.ReadOnlySpan) capture.Span {
 	attrs := map[string]string{}
+	var goroutine uint64
 	for _, kv := range s.Attributes() {
+		if string(kv.Key) == goroutineAttr {
+			goroutine = uint64(kv.Value.AsInt64())
+			continue // structural signal, not part of the canonical attributes
+		}
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
 	cs := capture.Span{
-		ID:       s.SpanContext().SpanID().String(),
-		ParentID: s.Parent().SpanID().String(),
-		Name:     s.Name(),
-		Kind:     kindOf(s.SpanKind()),
-		Attrs:    attrs,
-		Start:    s.StartTime(),
-		End:      s.EndTime(),
+		ID:        s.SpanContext().SpanID().String(),
+		ParentID:  s.Parent().SpanID().String(),
+		Name:      s.Name(),
+		Kind:      kindOf(s.SpanKind()),
+		Attrs:     attrs,
+		Start:     s.StartTime(),
+		End:       s.EndTime(),
+		Goroutine: goroutine,
 	}
 	switch s.Status().Code {
 	case codes.Ok:

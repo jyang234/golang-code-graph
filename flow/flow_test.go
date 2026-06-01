@@ -23,7 +23,7 @@ import (
 // applicant read and the credit-score call race (both perform real I/O), then a
 // sequential charge → publish → ledger, and a fire-and-forget audit write after
 // the response.
-func loanSUT() http.Handler {
+func loanSUT(extraPublishes ...string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /loan-application", func(w http.ResponseWriter, r *http.Request) {
 		tr := otel.Tracer("loansvc")
@@ -69,6 +69,14 @@ func loanSUT() http.Handler {
 		_, pub := tr.Start(ctx, "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
 		pub.SetAttributes(attribute.String("messaging.destination.name", "loan.approved"))
 		pub.End()
+
+		// extraPublishes inject behavioral drift (a new published event) for the
+		// gate-fails-on-drift test; the canonical SUT passes none.
+		for _, event := range extraPublishes {
+			_, ep := tr.Start(ctx, "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
+			ep.SetAttributes(attribute.String("messaging.destination.name", event))
+			ep.End()
+		}
 
 		_, led := tr.Start(ctx, "ledger", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 		led.SetAttributes(
@@ -163,6 +171,35 @@ func TestCardinalityViolationFailsEvenWhenGoldenMatches(t *testing.T) {
 		if strings.Contains(e, "does not match") {
 			t.Errorf("golden should have matched (update was forced), but saw a mismatch: %s", e)
 		}
+	}
+}
+
+// TestBehavioralGateFailsOnDrift is the inject-drift proof for the
+// snapshot-assertion gate: a flow that publishes a new event no longer matches
+// the committed golden, and Run fails with the prioritized structural change set
+// (the new publish ranked as a [CONTRACT] change), not a raw text diff. The
+// canonical TestLoanApplicationFlow proves the complementary "passes when
+// current" half.
+func TestBehavioralGateFailsOnDrift(t *testing.T) {
+	app := harness.NewInProcess(t, loanSUT("loan.flagged"), harness.WithService("loansvc"))
+	rec := &recordingTB{}
+	func() {
+		defer func() { _ = recover() }()
+		flow.New("POST /loan-application").
+			Trigger("POST", "/loan-application").
+			Expect("HTTP GET credit-bureau /score/{id}").
+			Expect("PUBLISH loan.approved").
+			Expect("PUBLISH loan.flagged").
+			Expect("DB postgres INSERT ledger").
+			Expect("DB postgres INSERT audit_log").
+			Quiescence(15*time.Millisecond, 3*time.Second).
+			Run(rec, app)
+	}()
+	if !anyContains(rec.errs, "does not match") {
+		t.Fatalf("expected a golden mismatch, got errs=%v fatal=%q", rec.errs, rec.fatal)
+	}
+	if !anyContains(rec.errs, "[CONTRACT] ADDED PUBLISH loan.flagged") {
+		t.Errorf("expected the drift reported as a prioritized contract change, got: %v", rec.errs)
 	}
 }
 

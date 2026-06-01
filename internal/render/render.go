@@ -171,10 +171,16 @@ func sanitize(name string) string {
 		}
 	}
 	id := b.String()
-	if id == "" || !(id[0] >= 'a' && id[0] <= 'z' || id[0] >= 'A' && id[0] <= 'Z') {
+	if id == "" || !isASCIILetter(id[0]) {
 		id = "L" + id
 	}
 	return id
+}
+
+// isASCIILetter reports whether c is an ASCII letter (a valid leading character
+// for a Mermaid identifier).
+func isASCIILetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 func uniqueID(base string, used map[string]bool) string {

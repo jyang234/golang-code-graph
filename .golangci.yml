@@ -1,17 +1,12 @@
-# golangci-lint configuration for the flowmap engine module.
+# golangci-lint v2 configuration for the flowmap engine module.
 # The fixture lives in its own module under testdata/ and is linted separately.
-run:
-  timeout: 5m
-
-issues:
-  exclude-dirs:
-    - testdata
+version: "2"
 
 linters:
+  # The v2 standard set (errcheck, govet, ineffassign, staticcheck, unused) plus
+  # misspell.
   enable:
-    - govet
-    - staticcheck
-    - errcheck
-    - ineffassign
-    - unused
     - misspell
+  exclusions:
+    paths:
+      - testdata

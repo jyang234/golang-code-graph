@@ -45,47 +45,44 @@ func TestScopeRejectsMultipleRoots(t *testing.T) {
 	}
 }
 
-func TestOrderSequential(t *testing.T) {
-	a := Span{ID: "a", Start: t0(0), End: t0(5)}
-	b := Span{ID: "b", Start: t0(6), End: t0(9)}
-	if got := Order(a, b, time.Millisecond); got != Before {
-		t.Errorf("Order(a,b) = %v, want Before", got)
+// TestConcurrentOverlapFallback covers the no-goroutine-signal path: ordering
+// falls back to caller-clock interval overlap.
+func TestConcurrentOverlapFallback(t *testing.T) {
+	seqA := Span{ID: "a", Start: t0(0), End: t0(5)}
+	seqB := Span{ID: "b", Start: t0(6), End: t0(9)}
+	if Concurrent(seqA, seqB, 0) {
+		t.Error("disjoint intervals with no goroutine signal should be sequential")
 	}
-	if got := Order(b, a, time.Millisecond); got != After {
-		t.Errorf("Order(b,a) = %v, want After", got)
-	}
-}
-
-func TestOrderConcurrentOnOverlap(t *testing.T) {
-	a := Span{ID: "a", Start: t0(0), End: t0(8)}
-	b := Span{ID: "b", Start: t0(2), End: t0(4)}
-	if got := Order(a, b, time.Millisecond); got != Concurrent {
-		t.Errorf("overlapping intervals = %v, want Concurrent", got)
+	ovlA := Span{ID: "a", Start: t0(0), End: t0(8)}
+	ovlB := Span{ID: "b", Start: t0(2), End: t0(4)}
+	if !Concurrent(ovlA, ovlB, 0) {
+		t.Error("overlapping intervals should be concurrent")
 	}
 }
 
-// TestOrderTimingStable is the spec's fast-vs-slow check (Phase 4): two errgroup
-// legs that start together stay a concurrent pair whether one leg is fast or
-// slow, because both intervals still overlap.
-func TestOrderTimingStable(t *testing.T) {
-	// Both legs dispatched at ~t0; leg b finishes fast in one run, slow in another.
-	fastA := Span{ID: "a", Start: t0(0), End: t0(10)}
-	fastB := Span{ID: "b", Start: t0(0), End: t0(2)}
-	slowB := Span{ID: "b", Start: t0(0), End: t0(50)}
-	if Order(fastA, fastB, time.Millisecond) != Concurrent {
-		t.Error("fast leg should be concurrent")
-	}
-	if Order(fastA, slowB, time.Millisecond) != Concurrent {
-		t.Error("slow leg should still be concurrent — classification must be timing-stable")
+// TestConcurrentStructuralBothAsync is the structural-marker case and the
+// regression for the real-DB flake: two siblings dispatched onto worker
+// goroutines (each != the parent's goroutine) are concurrent even when their
+// intervals are disjoint because one leg finished before the other started.
+func TestConcurrentStructuralBothAsync(t *testing.T) {
+	const parent = 1
+	// a runs fast and finishes before b (on a third goroutine) even starts.
+	a := Span{ID: "a", Goroutine: 2, Start: t0(0), End: t0(1)}
+	b := Span{ID: "b", Goroutine: 3, Start: t0(2), End: t0(8)}
+	if !Concurrent(a, b, parent) {
+		t.Error("co-dispatched worker goroutines must be concurrent regardless of interval overlap")
 	}
 }
 
-func TestOrderGuardBand(t *testing.T) {
-	// A tiny back-to-back gap below the guard band is treated as concurrent, not
-	// spuriously sequential.
-	a := Span{ID: "a", Start: t0(0), End: t0(5)}
-	b := Span{ID: "b", Start: t0(5).Add(100 * time.Microsecond), End: t0(9)}
-	if got := Order(a, b, time.Millisecond); got != Concurrent {
-		t.Errorf("sub-guard-band gap = %v, want Concurrent", got)
+// TestConcurrentInlineSiblingSequential covers the fire-and-forget shape: an
+// inline call on the parent's goroutine followed by an async span on another
+// goroutine is sequential (the async span was spawned after the inline call
+// returned), decided by interval since not both are async.
+func TestConcurrentInlineSiblingSequential(t *testing.T) {
+	const parent = 1
+	inline := Span{ID: "ledger", Goroutine: parent, Start: t0(0), End: t0(2)}
+	async := Span{ID: "audit", Goroutine: 9, Start: t0(3), End: t0(5)}
+	if Concurrent(inline, async, parent) {
+		t.Error("an async span spawned after an inline sibling completed must be sequential")
 	}
 }

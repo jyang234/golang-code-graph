@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/jyang234/golang-code-graph/internal/canon/opkey"
 	"github.com/jyang234/golang-code-graph/internal/canon/promote"
@@ -30,14 +29,6 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/tiermap"
 	"github.com/jyang234/golang-code-graph/ir"
 )
-
-// defaultGuard is zero for in-process capture: span start/end come from one
-// monotonic clock, so genuinely sequential operations always satisfy
-// B.start ≥ A.end and only truly overlapping intervals are read as concurrent
-// (canon §3.3). A positive guard would misread microsecond-adjacent sequential
-// calls — which is most of an in-process flow — as a race. Cross-clock-domain
-// capture (deferred) supplies its own guard.
-const defaultGuard = 0
 
 // ErrIncomplete is returned when canonicalization is asked to snapshot a
 // truncated capture. It is a hard stop, never a snapshot (harness §7, canon
@@ -56,7 +47,6 @@ func Canonicalize(cf capture.CapturedFlow, cfg *config.Config) (*ir.CanonicalTra
 	c := &canonicalizer{
 		cfg:        cfg,
 		classifier: tiermap.New(cfg),
-		guard:      defaultGuard,
 		redactions: map[string]bool{},
 		loops:      map[string]bool{},
 		allow:      buildAllowSet(cfg),
@@ -109,7 +99,6 @@ func Canonicalize(cf capture.CapturedFlow, cfg *config.Config) (*ir.CanonicalTra
 type canonicalizer struct {
 	cfg        *config.Config
 	classifier *tiermap.Classifier
-	guard      time.Duration
 	redactions map[string]bool
 	loops      map[string]bool
 	allow      map[string]bool
@@ -130,18 +119,19 @@ func (c *canonicalizer) build(s *capture.Span, childrenOf map[string][]*capture.
 		Attrs:     c.projectAttrs(s),
 	}
 	cs.Tier, _ = c.classifier.Classify(c.features(s, op))
-	cs.Children = c.group(childrenOf[s.ID], childrenOf)
+	cs.Children = c.group(s.Goroutine, childrenOf[s.ID], childrenOf)
 	return cs
 }
 
 // group orders a parent's children into happens-before child groups and collapses
-// data-dependent repetition. Siblings are clustered by caller-clock interval
-// overlap: a maximal run of overlapping intervals is one race-ordered
-// (Concurrent) group with members in canonical-key order; non-overlapping
-// siblings fall into separate sequential groups ordered by start time. Because
-// all siblings share one process clock here, interval comparison is reliable
+// data-dependent repetition. Siblings are clustered into concurrency components:
+// two siblings are joined when capture.Concurrent reports they raced — preferring
+// the structural goroutine signal (parentGoroutine) and falling back to
+// caller-clock interval overlap. Each component becomes a group, emitted in
+// happens-before order by its earliest member; a multi-member (concurrent) group
+// stores its members in canonical-key order so a race never perturbs the snapshot
 // (canon §3.3).
-func (c *canonicalizer) group(kids []*capture.Span, childrenOf map[string][]*capture.Span) []ir.ChildGroup {
+func (c *canonicalizer) group(parentGoroutine uint64, kids []*capture.Span, childrenOf map[string][]*capture.Span) []ir.ChildGroup {
 	if len(kids) == 0 {
 		return nil
 	}
@@ -154,13 +144,48 @@ func (c *canonicalizer) group(kids []*capture.Span, childrenOf map[string][]*cap
 		return ordered[i].ID < ordered[j].ID
 	})
 
+	// Union siblings that ran concurrently into components.
+	n := len(ordered)
+	uf := make([]int, n)
+	for i := range uf {
+		uf[i] = i
+	}
+	find := func(x int) int {
+		for uf[x] != x {
+			uf[x] = uf[uf[x]]
+			x = uf[x]
+		}
+		return x
+	}
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if capture.Concurrent(*ordered[i], *ordered[j], parentGoroutine) {
+				if ri, rj := find(i), find(j); ri != rj {
+					uf[ri] = rj
+				}
+			}
+		}
+	}
+
+	// Collect components in start order (ordered is start-sorted, so a component's
+	// smallest index is its earliest member; order components by that index).
+	comps := map[int][]int{}
+	var roots []int
+	for i := 0; i < n; i++ {
+		r := find(i)
+		if _, seen := comps[r]; !seen {
+			roots = append(roots, r)
+		}
+		comps[r] = append(comps[r], i)
+	}
+	sort.SliceStable(roots, func(i, j int) bool { return comps[roots[i]][0] < comps[roots[j]][0] })
+
 	var groups []ir.ChildGroup
-	cluster := []*capture.Span{ordered[0]}
-	maxEnd := ordered[0].End
-	flush := func() {
-		members := make([]*ir.CanonicalSpan, 0, len(cluster))
-		for _, s := range cluster {
-			members = append(members, c.build(s, childrenOf))
+	for _, r := range roots {
+		idxs := comps[r]
+		members := make([]*ir.CanonicalSpan, 0, len(idxs))
+		for _, idx := range idxs {
+			members = append(members, c.build(ordered[idx], childrenOf))
 		}
 		concurrent := len(members) > 1
 		if concurrent {
@@ -168,20 +193,6 @@ func (c *canonicalizer) group(kids []*capture.Span, childrenOf map[string][]*cap
 		}
 		groups = append(groups, ir.ChildGroup{Concurrent: concurrent, Members: members})
 	}
-	for _, s := range ordered[1:] {
-		if !s.Start.Before(maxEnd.Add(c.guard)) {
-			// s starts after the cluster fully ended (beyond the guard) → sequential.
-			flush()
-			cluster = []*capture.Span{s}
-			maxEnd = s.End
-			continue
-		}
-		cluster = append(cluster, s)
-		if s.End.After(maxEnd) {
-			maxEnd = s.End
-		}
-	}
-	flush()
 	return c.collapseLoops(groups)
 }
 

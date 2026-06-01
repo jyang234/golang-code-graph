@@ -22,7 +22,7 @@ fixture:
 	cd testdata/fixtures/loansvc && go build ./... && go test ./...
 
 # verify is the per-phase gate: it must stay green at the end of every phase.
-verify: build vet test fixture
+verify: build vet lint test fixture
 	@out=$$(gofmt -l . | grep -v '^testdata/fixtures/loansvc/' || true); \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	@echo "verify OK"

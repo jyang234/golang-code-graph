@@ -1,4 +1,4 @@
-go 1.24.0
+go 1.25.0
 
 // The engine module plus the hermetic fixture service. flowmap loads the fixture
 // the way it loads any external service (via go/packages), so it lives in its own
