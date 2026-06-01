@@ -13,6 +13,7 @@ package diff
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jyang234/golang-code-graph/ir"
@@ -72,26 +73,44 @@ func (c Change) prefix() string {
 }
 
 // Diff returns the prioritized change set transforming a (the golden) into b (the
-// observed). An empty result means the flows are structurally identical.
+// observed). An empty result means the traces are identical. A nil trace cannot
+// be compared and yields no changes.
 func Diff(a, b *ir.CanonicalTrace) []Change {
 	d := &differ{}
-	if a == nil || b == nil || a.Root == nil || b.Root == nil {
+	if a == nil || b == nil {
 		return nil
 	}
-	// Root ↔ root is a forced match (golden-diff spec §3).
-	d.matchedPair(a.Root, b.Root)
+	// Flow and service identity are part of the trace; a change here means a
+	// different flow or self-lifeline, which the per-flow golden should surface.
+	if a.Flow != b.Flow {
+		d.add(Changed, PriorityTier1, "", "flow "+orNone(a.Flow)+"→"+orNone(b.Flow))
+	}
+	if a.Service != b.Service {
+		d.add(Changed, PriorityTier1, "", "service "+orNone(a.Service)+"→"+orNone(b.Service))
+	}
+	// Reconstruct the root relationship explicitly: a missing root on one side is
+	// a whole-flow add/remove, not "no change".
+	switch {
+	case a.Root == nil && b.Root == nil:
+		// nothing to compare below the trace level
+	case a.Root == nil:
+		d.add(Added, nodePriority(b.Root), b.Root.Op, "ADDED "+human(b.Root.Op))
+	case b.Root == nil:
+		d.add(Removed, nodePriority(a.Root), a.Root.Op, "REMOVED "+human(a.Root.Op))
+	default:
+		// Root ↔ root is a forced match (golden-diff spec §3).
+		d.matchedPair(a.Root, b.Root)
+	}
 	d.sortStable()
 	return d.changes
 }
 
 type differ struct {
 	changes []Change
-	seq     int // discovery order, for stable secondary sort
 }
 
 func (d *differ) add(t Type, p Priority, op, detail string) {
 	d.changes = append(d.changes, Change{Type: t, Priority: p, Op: op, Detail: detail})
-	d.seq++
 }
 
 // matchedPair compares two nodes already matched by Op, then diffs their children.
@@ -108,7 +127,7 @@ func (d *differ) compareAttrs(old, new *ir.CanonicalSpan) {
 	// Only the forced root match can have differing Ops; every other pair was
 	// matched by equal Op. A changed entry op means the flow's identity changed.
 	if old.Op != new.Op {
-		d.add(Changed, PriorityTier1, op, "entry "+old.Op+"→"+new.Op)
+		d.add(Changed, PriorityTier1, op, "entry "+human(old.Op)+"→"+human(new.Op))
 	}
 	if old.Status != new.Status {
 		d.add(Changed, PriorityTier1, op, human(op)+": status "+orUnset(old.Status)+"→"+orUnset(new.Status))
@@ -117,7 +136,15 @@ func (d *differ) compareAttrs(old, new *ir.CanonicalSpan) {
 		d.add(Changed, PriorityTier1, op, human(op)+": error "+orNone(old.ErrorType)+"→"+orNone(new.ErrorType))
 	}
 	if old.Tier != new.Tier {
-		d.add(Changed, PriorityLower, op, human(op)+": tier "+itoa(old.Tier)+"→"+itoa(new.Tier))
+		// A reclassification *into* tier 1 means the operation just became
+		// consequential (a newly tier-1 surface), which golden-diff spec §4 ranks
+		// second only to contract; surface it as tier-1 rather than burying it.
+		// Other tier shifts (demotions, escalations among lower tiers) stay low.
+		p := PriorityLower
+		if new.Tier == 1 && old.Tier != 1 {
+			p = PriorityTier1
+		}
+		d.add(Changed, p, op, human(op)+": tier "+strconv.Itoa(old.Tier)+"→"+strconv.Itoa(new.Tier))
 	}
 	if old.Peer != new.Peer {
 		d.add(Changed, PriorityLower, op, human(op)+": peer "+orNone(old.Peer)+"→"+orNone(new.Peer))
@@ -145,16 +172,27 @@ func (d *differ) diffChildren(old, new *ir.CanonicalSpan) {
 		d.add(Added, nodePriority(s.span), s.span.Op, "ADDED "+human(s.span.Op))
 	}
 
-	// Reorders: among matched pairs (in old order), members outside the longest
-	// increasing subsequence of new positions are the minimal moved set.
-	newOrder := make([]int, len(pairs))
+	// Reorders: only sequential members carry behavioral happens-before order, so
+	// only they participate in reorder detection. Concurrent-group members are
+	// stored in canonical-key order, not run order (ir.ChildGroup) — including
+	// them would report a spurious reorder whenever a group's concurrency changes
+	// or a concurrent sibling's canonical position shifts; that transition is
+	// already reported as ConcurrencyChanged. Among the sequential matched pairs
+	// (in old order), members outside the longest increasing subsequence of new
+	// positions are the minimal moved set.
+	var seqIdx []int
+	var seqOrder []int
 	for i, p := range pairs {
-		newOrder[i] = p.new.order
+		if p.old.concurrent || p.new.concurrent {
+			continue
+		}
+		seqIdx = append(seqIdx, i)
+		seqOrder = append(seqOrder, p.new.order)
 	}
-	kept := lisKept(newOrder)
-	for i, p := range pairs {
-		if !kept[i] {
-			d.add(Reordered, PriorityStructural, p.new.span.Op, human(p.new.span.Op)+" reordered")
+	kept := lisKept(seqOrder)
+	for k, i := range seqIdx {
+		if !kept[k] {
+			d.add(Reordered, PriorityStructural, pairs[i].new.span.Op, human(pairs[i].new.span.Op)+" reordered")
 		}
 	}
 
@@ -172,8 +210,9 @@ func (d *differ) diffChildren(old, new *ir.CanonicalSpan) {
 	}
 }
 
-// sortStable orders changes by priority, then by discovery (tree) order, so the
-// headline contract and tier-1 deltas precede structural and minor ones.
+// sortStable orders changes by priority. It is a stable sort, so within a
+// priority the changes keep their discovery (tree) order — the headline contract
+// and tier-1 deltas precede structural and minor ones, ties unshuffled.
 func (d *differ) sortStable() {
 	sort.SliceStable(d.changes, func(i, j int) bool {
 		return d.changes[i].Priority < d.changes[j].Priority
@@ -261,8 +300,8 @@ func lisKept(seq []int) map[int]bool {
 }
 
 // nodePriority classifies an added/removed node: a publish, a consume, or an
-// outbound call to a peer is a contract change; an otherwise tier-1 node is
-// tier-1; everything else is low.
+// outbound call to an external service is a contract change; an otherwise tier-1
+// node is tier-1; everything else is low.
 func nodePriority(s *ir.CanonicalSpan) Priority {
 	if isContract(s) {
 		return PriorityContract
@@ -273,16 +312,28 @@ func nodePriority(s *ir.CanonicalSpan) Priority {
 	return PriorityLower
 }
 
+// isContract reports whether a node sits on the inter-service boundary: a
+// published or consumed event, or an outbound call to an external service. The
+// database is excluded — it is the service's own store, not an inter-service
+// surface (golden-diff spec §4, static-extractor spec §4, scope-enforcement §2).
+// A DB client span and an external HTTP/RPC client span both carry a non-empty
+// Peer (db.system vs peer.service), so they are indistinguishable by Peer alone;
+// the canonical Op prefix is the reliable discriminator ("DB …" vs "HTTP …" /
+// "RPC …").
 func isContract(s *ir.CanonicalSpan) bool {
 	switch s.Kind {
 	case ir.KindProducer, ir.KindConsumer:
 		return true
 	case ir.KindClient:
-		return s.Peer != "" // an external dependency
+		return s.Peer != "" && !isDBOp(s.Op)
 	default:
 		return false
 	}
 }
+
+// isDBOp reports whether an op is a database operation ("DB <system> <op>
+// <table>"), which the canonical-key step keys with a "DB " prefix.
+func isDBOp(op string) bool { return strings.HasPrefix(op, "DB ") }
 
 // changedAttrKeys returns the sorted keys whose values differ (added, removed, or
 // modified) between two attribute maps.
@@ -327,23 +378,4 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	if neg {
-		b = append([]byte{'-'}, b...)
-	}
-	return string(b)
 }

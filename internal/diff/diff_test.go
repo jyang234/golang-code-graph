@@ -212,3 +212,122 @@ func anyType(cs []Change, t Type) bool {
 	}
 	return false
 }
+
+// TestDBChangeIsNotContract is the regression for #1: a DB query is the service's
+// own store, not an inter-service surface, so adding/removing one must never be a
+// [CONTRACT] change — unlike an external HTTP/RPC dependency, which is.
+func TestDBChangeIsNotContract(t *testing.T) {
+	dbRead := &ir.CanonicalSpan{Op: "DB postgres SELECT fraud_flags", Kind: ir.KindClient, Peer: "postgres", Tier: 2}
+	dbWrite := &ir.CanonicalSpan{Op: "DB postgres INSERT ledger", Kind: ir.KindClient, Peer: "postgres", Tier: 1}
+	extDep := &ir.CanonicalSpan{Op: "HTTP GET fraud-svc /check/{id}", Kind: ir.KindClient, Peer: "fraud-svc", Tier: 1}
+
+	a := tr(root())
+	b := tr(root(seq(dbRead), seq(dbWrite), seq(extDep)))
+	got := Diff(a, b)
+
+	prio := map[string]Priority{}
+	for _, c := range got {
+		prio[c.Op] = c.Priority
+	}
+	if prio["DB postgres SELECT fraud_flags"] == PriorityContract {
+		t.Errorf("DB read must not be a contract change: %v", lines(got))
+	}
+	if prio["DB postgres INSERT ledger"] == PriorityContract {
+		t.Errorf("DB write must not be a contract change (it is tier-1): %v", lines(got))
+	}
+	if prio["DB postgres INSERT ledger"] != PriorityTier1 {
+		t.Errorf("DB write (mutation) should be tier-1, got %v", prio["DB postgres INSERT ledger"])
+	}
+	if prio["HTTP GET fraud-svc /check/{id}"] != PriorityContract {
+		t.Errorf("external HTTP dependency SHOULD be a contract change, got %v", prio["HTTP GET fraud-svc /check/{id}"])
+	}
+}
+
+// TestSeqToConcurrentNoSpuriousReorder is the regression for #2: when two
+// sequential siblings (behavioral order B then A) become a concurrent group
+// (stored in canonical order A,B), the change is reported as concurrency only —
+// not a phantom reorder from the canonical storage order.
+func TestSeqToConcurrentNoSpuriousReorder(t *testing.T) {
+	a := tr(root(
+		seq(sp("B", ir.KindInternal, "")),
+		seq(sp("A", ir.KindInternal, "")),
+	))
+	b := tr(root(conc(
+		sp("A", ir.KindInternal, ""),
+		sp("B", ir.KindInternal, ""),
+	)))
+	got := Diff(a, b)
+	if anyType(got, Reordered) {
+		t.Errorf("seq→concurrent regrouping must not emit a spurious reorder: %v", lines(got))
+	}
+	if !anyType(got, ConcurrencyChanged) {
+		t.Errorf("expected ConcurrencyChanged, got %v", lines(got))
+	}
+}
+
+// TestSequentialReorderStillDetected guards that excluding concurrent members
+// from reorder detection did not disable genuine sequential reorders.
+func TestSequentialReorderStillDetected(t *testing.T) {
+	a := tr(root(seq(sp("a", ir.KindInternal, "")), seq(sp("b", ir.KindInternal, ""))))
+	b := tr(root(seq(sp("b", ir.KindInternal, "")), seq(sp("a", ir.KindInternal, ""))))
+	if !anyType(Diff(a, b), Reordered) {
+		t.Error("a genuine sequential swap should still be reported as a reorder")
+	}
+}
+
+// TestFlowAndServiceChange is the regression for #3: flow and service identity
+// changes are reported (so `flowmap diff` catches an entry/service rename).
+func TestFlowAndServiceChange(t *testing.T) {
+	a := &ir.CanonicalTrace{Flow: "POST /a", Service: "loansvc", Root: root()}
+	b := &ir.CanonicalTrace{Flow: "POST /b", Service: "loan-gw", Root: root()}
+	joined := strings.Join(lines(Diff(a, b)), "\n")
+	if !strings.Contains(joined, "flow POST /a→POST /b") {
+		t.Errorf("missing flow change: %s", joined)
+	}
+	if !strings.Contains(joined, "service loansvc→loan-gw") {
+		t.Errorf("missing service change: %s", joined)
+	}
+}
+
+// TestNilRootReportsAddRemove is the regression for #4: a missing root on one
+// side is a whole-flow add/remove, not silently "no change".
+func TestNilRootReportsAddRemove(t *testing.T) {
+	full := tr(root(seq(sp("PUBLISH loan.approved", ir.KindProducer, "Bus"))))
+	empty := &ir.CanonicalTrace{Flow: "f", Service: "loansvc", Root: nil}
+
+	if !anyType(Diff(full, empty), Removed) {
+		t.Errorf("a full→empty trace should report Removed, got %v", lines(Diff(full, empty)))
+	}
+	if !anyType(Diff(empty, full), Added) {
+		t.Errorf("an empty→full trace should report Added, got %v", lines(Diff(empty, full)))
+	}
+}
+
+// TestTierEscalationToOnePromoted is the regression for #5: a reclassification
+// into tier 1 (became consequential) is surfaced as tier-1, while a demotion
+// stays low.
+func TestTierEscalationToOnePromoted(t *testing.T) {
+	escalate := func(from, to int) []Change {
+		old := &ir.CanonicalSpan{Op: "processRefund", Kind: ir.KindInternal, Tier: from}
+		neu := &ir.CanonicalSpan{Op: "processRefund", Kind: ir.KindInternal, Tier: to}
+		return Diff(tr(root(seq(old))), tr(root(seq(neu))))
+	}
+	up := escalate(3, 1)
+	if !priorityOf(t, up, "processRefund", PriorityTier1) {
+		t.Errorf("tier 3→1 escalation should be tier-1: %v", lines(up))
+	}
+	down := escalate(1, 3)
+	if !priorityOf(t, down, "processRefund", PriorityLower) {
+		t.Errorf("tier 1→3 demotion should stay low: %v", lines(down))
+	}
+}
+
+func priorityOf(t *testing.T, cs []Change, op string, want Priority) bool {
+	t.Helper()
+	for _, c := range cs {
+		if c.Op == op && c.Type == Changed && strings.Contains(c.Detail, "tier ") {
+			return c.Priority == want
+		}
+	}
+	return false
+}
