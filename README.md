@@ -24,18 +24,20 @@ surfaces boundary effects no test exercises.
 Under construction, phase by phase. See:
 
 - `docs/` — the seven component specifications (the source of truth).
-- `docs`-aligned `example-loan-svc-artifacts.md` — a worked example of every
-  artifact flowmap emits.
-- The implementation plan (phased, with per-phase verification).
+- `docs/design/implementation_plan.md` — the phased plan, with per-phase
+  verification.
+- `testdata/fixtures/loansvc` — a complete worked-example service, with its
+  committed boundary contract and golden snapshots.
 
 ## Layout
 
 ```
-cmd/flowmap/   CLI: boundary [--check] | graph --entry | diff a b | coverage [--flows D] | version
+cmd/flowmap/   CLI: boundary [--check] | graph [--entry] | diff a b | coverage [--flows D] | version
 harness/       PUBLIC: in-process capture harness for flow tests
+capture/       PUBLIC: the raw-trace model — the harness's output and canon's input
 flow/          PUBLIC: the flow test DSL
 ir/            PUBLIC: the authoritative canonical IR (golden file shape)
-internal/      the analysis engine (canonjson, glob, model, tiermap, static/, canon/, diff/, coverage/, …)
+internal/      the analysis engine (config, canonjson, glob, model, tiermap, static/, canon/, diff/, coverage/, …)
 testdata/      hermetic fixture service (its own module) + committed goldens
 ```
 
