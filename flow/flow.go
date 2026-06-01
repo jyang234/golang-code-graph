@@ -15,6 +15,8 @@ package flow
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -46,12 +48,13 @@ type TB interface {
 
 // Flow is a declared flow under test, built fluently and run with Run.
 type Flow struct {
-	name     string
-	dir      string
-	tier     string
-	quiet    time.Duration
-	timeout  time.Duration
-	selfTest int
+	name      string
+	dir       string
+	tier      string
+	quiet     time.Duration
+	timeout   time.Duration
+	selfTest  int
+	configDir string
 
 	trigger func(*harness.App) *harness.Pending
 	expect  []expectation
@@ -63,9 +66,10 @@ type expectation struct {
 }
 
 // New starts a flow declaration. name is the stable flow id; it is also the
-// golden file stem.
+// golden file stem. tier is left unset so a service's .flowmap.yaml salience
+// threshold applies unless the flow overrides it with Tier.
 func New(name string) *Flow {
-	return &Flow{name: name, dir: "testdata/flows", tier: "warn", selfTest: defaultSelfTestRuns}
+	return &Flow{name: name, dir: "testdata/flows", selfTest: defaultSelfTestRuns}
 }
 
 // SelfTest sets how many times Run re-drives the flow for the determinism
@@ -115,12 +119,20 @@ func (f *Flow) ExpectExactlyOnce(op string) *Flow {
 	return f
 }
 
-// Tier sets the salience threshold retained in the snapshot (warn|info|debug|all;
-// default warn).
+// Tier overrides the salience threshold retained in the snapshot
+// (warn|info|debug|all). Unset, the service's .flowmap.yaml salience setting (or
+// the warn default) applies.
 func (f *Flow) Tier(tier string) *Flow { f.tier = tier; return f }
 
 // GoldensDir overrides where snapshots are read/written (default testdata/flows).
 func (f *Flow) GoldensDir(dir string) *Flow { f.dir = dir; return f }
+
+// ConfigDir sets the directory holding the service's .flowmap.yaml. Unset, the
+// file is discovered by walking up from the working directory (like go.mod). It
+// carries the same tier rules, pins, and canon knobs the static pipeline uses,
+// so canonicalization here tiers spans identically — the tier-map is one
+// classifier across both pipelines.
+func (f *Flow) ConfigDir(dir string) *Flow { f.configDir = dir; return f }
 
 // Quiescence overrides the quiet interval and hard timeout for capture.
 func (f *Flow) Quiescence(quiet, timeout time.Duration) *Flow {
@@ -139,7 +151,7 @@ func (f *Flow) Run(t TB, app *harness.App) {
 		return
 	}
 
-	cfg := &config.Config{Canon: config.CanonConfig{SalienceTier: f.tier}}
+	cfg := f.resolveConfig(t)
 	markers := make([]string, 0, len(f.expect))
 	for _, e := range f.expect {
 		markers = append(markers, e.op)
@@ -198,6 +210,63 @@ func (f *Flow) Run(t TB, app *harness.App) {
 			}
 			t.Errorf("flow %q: op %q declared ExpectExactlyOnce but observed %s", f.name, e.op, detail)
 		}
+	}
+}
+
+// configFileName is the per-service config document; it must match the static
+// pipeline's analyze.ConfigFile. It is duplicated here as a constant rather than
+// imported so the public flow package does not depend on the static analyzer.
+const configFileName = ".flowmap.yaml"
+
+// resolveConfig loads the service's .flowmap.yaml so canonicalization applies the
+// same tier rules, pins, and canon knobs the static boundary pipeline does — the
+// tier-map is one classifier across both pipelines. The per-flow Tier overrides
+// the config's salience threshold. A missing file yields defaults; a malformed
+// one is a hard error (matching the static loader).
+func (f *Flow) resolveConfig(t TB) *config.Config {
+	cfg := &config.Config{}
+	if path := f.findConfigFile(); path != "" {
+		b, err := os.ReadFile(path)
+		if err == nil {
+			loaded, lerr := config.Load(b)
+			if lerr != nil {
+				t.Fatalf("flow %q: load %s: %v", f.name, path, lerr)
+				return cfg
+			}
+			cfg = loaded
+		}
+	}
+	if f.tier != "" {
+		cfg.Canon.SalienceTier = f.tier // per-flow override
+	}
+	return cfg
+}
+
+// findConfigFile returns the path to the service's .flowmap.yaml: ConfigDir if
+// set, else discovered by walking up from the working directory (like go.mod
+// discovery). Returns "" when none is found.
+func (f *Flow) findConfigFile() string {
+	if f.configDir != "" {
+		p := filepath.Join(f.configDir, configFileName)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		return ""
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		p := filepath.Join(dir, configFileName)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
 	}
 }
 

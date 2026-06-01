@@ -1,12 +1,12 @@
 package flow_test
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,89 +17,15 @@ import (
 
 	"github.com/jyang234/golang-code-graph/flow"
 	"github.com/jyang234/golang-code-graph/harness"
+	"github.com/jyang234/golang-code-graph/internal/loansut"
 )
 
-// loanSUT is a miniature, OTel-instrumented loan service driven through the
-// public harness exactly as a target repo would drive its own router. The
-// applicant read and the credit-score call race (both perform real I/O), then a
-// sequential charge → publish → ledger, and a fire-and-forget audit write after
-// the response.
+// loanSUT is the shared loan SUT (internal/loansut) driven through the public
+// harness exactly as a target repo would drive its own router. extraPublishes
+// inject behavioral drift (a new published event) for the gate-fails-on-drift
+// test; the canonical SUT passes none.
 func loanSUT(extraPublishes ...string) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /loan-application", func(w http.ResponseWriter, r *http.Request) {
-		tr := otel.Tracer("loansvc")
-		ctx := r.Context()
-
-		evalCtx, eval := tr.Start(ctx, "evaluateApplication")
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			_, sp := tr.Start(evalCtx, "select", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			sp.SetAttributes(
-				attribute.String("db.system", "postgresql"),
-				attribute.String("db.statement", "SELECT name, income FROM applicants WHERE id = $1"),
-			)
-			time.Sleep(8 * time.Millisecond)
-			sp.End()
-		}()
-		go func() {
-			defer wg.Done()
-			scCtx, sc := tr.Start(evalCtx, "scorer.Score")
-			_, b := tr.Start(scCtx, "GET /score", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			b.SetAttributes(
-				attribute.String("http.request.method", "GET"),
-				attribute.String("peer.service", "credit-bureau"),
-				attribute.String("http.target", "/score/8412"),
-			)
-			time.Sleep(8 * time.Millisecond)
-			b.End()
-			sc.End()
-		}()
-		wg.Wait()
-		eval.End()
-
-		_, ch := tr.Start(ctx, "charge", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-		ch.SetAttributes(
-			attribute.String("http.request.method", "POST"),
-			attribute.String("peer.service", "payment-gw"),
-			attribute.String("http.target", "/charge/8412"),
-		)
-		ch.End()
-
-		_, pub := tr.Start(ctx, "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
-		pub.SetAttributes(attribute.String("messaging.destination.name", "loan.approved"))
-		pub.End()
-
-		// extraPublishes inject behavioral drift (a new published event) for the
-		// gate-fails-on-drift test; the canonical SUT passes none.
-		for _, event := range extraPublishes {
-			_, ep := tr.Start(ctx, "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
-			ep.SetAttributes(attribute.String("messaging.destination.name", event))
-			ep.End()
-		}
-
-		_, led := tr.Start(ctx, "ledger", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-		led.SetAttributes(
-			attribute.String("db.system", "postgres"),
-			attribute.String("db.statement", "INSERT INTO ledger (loan_id, amount) VALUES ($1, $2)"),
-		)
-		led.End()
-
-		auditCtx := context.WithoutCancel(ctx)
-		go func() {
-			time.Sleep(3 * time.Millisecond)
-			_, au := tr.Start(auditCtx, "audit", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			au.SetAttributes(
-				attribute.String("db.system", "postgres"),
-				attribute.String("db.statement", "INSERT INTO audit_log (loan_id) VALUES ($1)"),
-			)
-			au.End()
-		}()
-
-		w.WriteHeader(http.StatusOK)
-	})
-	return mux
+	return loansut.Handler(loansut.Options{ExtraPublishes: extraPublishes})
 }
 
 // TestLoanApplicationFlow is the headline acceptance: a target-style flow test
@@ -281,5 +207,58 @@ func TestSelfTestRunCount(t *testing.T) {
 	}
 	if n := count(flow.New("default")); n != 3 {
 		t.Errorf("default self-test drove the flow %d times, want 3", n)
+	}
+}
+
+// TestFlowAppliesConfigTierPin is the regression for the cross-pipeline tier-map
+// guarantee: a tier pin in the service's .flowmap.yaml must change the
+// behavioral golden, not just the static contract. specialOp is a first-party
+// internal op (tier 3, dropped at the warn threshold); pinning it to tier 1
+// retains it in the snapshot. Without the config, it is dropped.
+func TestFlowAppliesConfigTierPin(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /x", func(w http.ResponseWriter, r *http.Request) {
+		tr := otel.Tracer("svc")
+		_, s := tr.Start(r.Context(), "specialOp") // internal → tier 3 by default
+		s.End()
+		_, p := tr.Start(r.Context(), "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
+		p.SetAttributes(attribute.String("messaging.destination.name", "e"))
+		p.End()
+		w.WriteHeader(http.StatusOK)
+	})
+	app := harness.NewInProcess(t, mux, harness.WithService("svc"))
+	restore := setUpdate(t, true) // write goldens to temp dirs; we inspect them
+	defer restore()
+
+	goldenFor := func(configDir string) string {
+		gdir := t.TempDir()
+		flow.New("pin flow").
+			Trigger("POST", "/x").
+			Expect("PUBLISH e").
+			ConfigDir(configDir).
+			GoldensDir(gdir).
+			Quiescence(10*time.Millisecond, time.Second).
+			Run(t, app)
+		b, err := os.ReadFile(filepath.Join(gdir, "pin_flow.golden.json"))
+		if err != nil {
+			t.Fatalf("read golden: %v", err)
+		}
+		return string(b)
+	}
+
+	pinDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pinDir, ".flowmap.yaml"),
+		[]byte("pins:\n  - identity: \"specialOp\"\n    tier: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withPin := goldenFor(pinDir)
+	withoutPin := goldenFor(t.TempDir()) // empty dir → no config → defaults
+
+	if !strings.Contains(withPin, "specialOp") {
+		t.Errorf("a tier-1 pin should retain specialOp in the golden:\n%s", withPin)
+	}
+	if strings.Contains(withoutPin, "specialOp") {
+		t.Errorf("without the pin, specialOp (tier 3) should be dropped:\n%s", withoutPin)
 	}
 }

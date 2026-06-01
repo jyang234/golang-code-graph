@@ -13,7 +13,7 @@ package await
 import (
 	"time"
 
-	"github.com/jyang234/golang-code-graph/internal/capture"
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 

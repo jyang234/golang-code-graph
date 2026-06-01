@@ -7,9 +7,9 @@
 // quiescence and refuses to surface a truncated trace.
 //
 // This package is part of the stable public surface (plan [C1]); its exported
-// types are the consumer contract. Internally it adapts real OTel spans into
-// flowmap's OTel-free internal span model (decision D8), so canonicalization and
-// everything downstream never import OTel.
+// types are the consumer contract. Internally it adapts real OTel spans into the
+// OTel-free public capture model (package capture, decision D8), so
+// canonicalization and everything downstream never import OTel.
 package harness
 
 import (
@@ -30,9 +30,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/await"
 	"github.com/jyang234/golang-code-graph/internal/canon/opkey"
-	"github.com/jyang234/golang-code-graph/internal/capture"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 

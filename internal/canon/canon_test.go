@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jyang234/golang-code-graph/internal/capture"
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/config"
 	"github.com/jyang234/golang-code-graph/ir"
 )

@@ -19,11 +19,11 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/canon/opkey"
 	"github.com/jyang234/golang-code-graph/internal/canon/promote"
 	sqlnorm "github.com/jyang234/golang-code-graph/internal/canon/sql"
 	"github.com/jyang234/golang-code-graph/internal/canonjson"
-	"github.com/jyang234/golang-code-graph/internal/capture"
 	"github.com/jyang234/golang-code-graph/internal/config"
 	"github.com/jyang234/golang-code-graph/internal/model"
 	"github.com/jyang234/golang-code-graph/internal/tiermap"

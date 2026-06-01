@@ -3,7 +3,6 @@ package harness_test
 import (
 	"context"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,90 +10,18 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/harness"
 	"github.com/jyang234/golang-code-graph/internal/canon"
-	"github.com/jyang234/golang-code-graph/internal/capture"
+	"github.com/jyang234/golang-code-graph/internal/loansut"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 
-// instrumentedSUT is a miniature loan service wired with real OTel spans, used to
-// exercise the harness end to end. The applicant read and the credit-score call
-// run concurrently; an audit write fires from a goroutine after the response, so
-// the harness must drain it before declaring completeness. slowLeg lengthens the
-// credit-bureau call to prove the concurrency classification is timing-stable.
+// instrumentedSUT is the shared loan SUT (internal/loansut) configured for the
+// harness suite: slowLeg lengthens the credit-bureau call so the concurrency
+// classification can be proven timing-stable.
 func instrumentedSUT(slowLeg time.Duration) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /loan-application", func(w http.ResponseWriter, r *http.Request) {
-		tr := otel.Tracer("sut")
-		ctx := r.Context()
-
-		evalCtx, eval := tr.Start(ctx, "evaluateApplication")
-		var wg sync.WaitGroup
-		wg.Add(2)
-		// The two legs are dispatched together and both perform real I/O, so their
-		// spans overlap in time — a genuine race the canonicalizer reads as
-		// concurrent. (Instantaneous spans that happen not to overlap are the
-		// ambiguous case the determinism self-test is meant to surface.)
-		go func() {
-			defer wg.Done()
-			_, sp := tr.Start(evalCtx, "select", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			sp.SetAttributes(
-				attribute.String("db.system", "postgresql"),
-				attribute.String("db.statement", "SELECT name, income FROM applicants WHERE id = $1"),
-			)
-			time.Sleep(10 * time.Millisecond)
-			sp.End()
-		}()
-		go func() {
-			defer wg.Done()
-			scCtx, sc := tr.Start(evalCtx, "scorer.Score")
-			_, b := tr.Start(scCtx, "GET /score", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			b.SetAttributes(
-				attribute.String("http.request.method", "GET"),
-				attribute.String("peer.service", "credit-bureau"),
-				attribute.String("http.target", "/score/8412"),
-			)
-			time.Sleep(10*time.Millisecond + slowLeg)
-			b.End()
-			sc.End()
-		}()
-		wg.Wait()
-		eval.End()
-
-		_, ch := tr.Start(ctx, "charge", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-		ch.SetAttributes(
-			attribute.String("http.request.method", "POST"),
-			attribute.String("peer.service", "payment-gw"),
-			attribute.String("http.target", "/charge/8412"),
-		)
-		ch.End()
-
-		_, pub := tr.Start(ctx, "publish", oteltrace.WithSpanKind(oteltrace.SpanKindProducer))
-		pub.SetAttributes(attribute.String("messaging.destination.name", "loan.approved"))
-		pub.End()
-
-		_, led := tr.Start(ctx, "ledger", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-		led.SetAttributes(
-			attribute.String("db.system", "postgres"),
-			attribute.String("db.statement", "INSERT INTO ledger (loan_id, amount) VALUES ($1, $2)"),
-		)
-		led.End()
-
-		// Fire-and-forget audit: starts a span after the response is on its way.
-		auditCtx := context.WithoutCancel(ctx)
-		go func() {
-			time.Sleep(5 * time.Millisecond)
-			_, au := tr.Start(auditCtx, "audit", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
-			au.SetAttributes(
-				attribute.String("db.system", "postgres"),
-				attribute.String("db.statement", "INSERT INTO audit_log (loan_id) VALUES ($1)"),
-			)
-			au.End()
-		}()
-
-		w.WriteHeader(http.StatusOK)
-	})
-	return mux
+	return loansut.Handler(loansut.Options{Tracer: "sut", SlowLeg: slowLeg})
 }
 
 func happyMarkers() []string {

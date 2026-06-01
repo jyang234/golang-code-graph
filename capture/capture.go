@@ -1,8 +1,11 @@
-// Package capture defines flowmap's internal span model and the harness's
-// output: a complete, scoped trace for exactly one flow (trace-capture-harness
-// spec §7). It is deliberately free of any OpenTelemetry dependency — the
+// Package capture is flowmap's PUBLIC raw-trace model and the harness's output:
+// a complete, scoped trace for exactly one flow (trace-capture-harness spec §7).
+// It is the stable data contract handed from the harness to canonicalization —
+// the raw counterpart of the canonical ir.CanonicalTrace — so an advanced
+// consumer can drive a capture and inspect the result directly, not only through
+// the flow DSL. It is deliberately free of any OpenTelemetry dependency: the
 // harness adapts real OTel spans into this model, so the canonicalizer and
-// everything downstream consume a stable internal shape and never import OTel
+// everything downstream consume a stable shape and never import OTel
 // (decision D8).
 //
 // This package owns three responsibilities that do not need a tracing backend:
