@@ -128,6 +128,27 @@ func TestConsumeSeamTiers(t *testing.T) {
 	}
 }
 
+// TestResultCursorIsNotDBBoundary proves a result-decoding method (Row.Scan)
+// is not treated as a DB boundary call: the round-trip already happened in the
+// QueryRow* call, so Scan must not surface as a second, tier-1 DB edge.
+func TestResultCursorIsNotDBBoundary(t *testing.T) {
+	ext, prog := setup(t)
+	h := ext.Hints()
+	read := statictest.FindFunc(prog, "store.Loans).SelectApplicant")
+	scan, _ := callTo(read, "Row).Scan")
+	if scan == nil {
+		t.Fatal("no Row.Scan call in SelectApplicant")
+	}
+	if h.IsDB(scan) {
+		t.Errorf("%s should not be a DB boundary (it decodes an already-fetched row)", scan.RelString(nil))
+	}
+	// The query that actually hits the database still is a DB boundary.
+	q, _ := callTo(read, "QueryRow")
+	if q == nil || !h.IsDB(q) {
+		t.Error("QueryRow* should be a DB boundary")
+	}
+}
+
 func TestExternalCallIsIONotRead(t *testing.T) {
 	ext, prog := setup(t)
 	// A GET to a peer service must be effect=io (tier 1 ext-sync), NOT effect=read

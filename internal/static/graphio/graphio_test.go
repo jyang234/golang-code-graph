@@ -94,6 +94,32 @@ func TestNodeTierFromOutgoingEdges(t *testing.T) {
 	}
 }
 
+// TestDBReaderTieredByQueryNotScan proves a DB read is tier 2 (ext-read), not
+// inflated to tier 1 by the result-cursor Scan call, and that Scan does not leak
+// as a DB boundary edge. This is the read-vs-write distinction: a SELECT is
+// tier 2, a mutation tier 1.
+func TestDBReaderTieredByQueryNotScan(t *testing.T) {
+	g, err := graphio.Build(analyzeFixture(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range g.Edges {
+		if strings.Contains(e.To, "boundary:db Scan") {
+			t.Errorf("result-cursor Scan leaked as a DB boundary edge: %q", e.To)
+		}
+	}
+	byFQN := map[string]graphio.Node{}
+	for _, n := range g.Nodes {
+		byFQN[n.FQN] = n
+	}
+	if rd := byFQN["(*example.com/loansvc/internal/store.Loans).SelectApplicant"]; rd.Tier != 2 {
+		t.Errorf("DB reader SelectApplicant tier = %d, want 2 (a read, not inflated by Scan)", rd.Tier)
+	}
+	if wr := byFQN["(*example.com/loansvc/internal/store.Loans).InsertLedger"]; wr.Tier != 1 {
+		t.Errorf("DB writer InsertLedger tier = %d, want 1 (mutate)", wr.Tier)
+	}
+}
+
 // TestGraphShowsConsumeSeam proves the bus consume registration is a visible,
 // tier-1 boundary edge (symmetric to the publish seam), not invisible compute.
 func TestGraphShowsConsumeSeam(t *testing.T) {
