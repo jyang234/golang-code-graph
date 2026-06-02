@@ -10,3 +10,4 @@ linters:
   exclusions:
     paths:
       - testdata
+      - examples

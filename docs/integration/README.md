@@ -9,6 +9,11 @@ team.
 These files are additive: your services emit exactly as they do today, and your
 Jaeger/debug pipelines are untouched.
 
+> **Want a working end to end first?** `examples/posthoc-e2e/` is a runnable,
+> verified reference — a real OTel Collector + an OTLP-exporting service →
+> `flowmap behavior ingest` — to diff your setup against. Start there if the
+> collector/baggagecopy wiring is new to you.
+
 ---
 
 ## The three conventions
