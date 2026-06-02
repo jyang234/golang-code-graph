@@ -147,3 +147,44 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// TestRealCollectorSampleEffects ties the authoritative collector-format sample
+// to the gate path: decoding real ptrace.JSONMarshaler output, grouping, and
+// canonicalizing recovers the same boundary-effect set the in-process golden
+// asserts — so the decoder is pinned to collector output end to end.
+func TestRealCollectorSampleEffects(t *testing.T) {
+	spans, err := otlpjson.DecodeFile("../../testdata/otlp/loansvc.collector.otlp.json")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	flows := Group(spans)
+	if len(flows) != 1 {
+		t.Fatalf("got %d fragments, want 1", len(flows))
+	}
+	tr, err := canon.Canonicalize(flows[0].Flow, nil)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	got := BoundaryEffects(tr.Root)
+	want := []string{
+		"HTTP GET credit-bureau /score/{id}",
+		"HTTP POST /loan-application",
+		"HTTP POST payment-gw /charge/{id}",
+		"PUBLISH loan.approved",
+	}
+	if !equalStrs(got, want) {
+		t.Errorf("boundary effects from the real sample = %v, want %v", got, want)
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

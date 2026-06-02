@@ -126,3 +126,55 @@ func TestDecodeEmpty(t *testing.T) {
 		t.Fatalf("got %d spans, want 0", len(spans))
 	}
 }
+
+// TestDecodeCollectorSample validates the decoder against the authoritative
+// collector-format sample (testdata/otlp/loansvc.collector.otlp.json), produced
+// by the OTel Collector's own ptrace.JSONMarshaler via testdata/otlpgen. It pins
+// the real wire quirks: hex (not base64) ids kept as opaque strings, an omitted
+// parentSpanId on the root, kind as int, nanos as a string, and intValue as a
+// quoted string.
+func TestDecodeCollectorSample(t *testing.T) {
+	spans, err := DecodeFile("../../testdata/otlp/loansvc.collector.otlp.json")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(spans) != 7 {
+		t.Fatalf("got %d spans, want 7", len(spans))
+	}
+	byID := map[string]capture.Span{}
+	for _, s := range spans {
+		byID[s.ID] = s
+	}
+	root, ok := byID["0000000000000001"]
+	if !ok {
+		t.Fatalf("missing root span id (hex preserved as opaque string); ids=%v", keysOf(byID))
+	}
+	if root.Kind != ir.KindServer {
+		t.Errorf("root kind = %q, want server", root.Kind)
+	}
+	if root.ParentID != "" {
+		t.Errorf("root parentSpanId = %q, want empty (omitted in collector JSON)", root.ParentID)
+	}
+	if got := root.Attr("service.name"); got != "loansvc" {
+		t.Errorf("service.name = %q, want loansvc (resource attr folded)", got)
+	}
+	if got := root.Attr("http.response.status_code"); got != "200" {
+		t.Errorf("intValue attr = %q, want \"200\" (quoted-int proto-JSON)", got)
+	}
+	// every child links to a real in-set parent (hex linkage intact).
+	for _, s := range spans {
+		if s.ParentID != "" {
+			if _, ok := byID[s.ParentID]; !ok {
+				t.Errorf("span %s has dangling parent %s", s.ID, s.ParentID)
+			}
+		}
+	}
+}
+
+func keysOf(m map[string]capture.Span) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

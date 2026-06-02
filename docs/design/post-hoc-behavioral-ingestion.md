@@ -18,8 +18,19 @@ per-(slug,service) `*.effects.json` golden + `*.flow.md` view; without it,
 (D-PH3) and skip-on-no-capture (D-PH2), failing non-zero on a new boundary
 effect (`[CONTRACT] ADDED …`). CODEOWNERS routes `**/*.effects.json`. Dogfooded
 end-to-end against the `loansut` fixture (`internal/ingest/dogfood_test.go`).
-Deferred: pinning the decoder against a real collector sample, and the optional
-per-flow `expectations.yaml` for opt-in cardinality (D-PH5).
+
+The decoder is **pinned to authoritative collector output**: `testdata/otlpgen`
+(a standalone module, so `pdata` stays off the engine's graph) renders a
+loansvc-shaped trace with the OTel Collector's own `ptrace.JSONMarshaler` — the
+exact encoder the `file` exporter uses — into
+`testdata/otlp/loansvc.collector.otlp.json`, which the decoder and gate-path
+tests assert against. This confirmed the real wire shape (hex ids kept opaque,
+omitted root `parentSpanId`, int `kind`, string nanos, quoted `intValue`,
+`scopeSpans` spelling). The only remaining real-world step is confirming against
+an adopter's specific collector version/config — a diff against this sample.
+
+Deferred: the optional per-flow `expectations.yaml` for opt-in cardinality
+(D-PH5).
 
 **Audience:** the flowmap team (the build asks below) and adopting service teams
 (the conventions in §4 and `docs/integration/`).
