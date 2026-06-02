@@ -130,18 +130,21 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 
 // nodeTier ranks a function by what it does, not by what it is. A root is its
 // inbound entry tier. Every other function takes the min over its direct
-// outgoing edge tiers, falling back to the compute/first-party tier (the
-// self-edge) when it reaches no consequential boundary. This is direct, not
-// transitive — a helper that performs a DB read surfaces as tier 2 and one that
-// publishes as tier 1, while a function that merely calls such helpers does not
-// inherit their tier (so salience does not propagate up from main). Without this,
-// a self-edge classification left every non-root function stuck at compute.
+// outgoing edge tiers, falling back to the function's own compute floor (its
+// internal same-package self-edge, tier 3 by default) when it reaches no
+// consequential boundary. This is direct, not transitive — a helper that
+// performs a DB read surfaces as tier 2 and one that publishes as tier 1, while a
+// function that merely calls such helpers does not inherit their tier (so
+// salience does not propagate up from main). Without this, classifying a function
+// by its self-edge alone left every non-root function stuck at the compute floor.
 func nodeTier(ext *features.Extractor, fn *ssa.Function, isRoot bool, outEdges []Edge) int {
 	if isRoot {
 		t, _ := ext.Classify(ext.Inbound(fn.RelString(nil), fallible(fn)))
 		return t
 	}
-	tier, _ := ext.Classify(ext.Edge(fn, fn, nil)) // self-edge: the compute/first-party floor
+	// The self-edge (fn→fn) is the function's compute floor: internal,
+	// same-package, no effect — tier 3 under the default rules.
+	tier, _ := ext.Classify(ext.Edge(fn, fn, nil))
 	for _, e := range outEdges {
 		if e.Tier < tier {
 			tier = e.Tier
