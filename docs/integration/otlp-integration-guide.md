@@ -141,13 +141,19 @@ e2e investment immediately and gives teams a reason to add the tag.
 Once a flow reliably exercises a stable set of boundary effects:
 
 ```sh
-# snapshot its effect set + rendered view; commit the ones you want gated.
+# snapshot its effect set + rendered views; commit the ones you want gated.
 flowmap behavior ingest --flows-dir flows/ --update <traces>
 git add flows/<slug>.<svc>.effects.json flows/<slug>.<svc>.flow.md
 
 # CI enforces every committed golden (no --update):
 flowmap behavior ingest --flows-dir flows/ <traces>
 ```
+
+`--update` also writes a **cross-service** `flows/<slug>.system.flow.md`: the
+whole-flow choreography across *every* service the flow touched (not split per
+service), so you can see everything the flow interacts with end to end. Only the
+per-service `*.effects.json` gates; the `.flow.md` views (per-service and system)
+are committed for human review.
 
 The gate fails **only on a new boundary effect** (`[CONTRACT] ADDED …`) — a new
 published event, dependency, or entrypoint. A missing/under-exercised effect is

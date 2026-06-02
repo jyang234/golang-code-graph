@@ -188,3 +188,35 @@ func equalStrs(a, b []string) bool {
 	}
 	return true
 }
+
+// TestWholeFlowsKeepsCrossService: WholeFlows (the render unit) keeps one
+// cross-service tree where Group (the gate unit) splits per service.
+func TestWholeFlowsKeepsCrossService(t *testing.T) {
+	spans := []capture.Span{
+		span("1", "", "loan", "loansvc", ir.KindServer, nil),
+		span("2", "1", "loan", "loansvc", ir.KindClient, map[string]string{"peer.service": "credit-bureau", "http.request.method": "GET", "http.route": "/score/{id}"}),
+		span("3", "2", "loan", "credit-bureau", ir.KindServer, map[string]string{"http.request.method": "GET", "http.route": "/score/{id}"}),
+		span("4", "1", "loan", "loansvc", ir.KindProducer, map[string]string{"messaging.destination.name": "loan.approved"}),
+		span("5", "4", "loan", "notifier", ir.KindConsumer, map[string]string{"messaging.destination.name": "loan.approved"}),
+	}
+	if g := Group(spans); len(g) != 3 {
+		t.Fatalf("Group should split per service: got %d, want 3", len(g))
+	}
+	wf := WholeFlows(spans)
+	if len(wf) != 1 {
+		t.Fatalf("WholeFlows: got %d, want 1 cross-service tree", len(wf))
+	}
+	f := wf[0]
+	if f.Service != "loansvc" {
+		t.Errorf("entry service = %q, want loansvc", f.Service)
+	}
+	if f.Synthesized {
+		t.Errorf("single server entry should root without synthesis")
+	}
+	if f.Flow.Root == nil || f.Flow.Root.ID != "1" {
+		t.Errorf("root should be the loansvc entry (id 1), got %+v", f.Flow.Root)
+	}
+	if len(f.Flow.Spans) != 5 {
+		t.Errorf("whole-flow should keep all 5 spans across services, got %d", len(f.Flow.Spans))
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/canon"
 	"github.com/jyang234/golang-code-graph/internal/coverage"
 	"github.com/jyang234/golang-code-graph/internal/diff"
@@ -265,7 +266,10 @@ func cmdIngest(args []string) error {
 
 	switch {
 	case *update && *flowsDir != "":
-		return updateEffectGoldens(*flowsDir, frags)
+		if err := updateEffectGoldens(*flowsDir, frags); err != nil {
+			return err
+		}
+		return writeSystemDiagrams(*flowsDir, spans)
 	case *flowsDir != "":
 		return gateEffectGoldens(*flowsDir, frags)
 	default:
@@ -384,6 +388,31 @@ func gateEffectGoldens(dir string, frags []ingestFragment) error {
 		return fmt.Errorf("%d new boundary effect(s) not in the committed golden; review and run --update if intended", len(added))
 	}
 	fmt.Println("\nbehavioral gate: no new boundary effects")
+	return nil
+}
+
+// writeSystemDiagrams emits one cross-service <slug>.system.flow.md per flow: the
+// whole-flow choreography across every service the flow touched (the diagram
+// unit, design D-PH1), distinct from the per-service gated artifacts. It is a
+// view — never gated — so a fragment with no clean entry (synthesized root) is
+// rendered best-effort with a note rather than skipped.
+func writeSystemDiagrams(dir string, spans []capture.Span) error {
+	for _, wf := range ingest.WholeFlows(spans) {
+		tr, err := canon.Canonicalize(wf.Flow, nil)
+		if err != nil {
+			fmt.Printf("  - %-24s cross-service view skipped: %v\n", wf.Slug, err)
+			continue
+		}
+		stem := filepath.Join(dir, golden.Slug(wf.Slug)+".system")
+		if err := os.WriteFile(stem+".flow.md", []byte(render.SystemMermaid(tr)), 0o644); err != nil {
+			return err
+		}
+		note := ""
+		if wf.Synthesized {
+			note = " (no single entry — best-effort)"
+		}
+		fmt.Printf("wrote %s.flow.md (cross-service view%s)\n", stem, note)
+	}
 	return nil
 }
 

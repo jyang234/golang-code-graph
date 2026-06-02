@@ -124,3 +124,38 @@ func mustContain(t *testing.T, out, want string) {
 		t.Errorf("output missing %q:\n%s", want, out)
 	}
 }
+
+// TestSystemMermaidCrossService: the whole-flow renderer switches lifelines per
+// span's owning Service, draws the cross-service hops, and collapses a callee's
+// own entry span (no redundant self-hop).
+func TestSystemMermaidCrossService(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "loansvc",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /loan-application", Kind: ir.KindServer, Service: "loansvc",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "HTTP GET credit-bureau /score/{id}", Kind: ir.KindClient, Peer: "credit-bureau", Service: "loansvc",
+					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+						{Op: "HTTP GET /score", Kind: ir.KindServer, Service: "credit-bureau",
+							Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+								{Op: "DB postgres SELECT bureau", Kind: ir.KindClient, Peer: "postgres", Service: "credit-bureau"},
+							}}}},
+					}}}},
+			}}},
+		},
+	}
+	out := SystemMermaid(tr)
+	for _, want := range []string{
+		"Client->>loansvc: HTTP POST /loan-application",
+		"loansvc->>credit_bureau: HTTP GET credit-bureau /score/{id}",
+		"credit_bureau->>postgres: DB postgres SELECT bureau",
+		"participant loansvc", "participant credit_bureau", "participant postgres",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "credit_bureau->>credit_bureau") {
+		t.Errorf("callee entry span drew a redundant self-hop:\n%s", out)
+	}
+}

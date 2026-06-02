@@ -126,6 +126,7 @@ func (c *canonicalizer) build(s *capture.Span, childrenOf map[string][]*capture.
 		Op:        op,
 		Kind:      s.Kind,
 		Peer:      peer,
+		Service:   s.Attr("service.name"), // owning lifeline; "" in-process (omitempty)
 		Status:    normalizeStatus(s.Status),
 		ErrorType: s.ErrorType,
 		Attrs:     c.projectAttrs(s),

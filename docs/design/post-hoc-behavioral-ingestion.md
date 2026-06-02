@@ -16,8 +16,11 @@ attribute allowlist), and the **stage-2 opt-in gate**: `--update` rebases the
 per-(slug,service) `*.effects.json` golden + `*.flow.md` view; without it,
 `--flows-dir` enforces each committed golden with **no-new-effects** semantics
 (D-PH3) and skip-on-no-capture (D-PH2), failing non-zero on a new boundary
-effect (`[CONTRACT] ADDED …`). CODEOWNERS routes `**/*.effects.json`. Dogfooded
-end-to-end against the `loansut` fixture (`internal/ingest/dogfood_test.go`).
+effect (`[CONTRACT] ADDED …`). CODEOWNERS routes `**/*.effects.json`. `--update`
+also emits a **cross-service** `<slug>.system.flow.md` (`ingest.WholeFlows` +
+`render.SystemMermaid`) — the whole-flow choreography across every service the
+flow touched, a non-gated view. Dogfooded end-to-end against the `loansut`
+fixture (`internal/ingest/dogfood_test.go`).
 
 The decoder is **pinned to authoritative collector output**: `testdata/otlpgen`
 (a standalone module, so `pdata` stays off the engine's graph) renders a
@@ -122,11 +125,17 @@ The out-of-process analog of `capture.Scope` (`capture/capture.go:107`). A
 trace, so **one slug spans multiple traces**. Two reductions of the same spans,
 for two consumers (resolved decision D-PH1):
 
-- **Assertion / coverage unit = the slug.** Union the boundary effects across all
-  traces carrying `flowmap.flow=<slug>`; that union is the gated set.
-- **Diagram unit = one representative trace.** Pick one trace (the largest) per
-  slug for the `*.flow.md`, noted as illustrative — the diagram shows a single
-  execution, the assertion covers the flow class.
+- **Assertion / coverage unit = the slug, split per service** (`ingest.Group`,
+  D-PH4). Each `(slug, service)` fragment is gated against its own
+  `*.effects.json`; that is the verdict.
+- **Diagram unit = the whole cross-service flow** (`ingest.WholeFlows`). For
+  rendering we do **not** split per service — we assemble one tree spanning every
+  service the flow touched, joined by `parent_span_id` (causal links survive in
+  OTLP, so no cross-clock comparison is needed), and render it with
+  `render.SystemMermaid` into `<slug>.system.flow.md`, switching lifelines per
+  span's owning `service.name` (carried on `ir.CanonicalSpan.Service`). This is a
+  view — never gated — so it shows everything the flow interacts with end to end,
+  while the per-service set is what actually gates.
 
 Select only spans carrying a `flowmap.flow` attribute; support `Correlation-Id`
 as an alternate key (already propagated today). A trace with no `flowmap.flow`
@@ -230,8 +239,11 @@ helper.
 ## 5. Decisions
 
 ### Resolved
-- **D-PH1 — grouping unit.** Slug for the assertion/coverage set; one
-  representative trace for the diagram (§[P10.2]).
+- **D-PH1 — grouping unit.** Slug-per-service for the assertion/coverage set
+  (the gate); the **whole cross-service flow** for the diagram — `ingest.WholeFlows`
+  + `render.SystemMermaid` → `<slug>.system.flow.md`, lifelines switched per span's
+  owning service (§[P10.2]). Gating stays per-service (D-PH4); the cross-service
+  view is render-only, never gated.
 - **D-PH2 — completeness.** Stage 1 trusts the file but reports span/trace counts
   and synthetic-root notes, never fails. Stage 2 gates a flow only when the
   fragment has a clean inbound entry span (a non-synthesized root); a synthesized

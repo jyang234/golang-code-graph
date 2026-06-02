@@ -45,9 +45,16 @@ type CanonicalTrace struct {
 
 // CanonicalSpan is one normalized operation in the flow tree.
 type CanonicalSpan struct {
-	Op        string            `json:"op"`
-	Kind      Kind              `json:"kind"`
-	Peer      string            `json:"peer"`
+	Op   string `json:"op"`
+	Kind Kind   `json:"kind"`
+	Peer string `json:"peer"`
+	// Service is the owning service (OTel resource service.name) for this
+	// operation. It is empty for an in-process single-service capture (the trace's
+	// Service is the one lifeline) and populated for an out-of-process whole-flow
+	// capture that crosses services, so the renderer can place each operation on
+	// its owning lifeline. Omitted when empty, so single-service goldens are
+	// unaffected.
+	Service   string            `json:"service,omitempty"`
 	Tier      int               `json:"tier"`
 	Status    string            `json:"status,omitempty"`
 	ErrorType string            `json:"errorType,omitempty"`

@@ -83,6 +83,74 @@ func Group(spans []capture.Span) []FlowCapture {
 // observational and never gates, and the caller surfaces a Synthesized fragment
 // as a warning (design D-PH2).
 func assemble(slug, svc string, spans []capture.Span) FlowCapture {
+	spans, root, trigger, synth := assembleRoot(svc, spans)
+	return FlowCapture{
+		Slug:        slug,
+		Service:     svc,
+		Synthesized: synth,
+		Flow: capture.CapturedFlow{
+			Flow:     slug,
+			Service:  svc,
+			Trigger:  trigger,
+			Mode:     capture.ModePostHoc,
+			Spans:    spans,
+			Root:     root,
+			Complete: true,
+		},
+	}
+}
+
+// WholeFlows is the cross-service analog of Group, for rendering rather than
+// gating (design D-PH1: the diagram unit). It buckets spans by flow slug only —
+// no per-service split — and assembles one tree spanning every service the flow
+// touched, joined by parent_span_id (causal links survive in OTLP, so no
+// cross-clock comparison is needed). The result feeds canonicalization and the
+// cross-service renderer; it is never gated. The trace's Service is the entry
+// service (the root span's owning service).
+func WholeFlows(spans []capture.Span) []FlowCapture {
+	buckets := map[string][]capture.Span{}
+	var order []string
+	for _, s := range spans {
+		slug := s.Attr(FlowKey)
+		if slug == "" {
+			continue
+		}
+		if _, ok := buckets[slug]; !ok {
+			order = append(order, slug)
+		}
+		buckets[slug] = append(buckets[slug], s)
+	}
+	sort.Strings(order)
+
+	out := make([]FlowCapture, 0, len(order))
+	for _, slug := range order {
+		spans, root, trigger, synth := assembleRoot(slug, buckets[slug])
+		svc := root.Attr(serviceKey) // the entry service owns the trace lifeline
+		out = append(out, FlowCapture{
+			Slug:        slug,
+			Service:     svc,
+			Synthesized: synth,
+			Flow: capture.CapturedFlow{
+				Flow:     slug,
+				Service:  svc,
+				Trigger:  trigger,
+				Mode:     capture.ModePostHoc,
+				Spans:    spans,
+				Root:     root,
+				Complete: true,
+			},
+		})
+	}
+	return out
+}
+
+// assembleRoot finds (or synthesizes) the entry root for a span set. A single
+// parentless server/consumer span is the natural entry; otherwise it synthesizes
+// an internal root owning every parentless span, so canonicalization sees one
+// tree. synthName names the synthetic root. It returns the possibly-extended span
+// set (the synthetic root appended), the root pointer into that set, the trigger
+// kind, and whether a root was synthesized.
+func assembleRoot(synthName string, spans []capture.Span) ([]capture.Span, *capture.Span, capture.TriggerKind, bool) {
 	ids := make(map[string]bool, len(spans))
 	for i := range spans {
 		ids[spans[i].ID] = true
@@ -94,41 +162,25 @@ func assemble(slug, svc string, spans []capture.Span) FlowCapture {
 		}
 	}
 
-	fc := FlowCapture{Slug: slug, Service: svc}
-	var root *capture.Span
 	trigger := capture.TriggerHTTP
 	if len(parentless) == 1 {
 		s := &spans[parentless[0]]
 		switch s.Kind {
 		case ir.KindServer:
-			root, trigger = s, capture.TriggerHTTP
+			return spans, s, capture.TriggerHTTP, false
 		case ir.KindConsumer:
-			root, trigger = s, capture.TriggerEvent
+			return spans, s, capture.TriggerEvent, false
 		}
 	}
-	if root == nil {
-		syn := capture.Span{
-			ID:    "flowmap-root:" + slug + ":" + svc,
-			Name:  svc,
-			Kind:  ir.KindInternal,
-			Attrs: map[string]string{},
-		}
-		for _, i := range parentless {
-			spans[i].ParentID = syn.ID
-		}
-		spans = append(spans, syn)
-		root = &spans[len(spans)-1]
-		fc.Synthesized = true
+	syn := capture.Span{
+		ID:    "flowmap-root:" + synthName,
+		Name:  synthName,
+		Kind:  ir.KindInternal,
+		Attrs: map[string]string{},
 	}
-
-	fc.Flow = capture.CapturedFlow{
-		Flow:     slug,
-		Service:  svc,
-		Trigger:  trigger,
-		Mode:     capture.ModePostHoc,
-		Spans:    spans,
-		Root:     root,
-		Complete: true,
+	for _, i := range parentless {
+		spans[i].ParentID = syn.ID
 	}
-	return fc
+	spans = append(spans, syn)
+	return spans, &spans[len(spans)-1], trigger, true
 }

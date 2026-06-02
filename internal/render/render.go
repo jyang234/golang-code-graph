@@ -40,6 +40,117 @@ type renderer struct {
 	alias  map[string]string // lifeline label -> mermaid-safe id
 }
 
+// SystemMermaid renders a whole-flow, CROSS-SERVICE sequence diagram from a trace
+// whose spans carry per-span Service (an out-of-process whole-flow capture). Where
+// Mermaid pins one self lifeline, this switches lifelines per span so the diagram
+// shows every service the flow touched and the hops between them — what a service
+// interacts with end to end (post-hoc design: the diagram unit is the whole
+// flow, not the per-service gate fragment). It is a view, never gated.
+func SystemMermaid(t *ir.CanonicalTrace) string {
+	var b strings.Builder
+	b.WriteString("sequenceDiagram\n")
+	if t.Root == nil {
+		return b.String()
+	}
+	r := &renderer{alias: map[string]string{}}
+	caller := callerLabel(t.Root)
+	entry := landingOf(t.Root, t.Service)
+
+	// Lifelines in a fixed order: caller, entry service, then every other
+	// service/peer the flow reaches, sorted.
+	lifelines := map[string]bool{}
+	collectSystemLifelines(t.Root, t.Service, lifelines)
+	order := []string{caller, entry}
+	rest := make([]string, 0, len(lifelines))
+	for l := range lifelines {
+		if l != caller && l != entry {
+			rest = append(rest, l)
+		}
+	}
+	sort.Strings(rest)
+	order = append(order, rest...)
+
+	used := map[string]bool{}
+	for _, name := range order {
+		if _, ok := r.alias[name]; ok {
+			continue
+		}
+		id := uniqueID(sanitize(name), used)
+		r.alias[name] = id
+		b.WriteString("    participant " + id + " as " + name + "\n")
+	}
+
+	b.WriteString("    " + r.msg(caller, entry, label(t.Root)))
+	r.writeSystemGroups(&b, t.Root.Children, entry, t.Service, "    ")
+	return b.String()
+}
+
+// landingOf is the lifeline an operation lands on: for an inbound entry
+// (server/consumer) or internal op, its own owning service; for an outbound call
+// (client/producer), the counterparty Peer. The fallback (the trace's Service)
+// covers a span with no folded service.name.
+func landingOf(s *ir.CanonicalSpan, fallback string) string {
+	switch s.Kind {
+	case ir.KindClient, ir.KindProducer:
+		if s.Peer != "" {
+			return s.Peer
+		}
+		return lifelineLabel(s.Service, fallback)
+	default: // server, consumer, internal
+		return lifelineLabel(s.Service, fallback)
+	}
+}
+
+func collectSystemLifelines(s *ir.CanonicalSpan, fallback string, into map[string]bool) {
+	if s == nil {
+		return
+	}
+	into[landingOf(s, fallback)] = true
+	if s.Service != "" {
+		into[s.Service] = true
+	}
+	for _, g := range s.Children {
+		for _, m := range g.Members {
+			collectSystemLifelines(m, fallback, into)
+		}
+	}
+}
+
+func (r *renderer) writeSystemGroups(b *strings.Builder, groups []ir.ChildGroup, from, fallback, indent string) {
+	for _, g := range groups {
+		if g.Concurrent {
+			b.WriteString(indent + "par concurrent\n")
+			for i, m := range g.Members {
+				if i > 0 {
+					b.WriteString(indent + "and\n")
+				}
+				r.writeSystemSpan(b, m, from, fallback, indent+"    ")
+			}
+			b.WriteString(indent + "end\n")
+		} else {
+			for _, m := range g.Members {
+				r.writeSystemSpan(b, m, from, fallback, indent)
+			}
+		}
+		if g.Multiplicity != "" {
+			b.WriteString(indent + "Note over " + r.id(from) + ": ×" + g.Multiplicity + "\n")
+		}
+	}
+}
+
+// writeSystemSpan draws the hop into a span (from the caller lifeline to where the
+// span lands) and recurses, threading the landed lifeline as the new caller. When
+// the span lands on the lifeline it was already called from — a callee's own
+// entry span, or an internal self-op — no redundant arrow is drawn; the call that
+// arrived there is enough.
+func (r *renderer) writeSystemSpan(b *strings.Builder, m *ir.CanonicalSpan, from, fallback, indent string) {
+	land := landingOf(m, fallback)
+	if land != from {
+		b.WriteString(indent + r.msg(from, land, label(m)))
+	}
+	r.writeSystemGroups(b, m.Children, land, fallback, indent)
+}
+
 // writeParticipants declares lifelines in a fixed order: the caller, the self
 // service, then every peer sorted. Each is aliased to a Mermaid-safe id so names
 // with hyphens (credit-bureau) render.
