@@ -1,8 +1,18 @@
 # Post-hoc behavioral ingestion (`ModePostHoc`) — design brief
 
-**Status:** proposed. Implements the deferred Phase 10 (`implementation_plan.md`)
-and extends the determinism contract (`trace-canonicalization-spec.md §1`) to
+**Status:** stage 1 landed (the non-gated coverage view); stage 2 (set-based
+gating) proposed. Implements the deferred Phase 10 (`implementation_plan.md`) and
+extends the determinism contract (`trace-canonicalization-spec.md §1`) to
 out-of-process capture.
+
+**Built so far** (`flowmap behavior ingest <traces> [--service-dir D]`):
+`internal/otlpjson` (OTLP/JSON → `capture.Span`, no gRPC/pdata dep),
+`internal/ingest` (slug × service grouping + per-service root assembly, design
+D-PH1/D-PH4), and the `behavior ingest` CLI verb that canonicalizes each
+fragment through the **unchanged** `canon` and prints the exercised
+boundary-effect set + the `coverage.Delta` against a service's boundary
+contract. Always exits 0. Deferred: the post-hoc canon profile knobs ([P10.3]
+redaction/op-key ordering), and stage-2 `--update`/golden set-comparison.
 
 **Audience:** the flowmap team (the build asks below) and adopting service teams
 (the conventions in §4 and `docs/integration/`).

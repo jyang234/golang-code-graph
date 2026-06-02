@@ -10,9 +10,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/canon"
 	"github.com/jyang234/golang-code-graph/internal/coverage"
 	"github.com/jyang234/golang-code-graph/internal/diff"
+	"github.com/jyang234/golang-code-graph/internal/ingest"
+	"github.com/jyang234/golang-code-graph/internal/otlpjson"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/boundary"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
@@ -46,6 +51,8 @@ func run(args []string) error {
 		return cmdDiff(args[1:])
 	case "coverage":
 		return cmdCoverage(args[1:])
+	case "behavior":
+		return cmdBehavior(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -184,6 +191,130 @@ func cmdCoverage(args []string) error {
 	return nil
 }
 
+// cmdBehavior dispatches the behavioral subcommands. Today: `ingest`, the
+// post-hoc out-of-process path.
+func cmdBehavior(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: flowmap behavior ingest <traces> [flags]")
+	}
+	switch args[0] {
+	case "ingest":
+		return cmdIngest(args[1:])
+	default:
+		return fmt.Errorf("unknown behavior subcommand %q (try `flowmap behavior ingest`)", args[0])
+	}
+}
+
+// cmdIngest reads an OTLP/JSON trace export (a collector file exporter's output),
+// groups it into per-flow, per-service fragments, canonicalizes each, and reports
+// the boundary effects the e2e run actually exercised. With --service-dir it also
+// prints the coverage delta against that service's static boundary contract.
+//
+// It is the non-gated stage-1 view (post-hoc design §6): it always exits 0, so a
+// truncated or partial capture is reported, never a build failure.
+func cmdIngest(args []string) error {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	serviceDir := fs.String("service-dir", "", "service source dir; show the coverage delta against its boundary contract")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: flowmap behavior ingest <traces-file-or-dir> [--service-dir D]")
+	}
+
+	spans, err := otlpjson.DecodePath(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	flows := ingest.Group(spans)
+	if len(flows) == 0 {
+		fmt.Printf("ingest: %d span(s), none tagged %s — nothing to map\n", len(spans), ingest.FlowKey)
+		return nil
+	}
+
+	fmt.Printf("ingest: %d flow fragment(s) from %d span(s):\n", len(flows), len(spans))
+	exercised := map[string]bool{}
+	traces := make([]*ir.CanonicalTrace, 0, len(flows))
+	for _, fc := range flows {
+		tr, err := canon.Canonicalize(fc.Flow, nil)
+		if err != nil {
+			fmt.Printf("  - %-24s [%-10s] skipped: %v\n", fc.Slug, fc.Service, err)
+			continue
+		}
+		effects := map[string]bool{}
+		boundaryOps(tr.Root, effects)
+		note := ""
+		if fc.Synthesized {
+			note = " (synthetic root — no inbound entry span)"
+		}
+		fmt.Printf("  - %-24s [%-10s] %d boundary effect(s)%s\n", fc.Slug, fc.Service, len(effects), note)
+		for k := range effects {
+			exercised[k] = true
+		}
+		traces = append(traces, tr)
+	}
+
+	if len(exercised) > 0 {
+		fmt.Printf("\nboundary effects exercised (%d):\n", len(exercised))
+		for _, k := range sortedKeys(exercised) {
+			fmt.Println("  " + k)
+		}
+	}
+
+	if *serviceDir != "" {
+		c, err := boundary.Generate(*serviceDir)
+		if err != nil {
+			return err
+		}
+		r := coverage.Delta(c, traces)
+		if r.Empty() {
+			fmt.Printf("\ncoverage: every boundary effect is exercised by the ingested flows\n")
+		} else {
+			fmt.Printf("\ncoverage: %d boundary effect(s) unexercised:\n", len(r.Unexercised))
+			for _, e := range r.Unexercised {
+				fmt.Printf("  [%s] %s\n", e.Category, e.Key)
+			}
+		}
+	}
+	return nil
+}
+
+// boundaryOps records the canonical op keys in a trace that name a boundary
+// effect — a published/consumed event, an outbound HTTP/RPC dependency. These
+// are the keys the coverage join speaks (plan [H2]); internal and DB ops are not
+// boundary effects and are omitted.
+func boundaryOps(s *ir.CanonicalSpan, into map[string]bool) {
+	if s == nil {
+		return
+	}
+	if isBoundaryOp(s.Op) {
+		into[s.Op] = true
+	}
+	for _, g := range s.Children {
+		for _, m := range g.Members {
+			boundaryOps(m, into)
+		}
+	}
+}
+
+func isBoundaryOp(op string) bool {
+	for _, p := range []string{"PUBLISH ", "CONSUME ", "HTTP ", "RPC "} {
+		if strings.HasPrefix(op, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // defaultFlowsDir picks the conventional goldens location: <dir>/testdata/flows
 // (flow tests at the service root), or <dir>/flows/testdata/flows (flow tests in
 // a flows/ package, where `go test` writes goldens package-relative). The first
@@ -249,6 +380,7 @@ commands:
   graph [--entry R] [dir]    print the non-gated call-graph view
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
+  behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects (post-hoc, non-gated)
   version                    print the flowmap version
   help                       show this message`)
 }

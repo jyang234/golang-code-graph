@@ -59,7 +59,11 @@ Jaeger/debug pipelines are untouched.
 ```sh
 make -C infra test/e2e/<svc>          # your existing e2e run, writes traces/*.json
 flowmap behavior ingest src/test/e2e/<svc>/.flowmap/traces \
-    --flows-dir flows/                # stage 1: prints the coverage view, exit 0
-# stage 2 (opt-in, per proven flow):
+    --service-dir services/<svc>      # stage 1: exercised effects + coverage, exit 0
+# stage 2 (opt-in, per proven flow — not yet built):
 # flowmap behavior ingest … --update   # rebase goldens; CODEOWNERS reviews the diff
 ```
+
+`--service-dir` points at the service **source** (so flowmap can generate its
+boundary contract and show the coverage delta); omit it to just list the
+exercised boundary effects. The ingest step never fails the build.
