@@ -230,11 +230,16 @@ func cmdIngest(args []string) error {
 	serviceDir := fs.String("service-dir", "", "service source dir; show the coverage delta against its boundary contract")
 	flowsDir := fs.String("flows-dir", "", "directory of committed *.effects.json post-hoc goldens; enables the opt-in gate")
 	update := fs.Bool("update", false, "with --flows-dir, rebase the post-hoc goldens and .flow.md views from the traces")
+	renderDir := fs.String("render-dir", "", "write a cross-service <slug>.system.flow.md per flow here (any mode, non-gated)")
+	root := fs.String("root", "", "with --render-dir, center the diagram on this service's subtree")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: flowmap behavior ingest <traces-file-or-dir> [--flows-dir D] [--service-dir D] [--update]")
+		return fmt.Errorf("usage: flowmap behavior ingest <traces-file-or-dir> [--flows-dir D] [--service-dir D] [--update] [--render-dir D [--root SVC]]")
+	}
+	if *root != "" && *renderDir == "" {
+		return fmt.Errorf("--root requires --render-dir")
 	}
 
 	spans, err := otlpjson.DecodePath(fs.Arg(0))
@@ -264,12 +269,20 @@ func cmdIngest(args []string) error {
 		frags = append(frags, ingestFragment{fc: fc, trace: tr, effects: eff})
 	}
 
+	// The cross-service view is independent of gating: emit it in any mode
+	// (including non-gated stage 1) when a render dir is given.
+	if *renderDir != "" {
+		if err := writeSystemDiagrams(*renderDir, spans, *root); err != nil {
+			return err
+		}
+	}
+
 	switch {
 	case *update && *flowsDir != "":
 		if err := updateEffectGoldens(*flowsDir, frags); err != nil {
 			return err
 		}
-		return writeSystemDiagrams(*flowsDir, spans)
+		return writeSystemDiagrams(*flowsDir, spans, "") // the committed companion is the full choreography
 	case *flowsDir != "":
 		return gateEffectGoldens(*flowsDir, frags)
 	default:
@@ -396,7 +409,10 @@ func gateEffectGoldens(dir string, frags []ingestFragment) error {
 // unit, design D-PH1), distinct from the per-service gated artifacts. It is a
 // view — never gated — so a fragment with no clean entry (synthesized root) is
 // rendered best-effort with a note rather than skipped.
-func writeSystemDiagrams(dir string, spans []capture.Span) error {
+func writeSystemDiagrams(dir string, spans []capture.Span, rootSvc string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 	for _, wf := range ingest.WholeFlows(spans) {
 		tr, err := canon.Canonicalize(wf.Flow, nil)
 		if err != nil {
@@ -404,11 +420,21 @@ func writeSystemDiagrams(dir string, spans []capture.Span) error {
 			continue
 		}
 		stem := filepath.Join(dir, golden.Slug(wf.Slug)+".system")
-		if err := os.WriteFile(stem+".flow.md", []byte(render.SystemMermaid(tr)), 0o644); err != nil {
+		md := render.SystemMermaid(tr)
+		if rootSvc != "" {
+			out, ok := render.SystemMermaidRootedAt(tr, rootSvc)
+			if !ok {
+				fmt.Printf("  - %-24s service %q not in this flow — skipped\n", wf.Slug, rootSvc)
+				continue
+			}
+			md = out
+			stem = filepath.Join(dir, golden.Slug(wf.Slug)+"."+golden.Slug(rootSvc)+".system")
+		}
+		if err := os.WriteFile(stem+".flow.md", []byte(md), 0o644); err != nil {
 			return err
 		}
 		note := ""
-		if wf.Synthesized {
+		if rootSvc == "" && wf.Synthesized {
 			note = " (no single entry — best-effort)"
 		}
 		fmt.Printf("wrote %s.flow.md (cross-service view%s)\n", stem, note)

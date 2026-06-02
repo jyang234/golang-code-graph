@@ -251,3 +251,40 @@ func TestUpdateGoldenCollision(t *testing.T) {
 		t.Fatalf("expected a slug-collision error for sweep-a vs sweep.a, got %v", err)
 	}
 }
+
+// TestBehaviorIngestRenderDir: --render-dir emits the cross-service view in any
+// mode (here stage 1, no gate), --root writes a service-centric diagram, and
+// --root without --render-dir is rejected.
+func TestBehaviorIngestRenderDir(t *testing.T) {
+	silenceStdout(t)
+	dir := t.TempDir()
+	trace := `{"resourceSpans":[
+      {"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"loansvc"}}]},"scopeSpans":[{"spans":[
+        {"spanId":"01","parentSpanId":"","name":"e","kind":2,"attributes":[{"key":"flowmap.flow","value":{"stringValue":"loan"}},{"key":"http.request.method","value":{"stringValue":"POST"}},{"key":"http.route","value":{"stringValue":"/x"}}],"status":{"code":1}},
+        {"spanId":"02","parentSpanId":"01","name":"c","kind":3,"attributes":[{"key":"flowmap.flow","value":{"stringValue":"loan"}},{"key":"peer.service","value":{"stringValue":"bureau"}},{"key":"http.request.method","value":{"stringValue":"GET"}},{"key":"http.route","value":{"stringValue":"/s"}}],"status":{"code":1}}
+      ]}]},
+      {"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"bureau"}}]},"scopeSpans":[{"spans":[
+        {"spanId":"03","parentSpanId":"02","name":"s","kind":2,"attributes":[{"key":"flowmap.flow","value":{"stringValue":"loan"}},{"key":"http.request.method","value":{"stringValue":"GET"}},{"key":"http.route","value":{"stringValue":"/s"}}],"status":{"code":1}}
+      ]}]}
+    ]}`
+	tf := filepath.Join(dir, "t.json")
+	if err := os.WriteFile(tf, []byte(trace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out")
+	if err := run([]string{"behavior", "ingest", "--render-dir", out, tf}); err != nil {
+		t.Fatalf("stage-1 render: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "loan.system.flow.md")); err != nil {
+		t.Fatalf("expected whole-flow diagram: %v", err)
+	}
+	if err := run([]string{"behavior", "ingest", "--render-dir", out, "--root", "bureau", tf}); err != nil {
+		t.Fatalf("rooted render: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "loan.bureau.system.flow.md")); err != nil {
+		t.Fatalf("expected service-rooted diagram: %v", err)
+	}
+	if err := run([]string{"behavior", "ingest", "--root", "bureau", tf}); err == nil {
+		t.Fatal("expected an error: --root without --render-dir")
+	}
+}

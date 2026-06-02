@@ -47,19 +47,69 @@ type renderer struct {
 // interacts with end to end (post-hoc design: the diagram unit is the whole
 // flow, not the per-service gate fragment). It is a view, never gated.
 func SystemMermaid(t *ir.CanonicalTrace) string {
+	if t.Root == nil {
+		return "sequenceDiagram\n"
+	}
+	return systemMermaidCore(callerLabel(t.Root), t.Root, t.Service)
+}
+
+// SystemMermaidRootedAt renders the cross-service view centered on one service:
+// the subtree(s) the service owns — everything it does and reaches downstream —
+// with the lifeline that called into it as the caller. It returns ok=false if the
+// service does not appear in the flow. A service entered more than once in the
+// flow gets its entries gathered under a synthetic root.
+func SystemMermaidRootedAt(t *ir.CanonicalTrace, service string) (string, bool) {
+	var entries []*ir.CanonicalSpan
+	var callers []string
+	var walk func(n *ir.CanonicalSpan, parentSvc string)
+	walk = func(n *ir.CanonicalSpan, parentSvc string) {
+		if n == nil {
+			return
+		}
+		if n.Service == service && parentSvc != service {
+			entries = append(entries, n) // its whole subtree (incl. nested re-entries) renders together
+			callers = append(callers, parentSvc)
+			return
+		}
+		for _, g := range n.Children {
+			for _, m := range g.Members {
+				walk(m, n.Service)
+			}
+		}
+	}
+	walk(t.Root, "")
+
+	switch len(entries) {
+	case 0:
+		return "", false
+	case 1:
+		caller := callers[0]
+		if caller == "" {
+			caller = callerLabel(entries[0])
+		}
+		return systemMermaidCore(caller, entries[0], t.Service), true
+	default:
+		syn := &ir.CanonicalSpan{
+			Op: service, Kind: ir.KindServer, Service: service,
+			Children: []ir.ChildGroup{{Concurrent: true, Members: entries}},
+		}
+		return systemMermaidCore("Client", syn, t.Service), true
+	}
+}
+
+// systemMermaidCore renders the cross-service sequence diagram for one subtree,
+// from an explicit caller lifeline. fallback is the service to attribute spans
+// that carry no service.name.
+func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) string {
 	var b strings.Builder
 	b.WriteString("sequenceDiagram\n")
-	if t.Root == nil {
-		return b.String()
-	}
 	r := &renderer{alias: map[string]string{}}
-	caller := callerLabel(t.Root)
-	entry := landingOf(t.Root, t.Service)
+	entry := landingOf(root, fallback)
 
 	// Lifelines in a fixed order: caller, entry service, then every other
 	// service/peer the flow reaches, sorted.
 	lifelines := map[string]bool{}
-	collectSystemLifelines(t.Root, t.Service, lifelines)
+	collectSystemLifelines(root, fallback, lifelines)
 	order := []string{caller, entry}
 	rest := make([]string, 0, len(lifelines))
 	for l := range lifelines {
@@ -80,8 +130,8 @@ func SystemMermaid(t *ir.CanonicalTrace) string {
 		b.WriteString("    participant " + id + " as " + name + "\n")
 	}
 
-	b.WriteString("    " + r.msg(caller, entry, label(t.Root)))
-	r.writeSystemGroups(&b, t.Root.Children, entry, t.Service, "    ")
+	b.WriteString("    " + r.msg(caller, entry, label(root)))
+	r.writeSystemGroups(&b, root.Children, entry, fallback, "    ")
 	return b.String()
 }
 

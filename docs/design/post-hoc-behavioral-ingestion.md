@@ -19,8 +19,10 @@ per-(slug,service) `*.effects.json` golden + `*.flow.md` view; without it,
 effect (`[CONTRACT] ADDED …`). CODEOWNERS routes `**/*.effects.json`. `--update`
 also emits a **cross-service** `<slug>.system.flow.md` (`ingest.WholeFlows` +
 `render.SystemMermaid`) — the whole-flow choreography across every service the
-flow touched, a non-gated view. Dogfooded end-to-end against the `loansut`
-fixture (`internal/ingest/dogfood_test.go`).
+flow touched, a non-gated view. `--render-dir D` emits those diagrams in **any**
+mode (including non-gated stage 1), and `--root SVC` centers a diagram on one
+service's subtree (`render.SystemMermaidRootedAt`). Dogfooded end-to-end against
+the `loansut` fixture (`internal/ingest/dogfood_test.go`).
 
 The decoder is **pinned to authoritative collector output**: `testdata/otlpgen`
 (a standalone module, so `pdata` stays off the engine's graph) renders a

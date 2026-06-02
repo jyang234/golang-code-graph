@@ -133,6 +133,16 @@ delta against the service's static boundary contract. **It always exits 0** —
 pure feedback, zero flakiness risk. Ship this first; it harvests your existing
 e2e investment immediately and gives teams a reason to add the tag.
 
+To **see the cross-service choreography** at this stage — before committing any
+golden — add `--render-dir`; it writes a `<slug>.system.flow.md` per flow (the
+whole-flow diagram across every service the flow touched), in any mode:
+
+```sh
+flowmap behavior ingest --render-dir e2e-diagrams/ /var/lib/flowmap/traces/e2e.otlp.json
+# center the diagram on one service's subtree (what it touches downstream):
+flowmap behavior ingest --render-dir e2e-diagrams/ --root payments-svc /var/lib/flowmap/traces/e2e.otlp.json
+```
+
 > **Flags precede the trace path** (`flowmap behavior ingest [flags] <path>`).
 > `<path>` may be a file or a directory of rotated `*.json`.
 

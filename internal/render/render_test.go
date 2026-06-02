@@ -159,3 +159,40 @@ func TestSystemMermaidCrossService(t *testing.T) {
 		t.Errorf("callee entry span drew a redundant self-hop:\n%s", out)
 	}
 }
+
+// TestSystemMermaidRootedAt centers the view on a middle service: the caller is
+// the real upstream, the subtree is the service's downstream, and ops above the
+// service are excluded. An absent service returns ok=false.
+func TestSystemMermaidRootedAt(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "loansvc",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /loan-application", Kind: ir.KindServer, Service: "loansvc",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "HTTP GET credit-bureau /score/{id}", Kind: ir.KindClient, Peer: "credit-bureau", Service: "loansvc",
+					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+						{Op: "HTTP GET /score", Kind: ir.KindServer, Service: "credit-bureau",
+							Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+								{Op: "DB postgres SELECT bureau", Kind: ir.KindClient, Peer: "postgres", Service: "credit-bureau"},
+							}}}},
+					}}}},
+			}}},
+		},
+	}
+	out, ok := SystemMermaidRootedAt(tr, "credit-bureau")
+	if !ok {
+		t.Fatal("credit-bureau should be found")
+	}
+	if !strings.Contains(out, "loansvc->>credit_bureau: HTTP GET /score") {
+		t.Errorf("expected upstream→svc entry arrow, got:\n%s", out)
+	}
+	if !strings.Contains(out, "credit_bureau->>postgres: DB postgres SELECT bureau") {
+		t.Errorf("expected the service's subtree, got:\n%s", out)
+	}
+	if strings.Contains(out, "/loan-application") {
+		t.Errorf("a rooted view must exclude ops above the service:\n%s", out)
+	}
+	if _, ok := SystemMermaidRootedAt(tr, "absent"); ok {
+		t.Error("absent service should return ok=false")
+	}
+}
