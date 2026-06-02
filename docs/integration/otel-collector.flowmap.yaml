@@ -1,0 +1,48 @@
+# Additive flowmap blocks for an existing OTel Collector config.
+# Merge the marked sections into your collector; do NOT replace your file.
+# Your existing jaeger/debug exporters and pipelines stay exactly as they are.
+#
+# Goal: when a trace carries the flowmap.flow span attribute (promoted from
+# baggage by the per-service baggagecopy processor — see README), tail-sample it
+# at 100% and write it to a file as OTLP-JSON for `flowmap behavior ingest`.
+
+processors:
+  # ── ADD ── decide per-trace, after the whole trace is seen, keep only the
+  # flowmap-tagged ones at 100%. Requires the baggagecopy span processor in each
+  # service so flowmap.flow is a span ATTRIBUTE, not just baggage.
+  tail_sampling/flowmap:
+    decision_wait: 10s          # ≥ your slowest flow; trace is buffered until then
+    num_traces: 50000
+    policies:
+      - name: keep-flowmap-tagged
+        type: string_attribute
+        string_attribute:
+          key: flowmap.flow
+          values: [".+"]
+          enabled_regex_matching: true
+
+exporters:
+  # ── ADD ── one OTLP-JSON file per collector lifetime; flowmap reads it post-run.
+  # rotation keeps the directory bounded; ingest globs the directory.
+  file/flowmap:
+    path: /var/lib/flowmap/traces/e2e.otlp.json
+    format: json
+    rotation:
+      max_megabytes: 64
+      max_backups: 8
+
+service:
+  pipelines:
+    # ── ADD ── a dedicated traces pipeline for the flowmap capture. Keep your
+    # existing `traces` pipeline (jaeger/debug) UNCHANGED and running in parallel;
+    # a span can fan out to both pipelines.
+    traces/flowmap:
+      receivers: [otlp]                 # your existing OTLP receiver
+      processors: [tail_sampling/flowmap]
+      exporters: [file/flowmap]
+
+    # Your existing pipeline — shown for context, leave as-is:
+    # traces:
+    #   receivers: [otlp]
+    #   processors: [batch]
+    #   exporters: [otlp/jaeger, debug]

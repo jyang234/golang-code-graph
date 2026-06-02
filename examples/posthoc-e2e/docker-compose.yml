@@ -1,0 +1,35 @@
+# Post-hoc e2e reference, the Docker way. Brings up a real OTel Collector and the
+# OTLP-exporting loansvc stand-in; you drive one flowmap-tagged request and then
+# run `flowmap behavior ingest` on the file the collector writes to ./traces.
+#
+#   docker compose up -d --build
+#   curl -X POST -H 'baggage: flowmap.flow=loan-application' localhost:8080/loan-application
+#   sleep 3                                   # batch export + tail_sampling decision_wait
+#   flowmap behavior ingest examples/posthoc-e2e/traces/e2e.otlp.json
+#   docker compose down
+#
+# This is the known-good chain; diff your own collector config + service wiring
+# against it (see README.md).
+
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.116.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      FLOWMAP_TRACE_FILE: /traces/e2e.otlp.json
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+      - ./traces:/traces
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+
+  loansvc:
+    build: ./service
+    environment:
+      # base endpoint → the SDK appends /v1/traces.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+    depends_on:
+      - collector
+    ports:
+      - "8080:8080"

@@ -10,9 +10,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
+	"github.com/jyang234/golang-code-graph/internal/canon"
 	"github.com/jyang234/golang-code-graph/internal/coverage"
 	"github.com/jyang234/golang-code-graph/internal/diff"
+	"github.com/jyang234/golang-code-graph/internal/golden"
+	"github.com/jyang234/golang-code-graph/internal/ingest"
+	"github.com/jyang234/golang-code-graph/internal/otlpjson"
+	"github.com/jyang234/golang-code-graph/internal/render"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/boundary"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
@@ -46,6 +52,8 @@ func run(args []string) error {
 		return cmdDiff(args[1:])
 	case "coverage":
 		return cmdCoverage(args[1:])
+	case "behavior":
+		return cmdBehavior(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -184,6 +192,257 @@ func cmdCoverage(args []string) error {
 	return nil
 }
 
+// cmdBehavior dispatches the behavioral subcommands. Today: `ingest`, the
+// post-hoc out-of-process path.
+func cmdBehavior(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: flowmap behavior ingest <traces> [flags]")
+	}
+	switch args[0] {
+	case "ingest":
+		return cmdIngest(args[1:])
+	default:
+		return fmt.Errorf("unknown behavior subcommand %q (try `flowmap behavior ingest`)", args[0])
+	}
+}
+
+// ingestFragment is one canonicalized post-hoc flow fragment.
+type ingestFragment struct {
+	fc      ingest.FlowCapture
+	trace   *ir.CanonicalTrace
+	effects []string
+}
+
+// cmdIngest reads an OTLP/JSON trace export (a collector file exporter's output),
+// groups it into per-flow, per-service fragments, and canonicalizes each. Its
+// behavior depends on the flags:
+//
+//   - no --flows-dir (stage 1, non-gated): print the boundary effects the run
+//     exercised; with --service-dir, also the coverage delta. Always exits 0.
+//   - --flows-dir --update: rebase the post-hoc goldens (*.effects.json) and
+//     their rendered views (*.flow.md) from the ingested traces. Exits 0.
+//   - --flows-dir (gate): compare each committed golden to what was observed,
+//     failing (non-zero) only on a NEW boundary effect (design D-PH3). A golden
+//     with no capture this run is skipped, never silently passed (D-PH2).
+func cmdIngest(args []string) error {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	serviceDir := fs.String("service-dir", "", "service source dir; show the coverage delta against its boundary contract")
+	flowsDir := fs.String("flows-dir", "", "directory of committed *.effects.json post-hoc goldens; enables the opt-in gate")
+	update := fs.Bool("update", false, "with --flows-dir, rebase the post-hoc goldens and .flow.md views from the traces")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: flowmap behavior ingest <traces-file-or-dir> [--flows-dir D] [--service-dir D] [--update]")
+	}
+
+	spans, err := otlpjson.DecodePath(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	flows := ingest.Group(spans)
+	if len(flows) == 0 {
+		fmt.Printf("ingest: %d span(s), none tagged %s — nothing to map\n", len(spans), ingest.FlowKey)
+		return nil
+	}
+
+	fmt.Printf("ingest: %d flow fragment(s) from %d span(s):\n", len(flows), len(spans))
+	var frags []ingestFragment
+	for _, fc := range flows {
+		tr, err := canon.Canonicalize(fc.Flow, nil)
+		if err != nil {
+			fmt.Printf("  - %-24s [%-10s] skipped: %v\n", fc.Slug, fc.Service, err)
+			continue
+		}
+		eff := ingest.BoundaryEffects(tr.Root)
+		note := ""
+		if fc.Synthesized {
+			note = " (synthetic root — no inbound entry span)"
+		}
+		fmt.Printf("  - %-24s [%-10s] %d boundary effect(s)%s\n", fc.Slug, fc.Service, len(eff), note)
+		frags = append(frags, ingestFragment{fc: fc, trace: tr, effects: eff})
+	}
+
+	switch {
+	case *update && *flowsDir != "":
+		return updateEffectGoldens(*flowsDir, frags)
+	case *flowsDir != "":
+		return gateEffectGoldens(*flowsDir, frags)
+	default:
+		printExercised(frags)
+		if *serviceDir != "" {
+			return printCoverage(*serviceDir, frags)
+		}
+		return nil
+	}
+}
+
+// updateEffectGoldens rebases one golden + rendered view per fragment. The author
+// reviews and commits only the flows they intend to gate (a committed golden is
+// what opts a flow in).
+func updateEffectGoldens(dir string, frags []ingestFragment) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	fmt.Println()
+	claimed := map[string]string{} // file stem -> "flow / service" that wrote it
+	for _, fr := range frags {
+		stemName := effectStem(fr.fc.Slug, fr.fc.Service)
+		owner := fr.fc.Slug + " / " + fr.fc.Service
+
+		// Two distinct flows whose slugs collide to the same filename would
+		// silently overwrite each other (and the loser would be ungated on a later
+		// run). Refuse rather than lose a golden — within this run...
+		if prev, ok := claimed[stemName]; ok && prev != owner {
+			return fmt.Errorf("golden filename collision: %q and %q both map to %s.effects.json; rename a flow or service to disambiguate", prev, owner, stemName)
+		}
+		claimed[stemName] = owner
+
+		stem := filepath.Join(dir, stemName)
+		// ...and against a committed golden from a previous run.
+		if existing, err := ingest.LoadEffectGolden(stem + ".effects.json"); err == nil {
+			if prev := existing.Flow + " / " + existing.Service; prev != owner {
+				return fmt.Errorf("%s.effects.json already belongs to %q; refusing to overwrite it with %q (slug collision) — rename to disambiguate", stem, prev, owner)
+			}
+		}
+
+		g := ingest.NewEffectGolden(fr.fc.Slug, fr.fc.Service, fr.effects)
+		b, err := g.Marshal()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(stem+".effects.json", b, 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(stem+".flow.md", []byte(render.Mermaid(fr.trace)), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("wrote %s.effects.json (+ .flow.md)\n", stem)
+	}
+	return nil
+}
+
+// gateEffectGoldens enforces every committed golden against what was observed,
+// with no-new-effects semantics (D-PH3) and skip-on-no-capture (D-PH2).
+func gateEffectGoldens(dir string, frags []ingestFragment) error {
+	goldenPaths, err := filepath.Glob(filepath.Join(dir, "*.effects.json"))
+	if err != nil {
+		return err
+	}
+	observed := map[string]ingestFragment{}
+	gatedKey := map[string]bool{}
+	for _, fr := range frags {
+		observed[key(fr.fc.Slug, fr.fc.Service)] = fr
+	}
+
+	fmt.Println()
+	var added []string
+	for _, gp := range goldenPaths {
+		g, err := ingest.LoadEffectGolden(gp)
+		if err != nil {
+			return err
+		}
+		k := key(g.Flow, g.Service)
+		gatedKey[k] = true
+		fr, ok := observed[k]
+		if !ok {
+			// D-PH2: no capture for this golden this run — never silently pass it.
+			fmt.Printf("  ! %s [%s]: no capture this run — skipped (not gated)\n", g.Flow, g.Service)
+			continue
+		}
+		if fr.fc.Synthesized {
+			// No clean inbound entry span: the fragment's completeness cannot be
+			// established (it may be truncated, or span multiple traces), so the
+			// flow is not gated this run rather than risk passing a partial capture
+			// (D-PH2). canon's ErrIncomplete guard is unreachable here because the
+			// post-hoc path always assembles a tree, so this is where completeness
+			// is enforced for the gate.
+			fmt.Printf("  ! %s [%s]: no inbound entry span (completeness unverifiable) — skipped (not gated)\n", g.Flow, g.Service)
+			continue
+		}
+		newEffects, missing := ingest.CompareEffects(g.Effects, fr.effects)
+		for _, m := range missing {
+			fmt.Printf("  ~ %s [%s]: golden effect not exercised this run: %s (coverage, not a failure)\n", g.Flow, g.Service, m)
+		}
+		for _, a := range newEffects {
+			added = append(added, fmt.Sprintf("[CONTRACT] ADDED %s  (flow %q, service %q)", a, g.Flow, g.Service))
+		}
+	}
+
+	// Observed fragments without a committed golden are informational, not gated.
+	for _, fr := range frags {
+		if !gatedKey[key(fr.fc.Slug, fr.fc.Service)] {
+			fmt.Printf("  · %s [%s]: ungated (run --update to snapshot and gate it)\n", fr.fc.Slug, fr.fc.Service)
+		}
+	}
+
+	if len(added) > 0 {
+		fmt.Println()
+		for _, line := range added {
+			fmt.Println("  " + line)
+		}
+		return fmt.Errorf("%d new boundary effect(s) not in the committed golden; review and run --update if intended", len(added))
+	}
+	fmt.Println("\nbehavioral gate: no new boundary effects")
+	return nil
+}
+
+// printExercised lists the union of boundary effects across all fragments.
+func printExercised(frags []ingestFragment) {
+	exercised := map[string]bool{}
+	for _, fr := range frags {
+		for _, e := range fr.effects {
+			exercised[e] = true
+		}
+	}
+	if len(exercised) == 0 {
+		return
+	}
+	fmt.Printf("\nboundary effects exercised (%d):\n", len(exercised))
+	for _, k := range sortedKeys(exercised) {
+		fmt.Println("  " + k)
+	}
+}
+
+// printCoverage shows the delta against a service's static boundary contract.
+func printCoverage(serviceDir string, frags []ingestFragment) error {
+	c, err := boundary.Generate(serviceDir)
+	if err != nil {
+		return err
+	}
+	traces := make([]*ir.CanonicalTrace, 0, len(frags))
+	for _, fr := range frags {
+		traces = append(traces, fr.trace)
+	}
+	r := coverage.Delta(c, traces)
+	if r.Empty() {
+		fmt.Printf("\ncoverage: every boundary effect is exercised by the ingested flows\n")
+		return nil
+	}
+	fmt.Printf("\ncoverage: %d boundary effect(s) unexercised:\n", len(r.Unexercised))
+	for _, e := range r.Unexercised {
+		fmt.Printf("  [%s] %s\n", e.Category, e.Key)
+	}
+	return nil
+}
+
+// effectStem is the per-(flow,service) golden file stem, e.g.
+// "post_loan_application.loansvc" (design D-PH4 naming).
+func effectStem(flow, service string) string {
+	return golden.Slug(flow) + "." + golden.Slug(service)
+}
+
+func key(flow, service string) string { return flow + "\x00" + service }
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // defaultFlowsDir picks the conventional goldens location: <dir>/testdata/flows
 // (flow tests at the service root), or <dir>/flows/testdata/flows (flow tests in
 // a flows/ package, where `go test` writes goldens package-relative). The first
@@ -249,6 +508,9 @@ commands:
   graph [--entry R] [dir]    print the non-gated call-graph view
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
+  behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects
+                             [--service-dir D] coverage delta; [--flows-dir D] gate
+                             on committed *.effects.json (--update to rebase)
   version                    print the flowmap version
   help                       show this message`)
 }

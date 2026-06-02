@@ -1,0 +1,49 @@
+# Standalone OTel Collector config for the post-hoc e2e reference. It is the
+# self-contained version of the additive blocks in docs/integration/
+# otel-collector.flowmap.yaml: receive OTLP, keep only flowmap-tagged traces
+# (100%), and write them as OTLP/JSON for `flowmap behavior ingest`.
+#
+# The file path is taken from $FLOWMAP_TRACE_FILE so the same config drives both
+# the local runner (run-local.sh) and docker-compose.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Keep only traces carrying the flowmap.flow span attribute (promoted from
+  # baggage by the service's baggagecopy processor). decision_wait must exceed
+  # your slowest flow; the trace is buffered until then.
+  tail_sampling:
+    decision_wait: 2s
+    num_traces: 10000
+    policies:
+      - name: keep-flowmap-tagged
+        type: string_attribute
+        string_attribute:
+          key: flowmap.flow
+          values: [".+"]
+          enabled_regex_matching: true
+
+exporters:
+  # One OTLP/JSON file flowmap reads post-run. In a real setup this is a second
+  # exporter on your existing traces pipeline; Jaeger/debug stay untouched.
+  file:
+    path: ${env:FLOWMAP_TRACE_FILE}
+    format: json
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling]
+      exporters: [file, debug]
+  telemetry:
+    logs:
+      level: warn

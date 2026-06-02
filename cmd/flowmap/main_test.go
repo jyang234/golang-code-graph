@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/jyang234/golang-code-graph/internal/ingest"
 )
 
 func fixtureDir() string {
@@ -120,5 +123,131 @@ func TestRunCoverage(t *testing.T) {
 	// coverage is informational (exit 0) even when it finds unexercised effects.
 	if err := run([]string{"coverage", "--flows", flowsDir, fixtureDir()}); err != nil {
 		t.Fatalf("coverage on the fixture should succeed: %v", err)
+	}
+}
+
+// otlpFixture is the committed OTLP/JSON trace export used by the post-hoc tests.
+func otlpFixture() string {
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", "otlp", "loan-application.otlp.json")
+}
+
+// TestBehaviorIngestGate exercises the stage-2 opt-in gate end to end: --update
+// writes the effect golden; a re-gate of the same trace passes; dropping an
+// effect from the golden makes that effect read as a new addition and fails
+// (no-new-effects, D-PH3); and a golden with no capture this run is skipped, not
+// silently passed (D-PH2).
+func TestBehaviorIngestGate(t *testing.T) {
+	silenceStdout(t)
+	dir := t.TempDir()
+	fx := otlpFixture()
+
+	// --update writes <slug>.<service>.effects.json (+ .flow.md).
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, "--update", fx}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	gp := filepath.Join(dir, "loan_application.loansvc.effects.json")
+	if _, err := os.Stat(gp); err != nil {
+		t.Fatalf("expected golden at %s: %v", gp, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "loan_application.loansvc.flow.md")); err != nil {
+		t.Fatalf("expected rendered view: %v", err)
+	}
+
+	// Re-gating the same trace passes: no new effects.
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, fx}); err != nil {
+		t.Fatalf("clean gate should pass: %v", err)
+	}
+
+	// Drop an effect from the golden; the trace now exercises one the golden lacks
+	// → a new effect → the gate fails.
+	g, err := ingest.LoadEffectGolden(gp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := g.Effects[:0:0]
+	for _, e := range g.Effects {
+		if e != "PUBLISH loan.approved" {
+			kept = append(kept, e)
+		}
+	}
+	g.Effects = kept
+	b, _ := g.Marshal()
+	if err := os.WriteFile(gp, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, fx}); err == nil {
+		t.Fatal("expected the gate to fail on a new boundary effect")
+	}
+
+	// D-PH2: a golden for a flow with no capture this run is skipped, not failed.
+	// Restore the loan golden so it passes, add an orphan golden with no trace.
+	full := ingest.NewEffectGolden("loan-application", "loansvc",
+		[]string{"HTTP GET credit-bureau /score/{id}", "HTTP POST /loan-application", "PUBLISH loan.approved"})
+	fb, _ := full.Marshal()
+	if err := os.WriteFile(gp, fb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orphan := ingest.NewEffectGolden("nightly-sweep", "other-svc", []string{"PUBLISH sweep.done"})
+	ob, _ := orphan.Marshal()
+	if err := os.WriteFile(filepath.Join(dir, "nightly_sweep.other_svc.effects.json"), ob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, fx}); err != nil {
+		t.Fatalf("a golden with no capture should be skipped, not fail the gate: %v", err)
+	}
+}
+
+// otlpDoc writes a one-resource OTLP/JSON file with the given spans and returns
+// its path. Each span: id, parent, kind, flow slug, and extra attrs.
+func writeOTLP(t *testing.T, dir, name, service string, spans string) string {
+	t.Helper()
+	doc := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"` +
+		service + `"}}]},"scopeSpans":[{"spans":[` + spans + `]}]}]}`
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func producerSpan(id, parent, slug, topic string) string {
+	return `{"spanId":"` + id + `","parentSpanId":"` + parent + `","name":"p","kind":4,"attributes":[` +
+		`{"key":"flowmap.flow","value":{"stringValue":"` + slug + `"}},` +
+		`{"key":"messaging.destination.name","value":{"stringValue":"` + topic + `"}}],"status":{"code":1}}`
+}
+
+// TestBehaviorIngestSkipsSynthesized: a fragment with no clean inbound entry span
+// (synthesized root — completeness unverifiable) is skipped by the gate, not
+// passed, even when it carries an effect absent from the golden (finding #1).
+func TestBehaviorIngestSkipsSynthesized(t *testing.T) {
+	silenceStdout(t)
+	dir := t.TempDir()
+
+	// Publisher-only flow (parent outside the capture → synthesized root).
+	t1 := writeOTLP(t, dir, "t1.json", "emitter", producerSpan("01", "ffffffffffffffff", "sweep", "a.done"))
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, "--update", t1}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	// A later run where the same synthesized flow adds a brand-new effect.
+	t2 := writeOTLP(t, dir, "t2.json", "emitter",
+		producerSpan("01", "ffffffffffffffff", "sweep", "a.done")+","+producerSpan("02", "ffffffffffffffff", "sweep", "b.new"))
+	// Without the completeness guard this would fail with [CONTRACT] ADDED b.new;
+	// because the capture has no inbound entry, it is skipped instead.
+	if err := run([]string{"behavior", "ingest", "--flows-dir", dir, t2}); err != nil {
+		t.Fatalf("synthesized fragment must be skipped, not gated: %v", err)
+	}
+}
+
+// TestUpdateGoldenCollision: two distinct flows whose slugs collide to one
+// filename are refused on --update rather than silently overwriting (finding #2).
+func TestUpdateGoldenCollision(t *testing.T) {
+	silenceStdout(t)
+	dir := t.TempDir()
+	tf := writeOTLP(t, dir, "t.json", "svc",
+		producerSpan("01", "ffffffffffffffff", "sweep-a", "x")+","+producerSpan("02", "ffffffffffffffff", "sweep.a", "y"))
+	err := run([]string{"behavior", "ingest", "--flows-dir", dir, "--update", tf})
+	if err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("expected a slug-collision error for sweep-a vs sweep.a, got %v", err)
 	}
 }

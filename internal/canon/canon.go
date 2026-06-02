@@ -51,6 +51,7 @@ func Canonicalize(cf capture.CapturedFlow, cfg *config.Config) (*ir.CanonicalTra
 		loops:      map[string]bool{},
 		allow:      buildAllowSet(cfg),
 		redactKeys: stringSet(cfg.Canon.RedactKeys),
+		postHoc:    cf.Mode == capture.ModePostHoc,
 	}
 
 	byID := make(map[string]*capture.Span, len(cf.Spans))
@@ -104,6 +105,16 @@ type canonicalizer struct {
 	loops      map[string]bool
 	allow      map[string]bool
 	redactKeys map[string]bool
+	// postHoc selects the out-of-process ordering profile (post-hoc design
+	// [P10.3]), driven by the capture's Mode. Out of process there is no
+	// goroutine dispatch signal and the exported caller-clock intervals are not a
+	// run-independent ordering signal for siblings, so happens-before among
+	// siblings cannot be reliably re-established. Per canon §3.3 rule 3
+	// (ambiguous ⇒ concurrent), the profile groups a parent's children into a
+	// single concurrent group ordered by canonical op key — timing- and
+	// id-independent — instead of clustering by caller-clock overlap. Parent→child
+	// nesting (the real happens-before that survives in OTLP) is untouched.
+	postHoc bool
 }
 
 // build turns one captured span and its subtree into a CanonicalSpan: it derives
@@ -136,6 +147,29 @@ func (c *canonicalizer) group(parentGoroutine uint64, kids []*capture.Span, chil
 	if len(kids) == 0 {
 		return nil
 	}
+
+	// Post-hoc profile: siblings carry no run-independent happens-before signal
+	// (no goroutine dispatch, jittery cross-run clocks), so they become a single
+	// canonical-key-ordered group rather than being sequenced by caller-clock.
+	// collapseLoops still folds identical repeated members into a 1..* class.
+	if c.postHoc {
+		members := make([]*ir.CanonicalSpan, 0, len(kids))
+		for _, k := range kids {
+			members = append(members, c.build(k, childrenOf))
+		}
+		// Order by op key, then by canonical subtree signature as a tiebreak. The
+		// signature breaks ties run-independently: two siblings sharing an Op but
+		// with different subtrees would otherwise keep their decode/file order,
+		// which is not stable across exports — defeating the profile's whole point.
+		sort.SliceStable(members, func(i, j int) bool {
+			if members[i].Op != members[j].Op {
+				return members[i].Op < members[j].Op
+			}
+			return signature(members[i]) < signature(members[j])
+		})
+		return c.collapseLoops([]ir.ChildGroup{{Concurrent: len(members) > 1, Members: members}})
+	}
+
 	ordered := make([]*capture.Span, len(kids))
 	copy(ordered, kids)
 	sort.Slice(ordered, func(i, j int) bool {

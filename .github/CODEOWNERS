@@ -17,5 +17,10 @@
 **/testdata/flows/*.golden.json      @jyang234
 **/testdata/flows/*.flow.md          @jyang234
 
+# Gated post-hoc behavioral artifact: the boundary-effect set asserted by
+# `flowmap behavior ingest --flows-dir` (no-new-effects gate). Adopters route
+# their own --flows-dir path the same way.
+**/*.effects.json                    @jyang234
+
 # Per-flow tests: a test change is a deliberate baseline shift, not noise.
 **/flows/*_test.go                   @jyang234

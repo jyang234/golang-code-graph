@@ -49,7 +49,7 @@ The behavioral artifact is a faithful function of the **tests**, not a proxy for
 
 - **Author-side manual regeneration.** Before opening the MR (or after fixing review feedback), the author runs regeneration, commits the updated artifacts alongside the code, and the artifact delta rides in the MR for the reviewer. This mirrors the existing pre-MR `/review` workflow.
 - **CI staleness backstop (kept, near-free).** The in-process flows run in the normal `go test` suite and fail if a committed golden is stale; the boundary contract is regenerate-and-`git diff --exit-code`. This isn't the full gate ceremony — just "the checks already running also catch staleness" — and it's what preserves the always-accurate guarantee against a forgotten regeneration.
-- **Per-MR behavioral surface = in-process, single-service flows.** Fast, deterministic, one clock domain. The full out-of-process / inter-service E2E is **deferred**.
+- **Per-MR behavioral surface = in-process, single-service flows.** Fast, deterministic, one clock domain. Out-of-process e2e is now available as a **separate, non-gated-by-default** path (`flowmap behavior ingest`; see `integration/otlp-integration-guide.md`), opt-in to a no-new-effects gate per flow; full inter-service E2E assembly remains deferred.
 - **CODEOWNERS routes** the two gated artifacts (and the config and per-flow declarations) to humans. The human is the oracle; no AI sits in the verdict.
 - **Reserved extensions:** inter-service E2E, and — as a cheaper intermediate that closes the downstream-drift gap without a full multi-service environment — consumer-driven contract tests (Pact-style).
 

@@ -134,7 +134,12 @@ static:
 
 ## Scope (v1)
 
-v1 gates **in-process, single-service** flows per MR — fast, deterministic, one
-clock domain. Out-of-process and inter-service E2E (multiple services, clock
-skew) are v2. The boundary contract is still exhaustive over statically-reachable
-paths; what a flow *doesn't* exercise is exactly what `flowmap coverage` reports.
+This recipe gates **in-process, single-service** flows per MR — fast,
+deterministic, one clock domain. For an **existing out-of-process e2e suite**
+(Dockerized services, an OTel collector, real network), flowmap also reads
+captured OTLP traces post-hoc and maps the boundary effects a run exercised —
+non-gated by default, opt-in to a no-new-effects gate per flow. See
+[`integration/otlp-integration-guide.md`](./integration/otlp-integration-guide.md)
+and the runnable `examples/posthoc-e2e/`. The boundary contract is still
+exhaustive over statically-reachable paths; what a flow *doesn't* exercise is
+exactly what `flowmap coverage` reports.
