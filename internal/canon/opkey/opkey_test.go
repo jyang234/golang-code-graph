@@ -158,6 +158,37 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 	}
 }
 
+// TestAWSSQSWithoutMessagingAttrs reflects the real AWS-SDK SQS shape: the spans
+// carry no messaging.destination.name and no messaging.operation — only
+// rpc.system.name + rpc.method + the HTTP-to-endpoint transport. The rpc.method
+// must discriminate receive from delete, the peer must be the AWS service (not
+// the LocalStack transport host), and neither must fall through to bare HTTP.
+func TestAWSSQSWithoutMessagingAttrs(t *testing.T) {
+	recv := map[string]string{
+		"rpc.system.name": "aws-api", "rpc.method": "SQS/ReceiveMessage",
+		"messaging.system":    "aws_sqs",
+		"http.request.method": "POST", "url.full": "http://floci:4566/000000000000/q",
+		"server.address": "floci",
+	}
+	del := map[string]string{
+		"rpc.system.name": "aws-api", "rpc.method": "SQS/DeleteMessage",
+		"messaging.system":    "aws_sqs",
+		"http.request.method": "POST", "url.full": "http://floci:4566/000000000000/q",
+		"server.address": "floci",
+	}
+	rOp, rPeer := Of(ir.KindClient, recv, "")
+	dOp, dPeer := Of(ir.KindClient, del, "")
+	if rOp != "RPC SQS/ReceiveMessage" || dOp != "RPC SQS/DeleteMessage" {
+		t.Errorf("ops = %q / %q, want RPC SQS/ReceiveMessage / RPC SQS/DeleteMessage", rOp, dOp)
+	}
+	if rOp == dOp {
+		t.Error("receive and delete merged")
+	}
+	if rPeer != "SQS" || dPeer != "SQS" {
+		t.Errorf("peer = %q / %q, want SQS (the AWS service, not the transport host floci)", rPeer, dPeer)
+	}
+}
+
 // TestReceiveAndSettleDoNotMerge guards defect #3 directly: receiving a message
 // and acknowledging it are distinct ops over the same queue.
 func TestReceiveAndSettleDoNotMerge(t *testing.T) {

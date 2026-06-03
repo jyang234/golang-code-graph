@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/capture"
@@ -446,6 +447,78 @@ func TestIngestAWSSNSSQSFixture(t *testing.T) {
 			t.Errorf("step %d = %q, want %q", i, g.Members[0].Op, w)
 		}
 	}
+}
+
+// TestIngestKoalafiEventBridgeShape reproduces the real Koalafi telemetry: four
+// awaited steps captured as four separate root traces (no cross-trace parent),
+// disjoint by ~1.1s, with the AWS-SDK attribute shape (CLIENT-kind RPC spans;
+// SNS carries messaging.*, SQS carries only rpc.method + messaging.system, and
+// both carry HTTP-to-LocalStack transport attrs). It pins the three flowmap-side
+// defects the telemetry exposed:
+//
+//	#1 cross-trace ordering — the four disjoint root traces must sequence by their
+//	   root intervals (publish→receive→delete→drain), not collapse into one
+//	   op-key-ordered concurrent group.
+//	#2 SNS publish — recovered as PUBLISH <topic> from messaging.destination.name,
+//	   not lost to the bare HTTP-to-LocalStack transport.
+//	#3 SQS receive vs delete — distinct (from rpc.method), not merged; and keyed to
+//	   the AWS service peer (SQS), not the transport host (floci).
+func TestIngestKoalafiEventBridgeShape(t *testing.T) {
+	spans, err := otlpjson.DecodeFile("../../testdata/otlp/aws-eventbridge.otlp.json")
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	flows := Group(spans)
+	if len(flows) != 1 {
+		t.Fatalf("got %d fragments, want 1", len(flows))
+	}
+	tr, err := canon.Canonicalize(flows[0].Flow, nil)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+
+	// #2 + #3: the boundary-effect set recovers the publish and two distinct SQS
+	// ops — none lost to bare HTTP, receive and delete not merged.
+	got := BoundaryEffects(tr.Root)
+	want := []string{
+		"PUBLISH eb-dev-evt-f0a6abc6-v1",
+		"RPC SQS/DeleteMessage",
+		"RPC SQS/ReceiveMessage",
+	}
+	if !equalStrs(got, want) {
+		t.Errorf("boundary effects = %v\n                want %v", got, want)
+	}
+
+	// #1: four disjoint root traces sequence in time order, not one concurrent
+	// group. The fourth step (the drain re-check) is the same op as the receive
+	// but a distinct, later step — preserved, not deduped away.
+	if n := len(tr.Root.Children); n != 4 {
+		t.Fatalf("want 4 sequential steps (one per disjoint trace), got %d:\n%s", n, marshalTrace(t, tr))
+	}
+	order := []string{
+		"PUBLISH eb-dev-evt-f0a6abc6-v1",
+		"RPC SQS/ReceiveMessage",
+		"RPC SQS/DeleteMessage",
+		"RPC SQS/ReceiveMessage",
+	}
+	for i, w := range order {
+		g := tr.Root.Children[i]
+		if g.Concurrent || g.Unordered {
+			t.Errorf("step %d should be a plain sequential step, got concurrent=%v unordered=%v", i, g.Concurrent, g.Unordered)
+		}
+		if g.Members[0].Op != w {
+			t.Errorf("step %d = %q, want %q (time order)", i, g.Members[0].Op, w)
+		}
+	}
+}
+
+func marshalTrace(t *testing.T, tr *ir.CanonicalTrace) string {
+	t.Helper()
+	b, err := json.MarshalIndent(tr, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func services(g []FlowCapture) []string {

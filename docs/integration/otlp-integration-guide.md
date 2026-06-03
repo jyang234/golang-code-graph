@@ -146,25 +146,40 @@ the parent — never rewires the tree. Link targets are matched by `(traceId,
 spanId)`. See `../../testdata/otlp/async-broker.otlp.json` for a worked two-trace
 example.
 
-### Managed brokers (AWS SNS/SQS) — recognized from `messaging.*`
+### Managed brokers (AWS SNS/SQS) — recognized from the AWS layer
 
 The AWS SDK instrumentation models SNS/SQS as **`CLIENT`-kind RPC spans** (kind
-3), not `PRODUCER`/`CONSUMER`, yet it still emits the messaging
-semantic-convention attributes. flowmap classifies a broker interaction from
-those attributes regardless of span kind, so **no extra wiring is needed** if
-your SDK emits them:
+3), not `PRODUCER`/`CONSUMER`, and each span carries *three* layers of
+attributes: the messaging layer (`messaging.*`), the RPC layer (`rpc.*`), and the
+underlying HTTP-to-endpoint transport (`url.full` to LocalStack/AWS). flowmap
+prefers the messaging/RPC layer over the transport, so a broker call is never
+flattened to a bare HTTP edge to the endpoint host. **No extra wiring is needed**
+if your SDK emits the standard attributes:
 
-- `messaging.destination.name` → the topic/queue in the op key.
-- `messaging.operation` (or `messaging.operation.type` / `.name`) → the
-  direction: `publish`/`send`/`create` → **PUBLISH**, `receive`/`process` →
-  **CONSUME**, and `settle`/`ack`/`delete` (SQS `DeleteMessage`) → **SETTLE** —
-  the acknowledgment that drains the message, kept distinct from the receive
-  rather than merged with it.
+- **`rpc.system.name`** is accepted alongside the older `rpc.system` (the AWS SDK
+  emits the former); without it these calls fall through to the bare HTTP
+  transport, which is the root of both "the publish vanished" and "receive looks
+  like delete."
+- **SNS** carries `messaging.destination.name` → **PUBLISH `<topic>`** (the
+  direction comes from `messaging.operation` / `.operation.type`, e.g. `send`).
+- **SQS** typically carries *no* `messaging.destination.name` or
+  `messaging.operation` — only `rpc.method` (`SQS/ReceiveMessage` vs
+  `SQS/DeleteMessage`). That `rpc.method` is the discriminator, so a receive and
+  its delete are kept **distinct** (`RPC SQS/ReceiveMessage` / `RPC
+  SQS/DeleteMessage`) rather than merged, and the peer is the AWS service (`SQS`),
+  not the transport host. When an instrumentation *does* emit
+  `messaging.operation`, `settle`/`ack`/`delete` is keyed as **SETTLE `<dest>`**.
 
-`rpc.system.name` is accepted alongside the older `rpc.system`, so an RPC client
-call carrying only the newer spelling is keyed as `RPC …`, not a bare HTTP call.
-See `../../testdata/otlp/aws-sns-sqs.otlp.json` for the worked publish → receive →
-settle shape.
+**Cross-trace ordering.** When a test awaits several steps, each is often its own
+root trace (no cross-trace parent/child). For a slug spanning multiple such
+traces, the post-hoc canon sequences the top-level traces by their **disjoint
+root intervals** (happens-before; concurrent only on genuine overlap), so
+`publish → receive → ack` renders in time order rather than collapsing into one
+op-key-ordered concurrent group.
+
+See `../../testdata/otlp/aws-eventbridge.otlp.json` (the real four-trace SNS/SQS
+shape) and `../../testdata/otlp/aws-sns-sqs.otlp.json` (the messaging-rich
+publish → receive → settle shape).
 
 ## Step 5 — ingest after the e2e run (stage 1, non-gated)
 

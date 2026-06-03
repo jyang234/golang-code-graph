@@ -58,7 +58,7 @@ func Of(kind ir.Kind, attrs map[string]string, name string) (op, peer string) {
 		return httpKey("HTTP", method(attrs), "", route(attrs)), ""
 	case ir.KindClient:
 		if sys := rpcSystem(attrs); sys != "" || first(attrs, "rpc.service") != "" {
-			return rpcKey(attrs), first(attrs, "rpc.service", "peer.service", "server.address")
+			return rpcKey(attrs), rpcPeer(attrs)
 		}
 		if sys := dbSystem(attrs); sys != "" {
 			return dbKey(sys, attrs), sys
@@ -223,6 +223,24 @@ func rpcKey(attrs map[string]string) string {
 	default:
 		return RPCPrefix + m
 	}
+}
+
+// rpcPeer is the counterparty lifeline for an RPC client call. It prefers an
+// explicit rpc.service; failing that, the AWS SDK encodes "Service/Operation" in
+// rpc.method with no separate rpc.service (SQS/ReceiveMessage), and the service
+// prefix is the meaningful peer (SQS, SNS) — not the transport host
+// (server.address = the LocalStack/endpoint URL), which is the bare-HTTP
+// fallback we are specifically avoiding for AWS-SDK spans.
+func rpcPeer(attrs map[string]string) string {
+	if svc := first(attrs, "rpc.service"); svc != "" {
+		return svc
+	}
+	if m := first(attrs, "rpc.method"); m != "" {
+		if i := strings.IndexByte(m, '/'); i > 0 {
+			return m[:i]
+		}
+	}
+	return first(attrs, "peer.service", "server.address")
 }
 
 func method(attrs map[string]string) string {
