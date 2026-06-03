@@ -284,6 +284,7 @@ func TestSystemMermaidBoxesOwnedInfra(t *testing.T) {
 			Op: "HTTP POST /publish", Kind: ir.KindServer, Service: "event-bus",
 			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
 				{Op: "DB postgresql SELECT publishers", Kind: ir.KindClient, Peer: "postgresql/event_bus_test", Service: "event-bus"},
+				{Op: "PUBLISH cgate-email", Kind: ir.KindProducer, Peer: "Bus", Service: "event-bus"}, // draws event-bus→Bus
 				{Op: "CONSUME cgate-email", Kind: ir.KindConsumer, Peer: "Bus", Service: "cgate", Async: true,
 					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
 						{Op: "DB postgresql INSERT messages", Kind: ir.KindClient, Peer: "postgresql/cgate_test", Service: "cgate"},
@@ -304,6 +305,35 @@ func TestSystemMermaidBoxesOwnedInfra(t *testing.T) {
 	// The shared broker is declared outside any box (after the service boxes).
 	if i, j := strings.Index(out, "end\n    participant Bus as Bus"), strings.Index(out, "box"); i < 0 || i < j {
 		t.Errorf("shared Bus should be declared unboxed after the service boxes:\n%s", out)
+	}
+}
+
+// TestSystemMermaidPrunesEdgelessParticipants: a lifeline that no arrow or note
+// touches (here a Bus that a nested consumer references as its peer but is never
+// drawn to, because the consumer hop lands on the consuming service) is pruned, not
+// declared as a bare, dangling participant.
+func TestSystemMermaidPrunesEdgelessParticipants(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "publisher",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /x", Kind: ir.KindServer, Service: "publisher",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				// A link-stitched consumer: its hop draws publisher→notifier, so its
+				// Peer "Bus" is referenced by no edge.
+				{Op: "CONSUME e", Kind: ir.KindConsumer, Peer: "Bus", Service: "notifier", Async: true},
+			}}},
+		},
+	}
+	out := SystemMermaid(tr)
+	mustContain(t, out, "publisher--)notifier: CONSUME e")
+	if strings.Contains(out, "participant Bus") {
+		t.Errorf("edgeless Bus participant should be pruned:\n%s", out)
+	}
+	// Every declared participant must appear on some arrow.
+	for _, p := range []string{"publisher", "notifier"} {
+		if !strings.Contains(out, "participant "+p+" as "+p) {
+			t.Errorf("expected participant %q declared:\n%s", p, out)
+		}
 	}
 }
 

@@ -82,6 +82,11 @@ type renderer struct {
 	self   string
 	caller string
 	alias  map[string]string // lifeline label -> mermaid-safe id
+	// ref records the lifelines an arrow or note actually drew to. The cross-service
+	// renderer declares only these, pruning over-declared participants no edge
+	// touches. Nil for the per-service Mermaid renderer, which declares its fixed
+	// caller/self/peer set up front and draws to each, so nothing is pruned.
+	ref map[string]bool
 }
 
 // SystemMermaid renders a whole-flow, CROSS-SERVICE sequence diagram from a trace
@@ -145,9 +150,7 @@ func SystemMermaidRootedAt(t *ir.CanonicalTrace, service string) (string, bool) 
 // from an explicit caller lifeline. fallback is the service to attribute spans
 // that carry no service.name.
 func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) string {
-	var b strings.Builder
-	b.WriteString("sequenceDiagram\n")
-	r := &renderer{alias: map[string]string{}}
+	r := &renderer{alias: map[string]string{}, ref: map[string]bool{}}
 	entry := landingOf(root, fallback)
 
 	lifelines := map[string]bool{}
@@ -160,22 +163,33 @@ func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) s
 	// exclusively owns (a store reached only from that service), then the remaining
 	// shared lifelines (the broker, external peers, multi-owner databases) sorted.
 	// This keeps a service and its infrastructure together instead of interleaving
-	// every service's databases alphabetically.
+	// every service's databases alphabetically. Aliases are assigned in this order
+	// (so a name's id is stable), but the declarations are emitted only for the
+	// lifelines an arrow or note actually touches (see below).
 	services, ownedDB := serviceInfra(root, fallback)
 	used := map[string]bool{}
-	decl := func(name string) {
+	assign := func(name string) {
 		if name == "" {
 			return
 		}
-		if _, ok := r.alias[name]; ok {
-			return
+		if _, ok := r.alias[name]; !ok {
+			r.alias[name] = uniqueID(sanitize(name), used)
 		}
-		id := uniqueID(sanitize(name), used)
-		r.alias[name] = id
-		b.WriteString("    participant " + id + " as " + name + "\n")
 	}
 
-	decl(caller) // the ingress/bus, never boxed with a service
+	// A box groups a service with the databases it owns; a loose entry is a lone
+	// participant. Build the ordered plan and assign aliases as we go.
+	type block struct {
+		box   string   // "" => loose participants
+		names []string // box: [service, owned dbs…]; loose: [name]
+	}
+	var plan []block
+	loose := func(name string) {
+		assign(name)
+		plan = append(plan, block{names: []string{name}})
+	}
+
+	loose(caller) // the ingress/bus, never boxed with a service
 
 	svcOrder := make([]string, 0, len(services)+1)
 	if entry != caller {
@@ -194,18 +208,15 @@ func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) s
 		if svc == "" {
 			continue
 		}
+		assign(svc)
 		if infra := ownedDB[svc]; len(infra) > 0 {
-			// Mermaid parses `box [color] [title]`, so a service named a color word
-			// (e.g. "aqua") would be swallowed as the box color. Emit an explicit
-			// `transparent` color so the service name always lands in the title slot.
-			b.WriteString("    box transparent " + svc + "\n")
-			decl(svc)
+			names := append([]string{svc}, infra...)
 			for _, db := range infra {
-				decl(db)
+				assign(db)
 			}
-			b.WriteString("    end\n")
+			plan = append(plan, block{box: svc, names: names})
 		} else {
-			decl(svc)
+			plan = append(plan, block{names: []string{svc}})
 		}
 	}
 
@@ -218,11 +229,57 @@ func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) s
 	}
 	sort.Strings(remaining)
 	for _, l := range remaining {
-		decl(l)
+		loose(l)
 	}
 
-	b.WriteString("    " + r.msg(caller, entry, label(root)))
-	r.writeSystemGroups(&b, root.Children, entry, fallback, "    ")
+	// Render the body first; r.id records every lifeline an arrow or note touches.
+	var body strings.Builder
+	body.WriteString("    " + r.msg(caller, entry, label(root)))
+	r.writeSystemGroups(&body, root.Children, entry, fallback, "    ")
+
+	// Declare only the participants an edge actually touches, preserving the planned
+	// order and boxing. A lifeline that no arrow or note references — an over-declared
+	// peer — is pruned rather than drawn as a bare, dangling line. A box collapses to
+	// a loose participant when only the service (no owned database) was referenced.
+	var b strings.Builder
+	b.WriteString("sequenceDiagram\n")
+	declared := map[string]bool{}
+	declOne := func(name string) {
+		if !r.ref[name] || declared[name] {
+			return
+		}
+		declared[name] = true
+		b.WriteString("    participant " + r.alias[name] + " as " + name + "\n")
+	}
+	for _, bl := range plan {
+		if bl.box == "" {
+			for _, n := range bl.names {
+				declOne(n)
+			}
+			continue
+		}
+		members := make([]string, 0, len(bl.names))
+		for _, n := range bl.names {
+			if r.ref[n] && !declared[n] {
+				members = append(members, n)
+			}
+		}
+		if len(members) <= 1 { // nothing, or only the bare service: no box
+			for _, n := range members {
+				declOne(n)
+			}
+			continue
+		}
+		// Mermaid parses `box [color] [title]`, so a service named a color word (e.g.
+		// "aqua") would be swallowed as the box color. Emit an explicit `transparent`
+		// color so the service name always lands in the title slot.
+		b.WriteString("    box transparent " + bl.box + "\n")
+		for _, n := range members {
+			declOne(n)
+		}
+		b.WriteString("    end\n")
+	}
+	b.WriteString(body.String())
 	return b.String()
 }
 
@@ -494,6 +551,9 @@ func (r *renderer) amsg(from, to, text string) string {
 }
 
 func (r *renderer) id(label string) string {
+	if r.ref != nil {
+		r.ref[label] = true // this lifeline is touched by the arrow/note being drawn
+	}
 	if id, ok := r.alias[label]; ok {
 		return id
 	}
