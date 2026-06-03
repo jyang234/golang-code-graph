@@ -77,6 +77,27 @@ func Registrars(cfg *config.Config) []roots.Registrar {
 			PkgPath: pkgPath, Name: name, Kind: roots.KindConsumer, NameArg: 0, HandlerArg: 1,
 		})
 	}
+	// Config-declared HTTP routers: each named function registers a handler for
+	// the HTTP method that is its name uppercased.
+	for _, rh := range cfg.Static.Routers {
+		routeArg, handlerArg := 0, 1
+		if rh.RouteArg != nil {
+			routeArg = *rh.RouteArg
+		}
+		if rh.HandlerArg != nil {
+			handlerArg = *rh.HandlerArg
+		}
+		for _, fn := range rh.Methods {
+			regs = append(regs, roots.Registrar{
+				PkgPath:    rh.Package,
+				Name:       fn,
+				Kind:       roots.KindHTTP,
+				Method:     strings.ToUpper(fn),
+				NameArg:    routeArg,
+				HandlerArg: handlerArg,
+			})
+		}
+	}
 	return regs
 }
 

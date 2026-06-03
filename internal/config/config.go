@@ -48,6 +48,24 @@ type StaticConfig struct {
 	// site is flagged as likely over-approximation in the (non-gated) graph
 	// blind-spots. 0 => the built-in default. Interface-dense services may raise it.
 	HighFanOutThreshold int `yaml:"highFanOutThreshold"`
+
+	// Routers declares HTTP route-registration functions root discovery should
+	// recognize, beyond the built-in stdlib ServeMux and go-chi. Each entry covers
+	// a router whose method is implied by the registration function name and whose
+	// handler is a single positional func argument (echo and most custom routers;
+	// not gin's variadic handlers or gorilla's chained .Methods()).
+	Routers []RouterHint `yaml:"routers"`
+}
+
+// RouterHint declares a per-method HTTP router for root discovery. Each named
+// function registers a handler for the HTTP method that is its name uppercased
+// (chi's "Get" and echo's "GET" both map to GET), with the route at RouteArg and
+// the handler func at HandlerArg (logical positions, excluding any receiver).
+type RouterHint struct {
+	Package    string   `yaml:"package"`    // import path declaring the router type
+	Methods    []string `yaml:"methods"`    // registration function names, e.g. [GET, POST]
+	RouteArg   *int     `yaml:"routeArg"`   // logical position of the route string; nil => 0
+	HandlerArg *int     `yaml:"handlerArg"` // logical position of the handler func; nil => 1
 }
 
 // defaultHighFanOutThreshold is the built-in fan-out flag threshold.
@@ -204,6 +222,20 @@ func (c *Config) validate() error {
 	}
 	if _, ok := salienceTiers[c.Canon.SalienceTier]; c.Canon.SalienceTier != "" && !ok {
 		return fmt.Errorf("flowmap config: canon.salienceTier %q not one of warn|info|debug|all", c.Canon.SalienceTier)
+	}
+	for i, r := range c.Static.Routers {
+		if r.Package == "" {
+			return fmt.Errorf("flowmap config: static.routers[%d].package is required", i)
+		}
+		if len(r.Methods) == 0 {
+			return fmt.Errorf("flowmap config: static.routers[%d] (%s) lists no methods", i, r.Package)
+		}
+		if r.RouteArg != nil && *r.RouteArg < 0 {
+			return fmt.Errorf("flowmap config: static.routers[%d].routeArg %d must be >= 0", i, *r.RouteArg)
+		}
+		if r.HandlerArg != nil && *r.HandlerArg < 0 {
+			return fmt.Errorf("flowmap config: static.routers[%d].handlerArg %d must be >= 0", i, *r.HandlerArg)
+		}
 	}
 	return nil
 }

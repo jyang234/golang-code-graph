@@ -16,6 +16,7 @@ package roots
 import (
 	"go/constant"
 	"go/token"
+	"go/types"
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
@@ -168,7 +169,10 @@ func Discover(prog *ssabuild.Program, registrars []Registrar) *Result {
 				if !ok {
 					continue
 				}
-				handler, name := resolveRegistration(cc, reg, recvOffset)
+				handler, name, isReg := resolveRegistration(cc, reg, recvOffset)
+				if !isReg {
+					continue // matched the name but the handler arg isn't func-typed: not a registration
+				}
 				if handler == nil {
 					res.BlindSpots = append(res.BlindSpots, BlindSpot{
 						Registrar: pkg + "." + fname,
@@ -231,15 +235,22 @@ func calleeKey(cc *ssa.CallCommon) (pkg, name string, recvOffset int, ok bool) {
 // Get/Post/…), the name is "<Method> <route>"; otherwise it is the route string
 // verbatim (ServeMux's "POST /x"). The route is recovered through string
 // concatenation, so an oapi-codegen `baseURL + "/path"` yields "/path".
-func resolveRegistration(cc *ssa.CallCommon, reg Registrar, recvOffset int) (*ssa.Function, string) {
+//
+// isRegistration is false when the matched call's handler argument is not
+// func-typed: that is an incidental name collision (e.g. a config-declared
+// registrar matching an unrelated method, or gin's variadic handler arriving as a
+// slice), not a route registration, so the caller skips it silently rather than
+// misreporting it as a blind spot. A func-typed but unresolvable handler is a
+// genuine blind spot (isRegistration true, fn nil).
+func resolveRegistration(cc *ssa.CallCommon, reg Registrar, recvOffset int) (fn *ssa.Function, name string, isRegistration bool) {
 	handlerIdx := reg.HandlerArg + recvOffset
 	if handlerIdx < 0 || handlerIdx >= len(cc.Args) {
-		return nil, ""
+		return nil, "", false
+	}
+	if _, ok := cc.Args[handlerIdx].Type().Underlying().(*types.Signature); !ok {
+		return nil, "", false
 	}
 	handler := resolveHandler(cc.Args[handlerIdx])
-	if handler == nil {
-		return nil, ""
-	}
 	route := ""
 	if reg.NameArg >= 0 {
 		nameIdx := reg.NameArg + recvOffset
@@ -247,14 +258,14 @@ func resolveRegistration(cc *ssa.CallCommon, reg Registrar, recvOffset int) (*ss
 			route = constStringSegments(cc.Args[nameIdx])
 		}
 	}
-	name := route
+	name = route
 	if reg.Method != "" {
 		name = reg.Method
 		if route != "" {
 			name += " " + route
 		}
 	}
-	return handler, name
+	return handler, name, true
 }
 
 // constStringSegments recovers the constant parts of a string built by
