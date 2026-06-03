@@ -164,8 +164,8 @@ func TestSystemMermaidCrossService(t *testing.T) {
 // TestSystemMermaidInternalDBNotDrawn: an ORM-emitted DB op arrives as
 // KindInternal with the db system as its peer and lands on its own service. The
 // system view must NOT draw a hop to the database — that self-landing reach is
-// reserved for consumer polls (KindConsumer) — matching collectSystemLifelines,
-// which declares the peer participant only for consumers.
+// reserved for consumer polls (KindConsumer) — matching serviceInfra, which counts a
+// DB participant only where the hop lands on the peer.
 func TestSystemMermaidInternalDBNotDrawn(t *testing.T) {
 	tr := &ir.CanonicalTrace{
 		Service: "loansvc",
@@ -334,6 +334,31 @@ func TestSystemMermaidPrunesEdgelessParticipants(t *testing.T) {
 		if !strings.Contains(out, "participant "+p+" as "+p) {
 			t.Errorf("expected participant %q declared:\n%s", p, out)
 		}
+	}
+}
+
+// TestSystemMermaidBoxOwnerMatchesDrawnArrow: a database is boxed under the lifeline
+// the DB hop is actually drawn from, never under the span's service.name when the two
+// differ (a DB nested under a same-service client call, where the hop is drawn from
+// the call's peer). The box must not claim a database that service never visibly
+// reaches.
+func TestSystemMermaidBoxOwnerMatchesDrawnArrow(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "A",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /x", Kind: ir.KindServer, Service: "A",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "HTTP GET B /v", Kind: ir.KindClient, Peer: "B", Service: "A",
+					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+						{Op: "DB postgres SELECT t", Kind: ir.KindClient, Peer: "db1", Service: "A"},
+					}}}},
+			}}},
+		},
+	}
+	out := SystemMermaid(tr)
+	mustContain(t, out, "B->>db1: DB postgres SELECT t")
+	if strings.Contains(out, "box transparent A") {
+		t.Errorf("db1 is reached from B, not A; it must not be boxed under A:\n%s", out)
 	}
 }
 

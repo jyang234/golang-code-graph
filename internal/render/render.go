@@ -344,8 +344,11 @@ func landingOf(s *ir.CanonicalSpan, fallback string) string {
 func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]bool, ownedDB map[string][]string) {
 	services = map[string]bool{}
 	dbOwners := map[string]map[string]bool{} // db lifeline -> owning services
-	var walk func(s *ir.CanonicalSpan)
-	walk = func(s *ir.CanonicalSpan) {
+	// from is the lifeline an inbound hop into s was drawn from — the same threaded
+	// parent landing the renderer uses (writeSystemSpan), so ownership agrees with the
+	// arrow actually drawn.
+	var walk func(s *ir.CanonicalSpan, from string)
+	walk = func(s *ir.CanonicalSpan, from string) {
 		if s == nil {
 			return
 		}
@@ -357,22 +360,26 @@ func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]
 			services[landingOf(s, fallback)] = true
 		}
 		// A database lifeline exists only where the DB hop actually lands on the peer
-		// (an outbound client DB call). An ORM-emitted internal DB op lands on its own
-		// service and is never drawn, so it must not seed a phantom DB participant —
-		// mirroring the drawTarget rule the body uses.
+		// (an outbound client DB call). Attribute it to the lifeline the hop is drawn
+		// FROM — not the span's own service.name — so the owning box and the drawn arrow
+		// always agree even when a DB span is nested under a same-service client call
+		// (where the threaded from is the call's peer, not the db's service). An
+		// ORM-emitted internal DB op lands on its own service (landingOf != Peer) and is
+		// never drawn, so it seeds no DB participant — mirroring the drawTarget rule.
 		if s.Peer != "" && landingOf(s, fallback) == s.Peer && strings.HasPrefix(s.Op, opkey.DBPrefix) {
 			if dbOwners[s.Peer] == nil {
 				dbOwners[s.Peer] = map[string]bool{}
 			}
-			dbOwners[s.Peer][lifelineLabel(s.Service, fallback)] = true
+			dbOwners[s.Peer][from] = true
 		}
+		childFrom := landingOf(s, fallback)
 		for _, g := range s.Children {
 			for _, m := range g.Members {
-				walk(m)
+				walk(m, childFrom)
 			}
 		}
 	}
-	walk(root)
+	walk(root, landingOf(root, fallback))
 
 	ownedDB = map[string][]string{}
 	for db, owners := range dbOwners {
