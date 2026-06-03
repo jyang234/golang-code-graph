@@ -122,6 +122,13 @@ const (
 // when the span carries no messaging destination. The destination is required —
 // it is the identity of the interaction — so a non-messaging span never matches.
 func messaging(kind ir.Kind, attrs map[string]string) (string, bool) {
+	// An inbound entry (server) is never a broker interaction, even if it carries
+	// a stray messaging.destination: reclassifying it would turn an HTTP/RPC entry
+	// into a published event. Producer, consumer, client (the AWS-SDK shape), and
+	// internal spans can all be broker calls.
+	if kind == ir.KindServer {
+		return "", false
+	}
 	dest := destination(attrs)
 	if dest == "" {
 		return "", false
@@ -136,38 +143,26 @@ func messaging(kind ir.Kind, attrs map[string]string) (string, bool) {
 	}
 }
 
-// messagingDirection classifies the operation. It reads messaging.operation.type
-// (the semconv enum: publish/create/receive/process/settle) and tolerates the
-// older messaging.operation and the lower-level messaging.operation.name, which
-// carry SDK method names (SendMessage, ReceiveMessage, DeleteMessage). Settle is
-// checked first so "DeleteMessage" drains rather than being mistaken for a
-// destination op; with no operation hint, the span kind decides.
+// messagingDirection classifies the operation from the semantic-convention
+// operation value, matched EXACTLY rather than by substring — a control-plane
+// "CreateQueue" / "DeleteTopic" must not read as a data-plane publish / settle.
+// messaging.operation.name carries lower-level SDK method names that are too
+// ambiguous to direction-classify (DeleteMessage vs DeleteQueue both contain
+// "delete"), so an operation with no recognized type defers to the span kind,
+// which already distinguishes a producer from a consumer.
 func messagingDirection(kind ir.Kind, attrs map[string]string) msgDir {
-	op := strings.ToLower(first(attrs,
-		"messaging.operation.type", "messaging.operation", "messaging.operation.name"))
-	switch {
-	case op == "":
-		// fall through to kind
-	case containsAny(op, "settle", "ack", "nack", "delete", "complete", "abandon", "reject", "extend", "visibility"):
-		return dirSettle
-	case containsAny(op, "receive", "process", "poll", "deliver", "consume"):
-		return dirConsume
-	case containsAny(op, "publish", "send", "create", "produce", "enqueue"):
+	switch strings.ToLower(first(attrs, "messaging.operation.type", "messaging.operation")) {
+	case "publish", "send", "create", "produce", "enqueue":
 		return dirPublish
+	case "receive", "process", "poll", "deliver", "consume":
+		return dirConsume
+	case "settle", "ack", "nack", "delete", "complete", "abandon", "reject", "extend":
+		return dirSettle
 	}
 	if kind == ir.KindConsumer {
 		return dirConsume
 	}
 	return dirPublish
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
 
 // httpKey assembles "HTTP <METHOD> [<peer> ]<route>". The peer is included for
@@ -232,7 +227,12 @@ func rpcKey(attrs map[string]string) string {
 // (server.address = the LocalStack/endpoint URL), which is the bare-HTTP
 // fallback we are specifically avoiding for AWS-SDK spans.
 func rpcPeer(attrs map[string]string) string {
-	if svc := first(attrs, "rpc.service"); svc != "" {
+	// Prefer an explicit service, then a declared peer; only then the AWS
+	// "Service/Operation" prefix in rpc.method (SQS/ReceiveMessage -> SQS), and
+	// last the transport host. peer.service ahead of the method prefix keeps a
+	// non-AWS RPC span that names its peer unchanged; the method prefix ahead of
+	// server.address lands an AWS call on the service (SQS), not the endpoint host.
+	if svc := first(attrs, "rpc.service", "peer.service"); svc != "" {
 		return svc
 	}
 	if m := first(attrs, "rpc.method"); m != "" {
@@ -240,7 +240,7 @@ func rpcPeer(attrs map[string]string) string {
 			return m[:i]
 		}
 	}
-	return first(attrs, "peer.service", "server.address")
+	return first(attrs, "server.address")
 }
 
 func method(attrs map[string]string) string {

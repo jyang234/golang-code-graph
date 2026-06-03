@@ -244,13 +244,16 @@ func (r *renderer) writeSystemGroups(b *strings.Builder, groups []ir.ChildGroup,
 func (r *renderer) writeSystemSpan(b *strings.Builder, m *ir.CanonicalSpan, from, fallback, indent string) {
 	land := landingOf(m, fallback)
 	drawTo := land
-	if land == from && m.Peer != "" && m.Peer != from {
-		// A nested broker interaction that lands on its own lifeline — a consumer
-		// poll / receive (SQS ReceiveMessage), which is KindConsumer and so lands
-		// on its own service rather than the bus — would otherwise draw no hop and
-		// vanish from the diagram. Draw the reach to its peer (the Bus) so the
-		// receive is as visible as the publish and the settle. Child threading
-		// stays on the landed lifeline.
+	if land == from && m.Kind == ir.KindConsumer && m.Peer != "" && m.Peer != from {
+		// A consumer poll / receive (SQS ReceiveMessage) is KindConsumer and so
+		// lands on its own service rather than the bus; nested under that same
+		// service it would otherwise draw no hop and vanish. Draw the reach to its
+		// peer (the Bus) so the receive is as visible as the publish and the settle.
+		// Restricted to KindConsumer so a peer-bearing self-landing span of another
+		// kind (an ORM-emitted internal DB op, whose peer is the db system) is not
+		// drawn here — that matches collectSystemLifelines, which declares the peer
+		// participant only for KindConsumer. Child threading stays on the landed
+		// lifeline.
 		drawTo = m.Peer
 	}
 	if drawTo != from {

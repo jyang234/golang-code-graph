@@ -521,6 +521,93 @@ func marshalTrace(t *testing.T, tr *ir.CanonicalTrace) string {
 	return string(b)
 }
 
+// TestStitchSelfLinkDoesNotDropSpan: a tagged root that links to itself must not
+// be reparented onto itself — that would close a cycle and silently drop it.
+func TestStitchSelfLinkDoesNotDropSpan(t *testing.T) {
+	spans := []capture.Span{
+		{TraceID: "A", ID: "s1", Kind: ir.KindServer,
+			Attrs: map[string]string{FlowKey: "f", serviceKey: "svc", "http.request.method": "POST", "http.route": "/x"},
+			Links: []capture.SpanLink{{TraceID: "A", SpanID: "s1"}}},
+	}
+	tr, err := canon.Canonicalize(WholeFlows(spans)[0].Flow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Root == nil || tr.Root.Op != "HTTP POST /x" {
+		t.Fatalf("self-linked root was dropped/altered; root=%+v", tr.Root)
+	}
+}
+
+// TestStitchMutualLinkKeepsBothSpans: two roots that link to each other must not
+// form a cycle that orphans both — the second edge is rejected, the first kept.
+func TestStitchMutualLinkKeepsBothSpans(t *testing.T) {
+	spans := []capture.Span{
+		{TraceID: "A", ID: "a1", Kind: ir.KindServer,
+			Attrs: map[string]string{FlowKey: "f", serviceKey: "svc-a", "http.request.method": "POST", "http.route": "/a"},
+			Links: []capture.SpanLink{{TraceID: "B", SpanID: "b1"}}},
+		{TraceID: "B", ID: "b1", Kind: ir.KindServer,
+			Attrs: map[string]string{FlowKey: "f", serviceKey: "svc-b", "http.request.method": "POST", "http.route": "/b"},
+			Links: []capture.SpanLink{{TraceID: "A", SpanID: "a1"}}},
+	}
+	tr, err := canon.Canonicalize(WholeFlows(spans)[0].Flow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops := map[string]bool{}
+	collect(tr.Root, ops)
+	for _, w := range []string{"HTTP POST /a", "HTTP POST /b"} {
+		if !ops[w] {
+			t.Errorf("mutual-link dropped span %q; ops=%v", w, keys(ops))
+		}
+	}
+}
+
+// TestStitchPrefersTaggedProducerLink: a new-root consumer linking to both an
+// incidental untagged span and the tagged producer must reparent onto the
+// producer (the membership-bearing link), not whichever resolves first.
+func TestStitchPrefersTaggedProducerLink(t *testing.T) {
+	spans := []capture.Span{
+		{TraceID: "P", ID: "p1", Kind: ir.KindServer,
+			Attrs: map[string]string{FlowKey: "f", serviceKey: "prod", "http.request.method": "POST", "http.route": "/p"}},
+		{TraceID: "X", ID: "x1", Kind: ir.KindServer, // untagged, incidental
+			Attrs: map[string]string{serviceKey: "other", "http.request.method": "GET", "http.route": "/x"}},
+		{TraceID: "B", ID: "b1", Kind: ir.KindConsumer,
+			Attrs: map[string]string{serviceKey: "cons", "messaging.destination.name": "q"},
+			Links: []capture.SpanLink{{TraceID: "X", SpanID: "x1"}, {TraceID: "P", SpanID: "p1"}}},
+	}
+	g := Group(spans)
+	var cons *FlowCapture
+	for i := range g {
+		if g[i].Service == "cons" {
+			cons = &g[i]
+		}
+	}
+	if cons == nil || cons.Slug != "f" {
+		t.Fatalf("consumer did not join flow via the tagged producer link; services=%v", services(g))
+	}
+}
+
+// TestAssembleRecognizesAWSConsumerEntry: an AWS-SDK consumer roots its own trace
+// as a CLIENT span with messaging consume attributes; it must be recognized as a
+// consumer entry (TriggerEvent, no synthesis) via its effective kind.
+func TestAssembleRecognizesAWSConsumerEntry(t *testing.T) {
+	spans := []capture.Span{
+		{TraceID: "B", ID: "c1", Kind: ir.KindClient,
+			Attrs: map[string]string{FlowKey: "f", serviceKey: "notifier",
+				"messaging.system": "aws_sqs", "messaging.destination.name": "q", "messaging.operation": "receive"}},
+	}
+	g := Group(spans)
+	if len(g) != 1 {
+		t.Fatalf("got %d fragments, want 1", len(g))
+	}
+	if g[0].Synthesized {
+		t.Error("AWS consumer entry (CLIENT span) should not be synthesized")
+	}
+	if g[0].Flow.Trigger != capture.TriggerEvent {
+		t.Errorf("trigger = %q, want event", g[0].Flow.Trigger)
+	}
+}
+
 func services(g []FlowCapture) []string {
 	out := make([]string, len(g))
 	for i := range g {

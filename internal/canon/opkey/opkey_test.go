@@ -1,10 +1,54 @@
 package opkey
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/ir"
 )
+
+// TestServerSpanWithStrayMessagingAttrStaysInbound: a messaging.destination on an
+// inbound server span must not reclassify it as a published event (the messaging
+// short-circuit excludes KindServer).
+func TestServerSpanWithStrayMessagingAttrStaysInbound(t *testing.T) {
+	attrs := map[string]string{
+		"http.request.method":        "POST",
+		"http.route":                 "/x",
+		"messaging.destination.name": "evt",
+	}
+	op, peer := Of(ir.KindServer, attrs, "")
+	if op != "HTTP POST /x" || peer != "" {
+		t.Errorf("server op=%q peer=%q, want \"HTTP POST /x\" / \"\"", op, peer)
+	}
+	if k := EffectiveKind(ir.KindServer, attrs); k != ir.KindServer {
+		t.Errorf("EffectiveKind = %v, want server", k)
+	}
+}
+
+// TestMessagingExactMatchNotSubstring: the operation value is matched exactly, so
+// a control-plane method name (DeleteTopic) is not read as a data-plane settle the
+// way substring matching would.
+func TestMessagingExactMatchNotSubstring(t *testing.T) {
+	settle, _ := Of(ir.KindClient, map[string]string{"messaging.destination.name": "q", "messaging.operation": "delete"}, "")
+	if settle != "SETTLE q" {
+		t.Errorf("exact 'delete' = %q, want SETTLE q", settle)
+	}
+	admin, _ := Of(ir.KindClient, map[string]string{"messaging.destination.name": "q", "messaging.operation": "DeleteTopic"}, "")
+	if strings.HasPrefix(admin, "SETTLE") {
+		t.Errorf("control-plane 'DeleteTopic' misclassified as %q (substring leak)", admin)
+	}
+}
+
+// TestRPCPeerKeepsExplicitPeerService: a non-AWS RPC span that names peer.service
+// keeps it; the rpc.method "/"-prefix is only a fallback when no peer is named.
+func TestRPCPeerKeepsExplicitPeerService(t *testing.T) {
+	_, peer := Of(ir.KindClient, map[string]string{
+		"rpc.system": "grpc", "rpc.method": "Cache/Get", "peer.service": "cache-svc",
+	}, "")
+	if peer != "cache-svc" {
+		t.Errorf("peer = %q, want cache-svc (peer.service ahead of the rpc.method prefix)", peer)
+	}
+}
 
 func TestServerKey(t *testing.T) {
 	op, peer := Of(ir.KindServer, map[string]string{

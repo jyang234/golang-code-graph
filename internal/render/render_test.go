@@ -161,6 +161,43 @@ func TestSystemMermaidCrossService(t *testing.T) {
 	}
 }
 
+// TestSystemMermaidInternalDBNotDrawn: an ORM-emitted DB op arrives as
+// KindInternal with the db system as its peer and lands on its own service. The
+// system view must NOT draw a hop to the database — that self-landing reach is
+// reserved for consumer polls (KindConsumer) — matching collectSystemLifelines,
+// which declares the peer participant only for consumers.
+func TestSystemMermaidInternalDBNotDrawn(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "loansvc",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /x", Kind: ir.KindServer, Service: "loansvc",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "DB postgres INSERT ledger", Kind: ir.KindInternal, Peer: "postgres", Service: "loansvc"},
+			}}},
+		},
+	}
+	if out := SystemMermaid(tr); strings.Contains(out, "postgres") {
+		t.Errorf("internal-kind DB op drew a phantom DB hop/participant:\n%s", out)
+	}
+}
+
+// TestSystemMermaidConsumerPollDrawn: the intended case still works — a nested
+// KindConsumer poll that lands on its own service draws its reach to the bus.
+func TestSystemMermaidConsumerPollDrawn(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "loansvc",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /x", Kind: ir.KindServer, Service: "loansvc",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "CONSUME q", Kind: ir.KindConsumer, Peer: "Bus", Service: "loansvc"},
+			}}},
+		},
+	}
+	if out := SystemMermaid(tr); !strings.Contains(out, "loansvc->>Bus: CONSUME q") {
+		t.Errorf("consumer poll should draw a reach to the bus:\n%s", out)
+	}
+}
+
 // TestSystemMermaidRootedAt centers the view on a middle service: the caller is
 // the real upstream, the subtree is the service's downstream, and ops above the
 // service are excluded. An absent service returns ok=false.
