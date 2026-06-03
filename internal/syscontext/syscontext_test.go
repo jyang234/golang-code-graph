@@ -96,3 +96,25 @@ func TestOverlayStaticDashed(t *testing.T) {
 		t.Errorf("pg dep is contract-only → dashed, got %+v", e)
 	}
 }
+
+// TestServerEdgeFromNesting: when a callee emits a server span whose service.name
+// differs from the caller's peer.service, the cross-service hop is recovered from
+// the nesting (parent service → this service), not the mismatched client edge.
+func TestServerEdgeFromNesting(t *testing.T) {
+	tr := &ir.CanonicalTrace{Service: "loansvc", Root: &ir.CanonicalSpan{
+		Op: "HTTP POST /x", Kind: ir.KindServer, Service: "loansvc",
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+			{Op: "HTTP GET bureau-host /s", Kind: ir.KindClient, Peer: "bureau-host", Service: "loansvc",
+				Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+					{Op: "HTTP GET /s", Kind: ir.KindServer, Service: "bureau"},
+				}}}},
+		}}},
+	}}
+	g := Build([]*ir.CanonicalTrace{tr}, nil, Options{})
+	if e := findEdge(g, "loansvc", "bureau", ""); e == nil {
+		t.Errorf("expected loansvc->bureau recovered from nesting; edges: %+v", g.Edges)
+	}
+	if nodeKind(g, "bureau") != KindService {
+		t.Errorf("the callee server span should be a service node, got %q", nodeKind(g, "bureau"))
+	}
+}

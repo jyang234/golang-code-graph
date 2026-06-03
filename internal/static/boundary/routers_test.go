@@ -141,3 +141,55 @@ func main() {
 		t.Errorf("the cache.GET false-match must not add an entrypoint; got %+v", c.EntryPoints.HTTP)
 	}
 }
+
+// TestVariadicHandlerRouter covers gin's shape: a per-method registration whose
+// handler is variadic (r.GET(path, middleware..., handler)). The route is found,
+// and the LAST handler is the one rooted — proven by its publish appearing in the
+// contract (rooting the first/middleware handler would miss it).
+func TestVariadicHandlerRouter(t *testing.T) {
+	c := analyzeModule(t, map[string]string{
+		"go.mod": "module ginsvc\n\ngo 1.24\n",
+		".flowmap.yaml": `service: ginsvc
+classify:
+  busPublish:
+    - "ginsvc#publish"
+static:
+  routers:
+    - package: ginsvc
+      methods: [GET]
+`,
+		"main.go": `package main
+
+import "net/http"
+
+type HandlerFunc func(http.ResponseWriter, *http.Request)
+
+// Router mimics gin: the handler argument is variadic.
+type Router struct{}
+
+func (r *Router) GET(path string, h ...HandlerFunc) {}
+
+func logging(w http.ResponseWriter, r *http.Request)  {}
+func getThing(w http.ResponseWriter, r *http.Request) { publish("thing.read") }
+
+func publish(event string) {}
+
+func main() {
+	r := &Router{}
+	r.GET("/g/{id}", logging, getThing)
+}
+`,
+	})
+	if got := routes(c)["/g/{id}"]; got != "GET" {
+		t.Errorf("route /g/{id}: got %q, want GET (all: %+v)", got, c.EntryPoints.HTTP)
+	}
+	found := false
+	for _, e := range c.Published {
+		if e.Event == "thing.read" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected thing.read (the LAST variadic handler must be rooted); got %+v", c.Published)
+	}
+}

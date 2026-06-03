@@ -143,9 +143,10 @@ static:
       # routeArg: 0  (default)   handlerArg: 1  (default)
 ```
 
-This does **not** cover gin (handlers are variadic, so they arrive as a slice)
-or gorilla/mux (the method comes from a chained `.Methods(...)` call); those need
-engine support rather than a config hint.
+gin's per-method router works the same way — its handler is variadic, and the
+final handler in `r.GET(path, mw…, h)` is the one rooted. The one shape this
+does **not** cover is gorilla/mux, where the method comes from a chained
+`.Methods("GET")` call rather than the function name or route string.
 
 ---
 

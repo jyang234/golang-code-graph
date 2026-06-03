@@ -247,7 +247,7 @@ func resolveRegistration(cc *ssa.CallCommon, reg Registrar, recvOffset int) (fn 
 	if handlerIdx < 0 || handlerIdx >= len(cc.Args) {
 		return nil, "", false
 	}
-	if _, ok := cc.Args[handlerIdx].Type().Underlying().(*types.Signature); !ok {
+	if !isHandlerArg(cc.Args[handlerIdx]) {
 		return nil, "", false
 	}
 	handler := resolveHandler(cc.Args[handlerIdx])
@@ -266,6 +266,21 @@ func resolveRegistration(cc *ssa.CallCommon, reg Registrar, recvOffset int) (fn 
 		}
 	}
 	return handler, name, true
+}
+
+// isHandlerArg reports whether v is plausibly a route handler argument: a func
+// value, or a slice of funcs (a variadic handler list). This distinguishes a real
+// registration from an incidental name collision (e.g. a config registrar
+// matching an unrelated method whose argument is not a function).
+func isHandlerArg(v ssa.Value) bool {
+	switch t := v.Type().Underlying().(type) {
+	case *types.Signature:
+		return true
+	case *types.Slice:
+		_, ok := t.Elem().Underlying().(*types.Signature)
+		return ok
+	}
+	return false
 }
 
 // constStringSegments recovers the constant parts of a string built by
@@ -305,8 +320,50 @@ func resolveHandler(v ssa.Value) *ssa.Function {
 		return resolveHandler(t.X)
 	case *ssa.MakeInterface:
 		return resolveHandler(t.X)
+	case *ssa.Slice:
+		// A variadic handler argument (gin's r.GET(path, ...HandlerFunc)) arrives
+		// as a slice the caller builds; the real handler is the last element
+		// (any leading elements are middleware).
+		return variadicLastFunc(t)
 	}
 	return nil
+}
+
+// variadicLastFunc recovers the highest-indexed function stored into the array
+// backing a variadic-argument slice — the final handler in r.GET(path, mw…, h).
+// Leading middleware elements are intentionally not rooted: rooting one route at
+// several handlers would duplicate the entry point, and a middleware that itself
+// made a boundary call is the rarer case.
+func variadicLastFunc(slice *ssa.Slice) *ssa.Function {
+	alloc, ok := slice.X.(*ssa.Alloc)
+	if !ok || alloc.Referrers() == nil {
+		return nil
+	}
+	var bestVal ssa.Value
+	bestIdx := int64(-1)
+	for _, ref := range *alloc.Referrers() {
+		idx, ok := ref.(*ssa.IndexAddr)
+		if !ok || idx.X != alloc || idx.Referrers() == nil {
+			continue
+		}
+		ci, ok := idx.Index.(*ssa.Const)
+		if !ok || ci.Value == nil || ci.Value.Kind() != constant.Int {
+			continue
+		}
+		i, exact := constant.Int64Val(ci.Value)
+		if !exact || i <= bestIdx {
+			continue
+		}
+		for _, r2 := range *idx.Referrers() {
+			if st, ok := r2.(*ssa.Store); ok && st.Addr == idx {
+				bestVal, bestIdx = st.Val, i
+			}
+		}
+	}
+	if bestVal == nil {
+		return nil
+	}
+	return resolveHandler(bestVal)
 }
 
 // realFunc resolves a synthetic bound-method or thunk wrapper to the method it

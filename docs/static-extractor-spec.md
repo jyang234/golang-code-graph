@@ -40,10 +40,12 @@ the name uppercased). A matched call is only treated as a registration when its
 handler argument is **func-typed** — so an incidental name collision (a config
 registrar matching, say, a `cache.Get`) is skipped silently rather than
 mis-recorded as a gated blind spot, while a genuinely dynamic func handler is
-still disclosed. Two router shapes are deliberately out of scope for the config
-hint and require engine support: **gin** (variadic handlers arrive as a slice,
-not a func value) and **gorilla/mux** (the method comes from a chained
-`.Methods(...)` call, not the function name or route).
+still disclosed. **gin** is covered too: its handler is variadic, arriving as a
+slice the caller builds, from which the final handler (after any middleware) is
+recovered and rooted. The one shape still out of scope is **gorilla/mux**, where
+the HTTP method comes from a chained `.Methods(...)` call on the returned
+`*Route` rather than the function name or route — it needs the chained call
+followed, not just a config hint.
 
 This **aligns the static graph with the behavioral flows**: the static roots (handlers, consumers, mains) mirror the behavioral triggers (HTTP, event). Organize the graph **per entry point** — the subtree reachable from each handler/consumer — so the static artifact and the per-flow snapshots are about the same units.
 
