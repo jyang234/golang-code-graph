@@ -235,6 +235,78 @@ func TestSystemMermaidRootedAt(t *testing.T) {
 	}
 }
 
+// TestSystemMermaidAsyncLinkDistinct: a consumer reached across a broker by a
+// FOLLOWS_FROM span link (Async) renders as a distinct asynchronous interaction —
+// a dashed open arrow and a Note — pulled out of the producer's synchronous par,
+// not as a solid call nested inside it.
+func TestSystemMermaidAsyncLinkDistinct(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "event-bus",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /publish", Kind: ir.KindServer, Service: "event-bus",
+			Children: []ir.ChildGroup{{Concurrent: true, Members: []*ir.CanonicalSpan{
+				{Op: "DB postgresql SELECT publishers", Kind: ir.KindClient, Peer: "postgresql/event_bus_test", Service: "event-bus"},
+				{Op: "PUBLISH cgate-email", Kind: ir.KindProducer, Peer: "Bus", Service: "event-bus"},
+				// The consumer was stitched onto the producer's sibling group via a link.
+				{Op: "CONSUME cgate-email", Kind: ir.KindConsumer, Peer: "Bus", Service: "cgate", Async: true,
+					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+						{Op: "DB postgresql INSERT messages", Kind: ir.KindClient, Peer: "postgresql/cgate_test", Service: "cgate"},
+					}}}},
+			}}},
+		},
+	}
+	out := SystemMermaid(tr)
+	// The async hop is a dashed open arrow with an async note, not a solid arrow.
+	mustContain(t, out, "--)cgate: CONSUME cgate-email")
+	mustContain(t, out, "Note over cgate: async (FOLLOWS_FROM)")
+	if strings.Contains(out, "->>cgate: CONSUME cgate-email") {
+		t.Errorf("async consumer drawn as a synchronous call:\n%s", out)
+	}
+	// The split databases are distinct participants.
+	mustContain(t, out, "participant postgresql_event_bus_test as postgresql/event_bus_test")
+	mustContain(t, out, "participant postgresql_cgate_test as postgresql/cgate_test")
+	// cgate's own downstream still renders.
+	mustContain(t, out, "cgate->>postgresql_cgate_test: DB postgresql INSERT messages")
+	// The consumer was not left inside the producer's par as a third sync branch:
+	// the par block should hold only the two synchronous siblings.
+	if strings.Count(out, "\n    and\n") != 1 {
+		t.Errorf("expected the par to hold exactly two sync members (one `and`):\n%s", out)
+	}
+}
+
+// TestSystemMermaidBoxesOwnedInfra: each service is boxed with the databases it
+// exclusively owns, so per-service infrastructure stays family-adjacent instead of
+// interleaving alphabetically. A shared broker stays outside any box.
+func TestSystemMermaidBoxesOwnedInfra(t *testing.T) {
+	tr := &ir.CanonicalTrace{
+		Service: "event-bus",
+		Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /publish", Kind: ir.KindServer, Service: "event-bus",
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+				{Op: "DB postgresql SELECT publishers", Kind: ir.KindClient, Peer: "postgresql/event_bus_test", Service: "event-bus"},
+				{Op: "CONSUME cgate-email", Kind: ir.KindConsumer, Peer: "Bus", Service: "cgate", Async: true,
+					Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+						{Op: "DB postgresql INSERT messages", Kind: ir.KindClient, Peer: "postgresql/cgate_test", Service: "cgate"},
+					}}}},
+			}}},
+		},
+	}
+	out := SystemMermaid(tr)
+	// Each service's owned database sits inside that service's box.
+	for _, want := range []string{
+		"box event-bus\n    participant event_bus as event-bus\n    participant postgresql_event_bus_test as postgresql/event_bus_test\n    end\n",
+		"box cgate\n    participant cgate as cgate\n    participant postgresql_cgate_test as postgresql/cgate_test\n    end\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing boxed family layout:\nwant:\n%s\ngot:\n%s", want, out)
+		}
+	}
+	// The shared broker is declared outside any box (after the service boxes).
+	if i, j := strings.Index(out, "end\n    participant Bus as Bus"), strings.Index(out, "box"); i < 0 || i < j {
+		t.Errorf("shared Bus should be declared unboxed after the service boxes:\n%s", out)
+	}
+}
+
 // TestSystemGraph renders a system-context graph: graph LR, node shapes by kind,
 // solid vs dashed edges.
 func TestSystemGraph(t *testing.T) {

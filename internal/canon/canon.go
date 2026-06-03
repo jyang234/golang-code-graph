@@ -133,6 +133,7 @@ func (c *canonicalizer) build(s *capture.Span, childrenOf map[string][]*capture.
 		Kind:      kind,
 		Peer:      peer,
 		Service:   s.Attr("service.name"), // owning lifeline; "" in-process (omitempty)
+		Async:     s.AsyncLink,            // reached across a broker via a span link
 		Status:    normalizeStatus(s.Status),
 		ErrorType: s.ErrorType,
 		Attrs:     c.projectAttrs(s),
@@ -319,30 +320,42 @@ func (c *canonicalizer) groupPostHoc(kids []*capture.Span, childrenOf map[string
 		return c.collapseLoops([]ir.ChildGroup{{Concurrent: len(u.members) > 1, Members: u.members}})
 	}
 
+	// Partition the start-sorted units into runs separated by a RELIABLE gap (both
+	// neighbors timed and disjoint by more than the order guard). A reliable gap is
+	// a run-stable happens-before boundary and becomes a sequence boundary; units
+	// that fall within the guard of a neighbor (or are untimed) cannot be ordered
+	// relative to each other and stay together as one unordered group. This refines
+	// the former all-or-nothing rule — under which a single ambiguous gap collapsed
+	// an otherwise strictly-sequential sibling set into one wall-of-par block: now
+	// only the genuinely-ambiguous neighbors group, and every cleanly-separated
+	// effect renders as its own ordered step.
 	guard := c.cfg.Canon.OrderGuard()
-	cleanlyOrdered := true
-	for i := range units {
-		if !units[i].timed || (i > 0 && units[i].start.Sub(units[i-1].end) <= guard) {
-			cleanlyOrdered = false
-			break
-		}
+	reliableGap := func(prev, cur unit) bool {
+		return prev.timed && cur.timed && cur.start.Sub(prev.end) > guard
 	}
-	if cleanlyOrdered {
-		groups := make([]ir.ChildGroup, 0, len(units))
-		for _, u := range units {
+	var groups []ir.ChildGroup
+	for i := 0; i < len(units); {
+		j := i + 1
+		for j < len(units) && !reliableGap(units[j-1], units[j]) {
+			j++
+		}
+		block := units[i:j]
+		if len(block) == 1 {
+			u := block[0]
 			groups = append(groups, ir.ChildGroup{Concurrent: len(u.members) > 1, Members: u.members})
+		} else {
+			// A run of mutually-unorderable units: present together as unordered
+			// rather than over-claim a sequence (op-key/arbitrary) or parallelism.
+			var all []*ir.CanonicalSpan
+			for _, u := range block {
+				all = append(all, u.members...)
+			}
+			bySig(all)
+			groups = append(groups, ir.ChildGroup{Unordered: len(all) > 1, Members: all})
 		}
-		return c.collapseLoops(groups)
+		i = j
 	}
-
-	// Not cleanly orderable: present together as unordered rather than over-claim a
-	// sequence (op-key/arbitrary) or parallelism (par).
-	var all []*ir.CanonicalSpan
-	for _, u := range units {
-		all = append(all, u.members...)
-	}
-	bySig(all)
-	return c.collapseLoops([]ir.ChildGroup{{Unordered: len(all) > 1, Members: all}})
+	return c.collapseLoops(groups)
 }
 
 // collapseLoops folds data-dependent repetition into one representative with a

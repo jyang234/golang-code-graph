@@ -81,6 +81,27 @@ func TestPostHocUnorderedWithinGuard(t *testing.T) {
 	}
 }
 
+// TestPostHocPartialOrdering: a sibling cleanly separated from an ambiguous
+// within-guard pair no longer collapses the whole set into one wall-of-par. The
+// two near-simultaneous siblings render as one unordered group; the cleanly later
+// one renders as its own ordered step after it.
+func TestPostHocPartialOrdering(t *testing.T) {
+	// c.third@0, a.first@10 (9ms apart — ambiguous), b.second@400 (well separated).
+	tr := mustCanon(t, postHocFlow(capture.ModePostHoc, [3][2]int{{0, 1}, {10, 11}, {400, 401}}))
+	if len(tr.Root.Children) != 2 {
+		t.Fatalf("want 2 groups (one unordered pair, then one sequential step), got %d:\n%s",
+			len(tr.Root.Children), marshal(t, tr))
+	}
+	g0 := tr.Root.Children[0]
+	if !g0.Unordered || len(g0.Members) != 2 {
+		t.Errorf("group 0 should be the unordered within-guard pair, got %+v", g0)
+	}
+	g1 := tr.Root.Children[1]
+	if g1.Concurrent || g1.Unordered || len(g1.Members) != 1 || g1.Members[0].Op != "PUBLISH b.second" {
+		t.Errorf("group 1 should be the cleanly-separated sequential step PUBLISH b.second, got %+v", g1)
+	}
+}
+
 // TestPostHocUnorderedWhenUntimed: with no timing at all, siblings are unordered
 // rather than imposed into an arbitrary deterministic sequence.
 func TestPostHocUnorderedWhenUntimed(t *testing.T) {

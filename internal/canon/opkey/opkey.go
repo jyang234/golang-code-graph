@@ -51,7 +51,7 @@ func Of(kind ir.Kind, attrs map[string]string, name string) (op, peer string) {
 	// render an SNS publish as a bare HTTP/RPC call to "sns" and merge an SQS
 	// receive with its delete.
 	if op, ok := messaging(kind, attrs); ok {
-		return op, "Bus"
+		return op, brokerPeer(attrs)
 	}
 	switch kind {
 	case ir.KindServer:
@@ -61,20 +61,63 @@ func Of(kind ir.Kind, attrs map[string]string, name string) (op, peer string) {
 			return rpcKey(attrs), rpcPeer(attrs)
 		}
 		if sys := dbSystem(attrs); sys != "" {
-			return dbKey(sys, attrs), sys
+			return dbKey(sys, attrs), dbPeer(sys, attrs)
 		}
 		p := first(attrs, "peer.service", "server.address")
 		return httpKey("HTTP", method(attrs), p, route(attrs)), p
 	case ir.KindProducer:
-		return PublishPrefix + destination(attrs), "Bus"
+		return PublishPrefix + destination(attrs), brokerPeer(attrs)
 	case ir.KindConsumer:
-		return ConsumePrefix + destination(attrs), "Bus"
+		return ConsumePrefix + destination(attrs), brokerPeer(attrs)
 	default: // internal
 		if sys := dbSystem(attrs); sys != "" {
-			return dbKey(sys, attrs), sys
+			return dbKey(sys, attrs), dbPeer(sys, attrs)
 		}
 		return name, ""
 	}
+}
+
+// brokerPeer is the counterparty lifeline for a broker interaction, canonicalized
+// from messaging.system so distinct messaging systems do not collapse into one
+// "Bus" lifeline. A span carrying no messaging.system (the common in-process
+// event-bus shape) keeps the generic "Bus", so existing single-bus diagrams are
+// unchanged; a managed system (SNS, SQS, Kafka, …) names its own lifeline, so an
+// SNS publish and an event-bus consume no longer share a participant. An
+// unrecognized system uses its raw name rather than masquerading as the default
+// bus.
+func brokerPeer(attrs map[string]string) string {
+	switch strings.ToLower(first(attrs, "messaging.system")) {
+	case "", "event_bus", "eventbus":
+		return "Bus"
+	case "aws_sns", "sns":
+		return "SNS"
+	case "aws_sqs", "sqs":
+		return "SQS"
+	case "kafka", "apache_kafka":
+		return "Kafka"
+	case "rabbitmq":
+		return "RabbitMQ"
+	default:
+		return first(attrs, "messaging.system")
+	}
+}
+
+// dbPeer qualifies the database system with the specific database instance — the
+// logical database (db.namespace) or, failing that, the server host
+// (server.address) — so two databases of the same system render as distinct
+// lifelines (postgresql/event_bus_test vs postgresql/cgate_test) instead of
+// collapsing into one "postgresql" participant that conflates two stores. The
+// bare system is the peer when neither qualifier is present, so a span carrying
+// no instance detail (the common fixture and in-process shape) is unchanged.
+func dbPeer(system string, attrs map[string]string) string {
+	ns := first(attrs, "db.namespace")
+	if ns == "" {
+		ns = first(attrs, "server.address")
+	}
+	if ns == "" {
+		return system
+	}
+	return system + "/" + ns
 }
 
 // EffectiveKind is the messaging role a span plays, derived from its messaging.*

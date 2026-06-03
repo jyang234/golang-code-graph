@@ -73,6 +73,14 @@ type Span struct {
 	// parent_span_id crosses. Empty for purely synchronous in-process flows.
 	Links []SpanLink
 
+	// AsyncLink marks a span that was reparented onto its parent across a broker by
+	// following an OTLP span link (FOLLOWS_FROM), rather than by an in-trace
+	// parent_span_id. Such a span is a separately-polled continuation caused by — not
+	// synchronously called during — its parent's work, so the renderer draws the hop
+	// into it as a distinct asynchronous interaction. Set by ingest.stitch; never set
+	// for a synchronous, single-trace flow.
+	AsyncLink bool
+
 	// Goroutine is the id of the goroutine the span started on — the structural
 	// concurrency signal (canon §3.3, plan [C2]). A child that runs on a different
 	// goroutine than its parent was dispatched asynchronously; two such siblings

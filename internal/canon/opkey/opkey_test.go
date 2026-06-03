@@ -102,6 +102,62 @@ func TestDBKey(t *testing.T) {
 	}
 }
 
+// TestDBPeerSplitsByNamespace: two databases of the same system render as
+// distinct lifelines, keyed on db.namespace (the logical database), while the op
+// key — the gated effect identity — is unchanged.
+func TestDBPeerSplitsByNamespace(t *testing.T) {
+	op, peer := Of(ir.KindClient, map[string]string{
+		"db.system":    "postgresql",
+		"db.namespace": "event_bus_test",
+		"db.statement": "INSERT INTO messages (id) VALUES ($1)",
+	}, "")
+	if op != "DB postgresql INSERT messages" {
+		t.Errorf("op = %q, want unchanged effect key", op)
+	}
+	if peer != "postgresql/event_bus_test" {
+		t.Errorf("peer = %q, want postgresql/event_bus_test", peer)
+	}
+}
+
+// TestDBPeerFallsBackToServerAddress: with no logical db name, the server host
+// disambiguates instances; with neither, the bare system is kept so existing
+// goldens are unaffected.
+func TestDBPeerFallsBackToServerAddress(t *testing.T) {
+	_, peer := Of(ir.KindClient, map[string]string{
+		"db.system":      "postgresql",
+		"server.address": "cgate-db",
+		"db.statement":   "SELECT 1",
+	}, "")
+	if peer != "postgresql/cgate-db" {
+		t.Errorf("peer = %q, want postgresql/cgate-db", peer)
+	}
+	_, bare := Of(ir.KindClient, map[string]string{
+		"db.system":    "postgresql",
+		"db.statement": "SELECT 1",
+	}, "")
+	if bare != "postgresql" {
+		t.Errorf("peer = %q, want bare postgresql when no instance detail", bare)
+	}
+}
+
+// TestBrokerPeerDefaultsToBus: a span carrying no messaging.system keeps the
+// generic "Bus" lifeline, so existing single-bus diagrams are unchanged.
+func TestBrokerPeerDefaultsToBus(t *testing.T) {
+	_, peer := Of(ir.KindProducer, map[string]string{
+		"messaging.destination.name": "loan.approved",
+	}, "")
+	if peer != "Bus" {
+		t.Errorf("peer = %q, want Bus when no messaging.system", peer)
+	}
+	_, ebus := Of(ir.KindConsumer, map[string]string{
+		"messaging.system":           "event_bus",
+		"messaging.destination.name": "cgate-email",
+	}, "")
+	if ebus != "Bus" {
+		t.Errorf("peer = %q, want Bus for the event_bus system", ebus)
+	}
+}
+
 func TestDBKeyInsert(t *testing.T) {
 	op, _ := Of(ir.KindClient, map[string]string{
 		"db.system":    "postgres",
@@ -156,6 +212,7 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 		name     string
 		attrs    map[string]string
 		wantOp   string
+		wantPeer string
 		wantKind ir.Kind
 	}{
 		{
@@ -165,7 +222,7 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 				"messaging.system": "aws_sns", "messaging.destination.name": "loan-events",
 				"messaging.operation": "publish",
 			},
-			wantOp: "PUBLISH loan-events", wantKind: ir.KindProducer,
+			wantOp: "PUBLISH loan-events", wantPeer: "SNS", wantKind: ir.KindProducer,
 		},
 		{
 			name: "sqs receive",
@@ -174,7 +231,7 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 				"messaging.system": "aws_sqs", "messaging.destination.name": "loan-queue",
 				"messaging.operation": "receive",
 			},
-			wantOp: "CONSUME loan-queue", wantKind: ir.KindConsumer,
+			wantOp: "CONSUME loan-queue", wantPeer: "SQS", wantKind: ir.KindConsumer,
 		},
 		{
 			name: "sqs delete is settle, not a second receive",
@@ -183,7 +240,7 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 				"messaging.system": "aws_sqs", "messaging.destination.name": "loan-queue",
 				"messaging.operation": "delete",
 			},
-			wantOp: "SETTLE loan-queue", wantKind: ir.KindProducer,
+			wantOp: "SETTLE loan-queue", wantPeer: "SQS", wantKind: ir.KindProducer,
 		},
 	}
 	for _, c := range cases {
@@ -192,8 +249,10 @@ func TestAWSMessagingFromClientSpan(t *testing.T) {
 			if op != c.wantOp {
 				t.Errorf("op = %q, want %q", op, c.wantOp)
 			}
-			if peer != "Bus" {
-				t.Errorf("peer = %q, want Bus", peer)
+			// The messaging system canonicalizes to its own lifeline (SNS/SQS), so an
+			// SNS publish and an SQS receive no longer collapse into one "Bus".
+			if peer != c.wantPeer {
+				t.Errorf("peer = %q, want %q", peer, c.wantPeer)
 			}
 			if k := EffectiveKind(ir.KindClient, c.attrs); k != c.wantKind {
 				t.Errorf("EffectiveKind = %v, want %v", k, c.wantKind)

@@ -54,12 +54,18 @@ type CanonicalSpan struct {
 	// capture that crosses services, so the renderer can place each operation on
 	// its owning lifeline. Omitted when empty, so single-service goldens are
 	// unaffected.
-	Service   string            `json:"service,omitempty"`
-	Tier      int               `json:"tier"`
-	Status    string            `json:"status,omitempty"`
-	ErrorType string            `json:"errorType,omitempty"`
-	Attrs     map[string]string `json:"attrs,omitempty"`
-	Children  []ChildGroup      `json:"children,omitempty"`
+	Service   string `json:"service,omitempty"`
+	Tier      int    `json:"tier"`
+	Status    string `json:"status,omitempty"`
+	ErrorType string `json:"errorType,omitempty"`
+	// Async marks an operation reached across a broker by an OTLP span link
+	// (FOLLOWS_FROM) rather than an in-process call edge — a separately-polled
+	// continuation caused by, not synchronously invoked during, its parent. The
+	// renderer draws the hop into it as a distinct asynchronous interaction.
+	// Omitted when false, so synchronous in-process goldens are unaffected.
+	Async    bool              `json:"async,omitempty"`
+	Attrs    map[string]string `json:"attrs,omitempty"`
+	Children []ChildGroup      `json:"children,omitempty"`
 }
 
 // ChildGroup makes ordering semantics explicit. Groups are emitted in

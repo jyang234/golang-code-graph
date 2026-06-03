@@ -211,7 +211,36 @@ Out-of-process traces carry nondeterminism the in-process path never sees. A
   without over-claiming parallelism, while the guard separates clearly-causal gaps
   from coincidentally-disjoint parallel ops. It is **view-only** — the set-based
   gate (below) is order-independent — so this trades the over-strong all-concurrent
-  rule for accuracy without affecting any verdict.
+  rule for accuracy without affecting any verdict. The three states are applied
+  **per boundary**, not all-or-nothing: a parent's start-sorted sibling units are
+  partitioned into runs separated by a *reliable* gap (both neighbors timed and
+  disjoint by more than the guard), and only the units within one run — mutually
+  unorderable — share an `unordered` group. A single near-simultaneous pair no
+  longer collapses an otherwise strictly-sequential sibling set into one wall of
+  `par`; each cleanly-separated effect renders as its own ordered step.
+
+### Cross-service diagram rendering (`render.SystemMermaid`)
+The whole-flow `<slug>.system.flow.md` view (never gated) refines three things so
+a multi-service async flow reads as what it is:
+
+- **Time-ordered effects.** Falls out of the per-boundary ordering above: effects
+  with disjoint, monotonic spans sequence with `->>` in start order; only genuinely
+  overlapping (or within-guard) spans stay in a `par` block.
+- **Owner-grouped participants.** A database lifeline is split per
+  `(db.namespace, server.address)` — `opkey.dbPeer` keys the peer as
+  `postgresql/event_bus_test` vs `postgresql/cgate_test`, so two stores of the same
+  system no longer collapse — and the renderer lays participants out
+  family-adjacent, boxing each service (`box <service> … end`) with the databases it
+  exclusively owns. Distinct messaging systems also get distinct lifelines
+  (`opkey.brokerPeer` canonicalizes `messaging.system`: `aws_sns` → `SNS`,
+  `aws_sqs` → `SQS`, the default event bus stays `Bus`), so an SNS publish and an
+  event-bus consume no longer share a `Bus` participant.
+- **Distinct async (FOLLOWS_FROM) edges.** A consumer joined across the broker by a
+  span link (`ingest.stitch` sets `capture.Span.AsyncLink`, carried to
+  `ir.CanonicalSpan.Async`) renders as a *distinct* asynchronous interaction — a
+  dashed open arrow (`--)`) plus a `Note … async (FOLLOWS_FROM)` — drawn outside the
+  producer's synchronous `par`, so it reads as "consumed later, caused by this
+  publish" rather than "called synchronously during publish."
 - **Gate on the boundary-effect *set*, not cardinality/ordering/timing.** The
   post-hoc assertion is the set of `boundaryKey`s the flow exercised — events
   published/consumed, deps called, entrypoints — **the same key space the

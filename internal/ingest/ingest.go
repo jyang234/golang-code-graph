@@ -330,6 +330,10 @@ func stitch(spans []capture.Span) []capture.Span {
 		}
 		if fallback != "" {
 			out[i].ParentID = fallback
+			// Mark the edge as a cross-broker async continuation so the renderer can
+			// draw the hop into this span (a separately-polled consumer) distinctly,
+			// not as a synchronous call nested in the producer's block.
+			out[i].AsyncLink = true
 		}
 	}
 

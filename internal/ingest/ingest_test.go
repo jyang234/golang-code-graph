@@ -298,6 +298,11 @@ func TestStitchWholeFlowReparentsAcrossBroker(t *testing.T) {
 	if consumer.ParentID != skey("A", "p1") {
 		t.Errorf("consumer parent = %q, want producer global id %q", consumer.ParentID, skey("A", "p1"))
 	}
+	// The link-reparented consumer is marked async so the renderer can draw it as a
+	// distinct asynchronous hop rather than a synchronous nested call.
+	if !consumer.AsyncLink {
+		t.Errorf("link-stitched consumer should be marked AsyncLink")
+	}
 }
 
 // TestStitchNewRootGateIgnoresMidTraceLink: a span that already has an in-trace
@@ -398,6 +403,32 @@ func TestIngestAsyncBrokerFixture(t *testing.T) {
 	if len(wf[0].Flow.Spans) != 4 {
 		t.Errorf("stitched whole flow should keep all 4 spans, got %d", len(wf[0].Flow.Spans))
 	}
+	// The async hand-off survives canonicalization as an Async edge, so the
+	// cross-service diagram can render the consumer as a distinct asynchronous hop.
+	wtr, err := canon.Canonicalize(wf[0].Flow, nil)
+	if err != nil {
+		t.Fatalf("canonicalize whole flow: %v", err)
+	}
+	if !hasAsyncSpan(wtr.Root) {
+		t.Errorf("link-stitched consumer should canonicalize to an Async span:\n%s", marshalTrace(t, wtr))
+	}
+}
+
+func hasAsyncSpan(s *ir.CanonicalSpan) bool {
+	if s == nil {
+		return false
+	}
+	if s.Async {
+		return true
+	}
+	for _, g := range s.Children {
+		for _, m := range g.Members {
+			if hasAsyncSpan(m) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestIngestAWSSNSSQSFixture is the end-to-end AWS path: SNS/SQS are emitted by
