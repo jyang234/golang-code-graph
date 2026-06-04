@@ -413,6 +413,23 @@ func TestSystemMermaidProducerRootChildrenFromService(t *testing.T) {
 	}
 }
 
+// TestSystemMermaidSynthRootDrawsFromClient: a flow with no single inbound entry
+// (ingest synthesizes an internal root named after the flow slug) renders its entry
+// points from "Client", not from the slug — the synthetic root is the external caller,
+// not a participant.
+func TestSystemMermaidSynthRootDrawsFromClient(t *testing.T) {
+	e1 := &ir.CanonicalSpan{Op: "HTTP PUT /v1/x", Kind: ir.KindServer, Service: "golang_test_app"}
+	e2 := &ir.CanonicalSpan{Op: "HTTP POST /v1/y", Kind: ir.KindServer, Service: "cgate"}
+	root := &ir.CanonicalSpan{Op: "delivery_roundtrip", Kind: ir.KindInternal, // Service "" => synthesized
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{e1, e2}}}}
+	out := SystemMermaid(&ir.CanonicalTrace{Service: "delivery_roundtrip", Root: root})
+	mustContain(t, out, "Client->>golang_test_app: HTTP PUT /v1/x")
+	mustContain(t, out, "Client->>cgate: HTTP POST /v1/y")
+	if strings.Contains(out, "delivery_roundtrip") {
+		t.Errorf("the flow slug must not render as a participant or caller:\n%s", out)
+	}
+}
+
 // TestSystemMermaidBrokerMergesOntoServiceParticipant: when a producer's broker peer
 // coincides with a real service in the flow (messaging.system canonicalizes to a name
 // equal to a service.name — the clean/symmetric instrumentation case), the publish is

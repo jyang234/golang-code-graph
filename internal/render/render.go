@@ -175,6 +175,16 @@ func SystemMermaidRootedAt(t *ir.CanonicalTrace, service string) (string, bool) 
 func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) string {
 	r := newRenderer()
 	entry := landingOf(root, fallback)
+	bodyFrom := childFrom(root, fallback)
+	// A synthesized root (ingest's internal stand-in when a flow has no single
+	// inbound entry — several entry points, or an event-only flow) is not a
+	// participant; it represents the external caller that drove those entries. Draw
+	// its children straight from the caller and drop its meaningless slug root-hop, so
+	// a multi-entry flow reads "Client ->> svc: …" rather than the flow slug calling
+	// into the system.
+	if isSynthRoot(root) {
+		entry, bodyFrom = caller, caller
+	}
 
 	// Plan the participant layout family-adjacent: the synthetic caller, then each
 	// service boxed with the databases it exclusively owns (a store reached only from
@@ -206,8 +216,10 @@ func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) s
 	// to entry for every kind except a producer, and the same seed serviceInfra walks
 	// from, so box ownership and the drawn arrows agree even for a producer root.
 	var body strings.Builder
-	body.WriteString("    " + r.msg(caller, entry, label(root)))
-	r.writeSystemGroups(&body, root.Children, childFrom(root, fallback), fallback, "    ")
+	if entry != caller { // a synth root coincides with the caller; its slug hop is dropped
+		body.WriteString("    " + r.msg(caller, entry, label(root)))
+	}
+	r.writeSystemGroups(&body, root.Children, bodyFrom, fallback, "    ")
 
 	// Shared lifelines the body drew to that the plan didn't already place, sorted.
 	rest := make([]string, 0, len(r.ref))
@@ -621,6 +633,14 @@ func label(s *ir.CanonicalSpan) string {
 // coincides with the consumer root's own peer — rather than a hardcoded "Bus" that
 // would draw the trigger arrow from a lifeline distinct from the real broker. "Bus"
 // remains the fallback for a hand-built consumer root carrying no peer.
+// isSynthRoot reports whether root is the internal stand-in ingest synthesizes when a
+// flow has no single inbound entry span (capture.assembleRoot). Such a root owns the
+// real entry points but is not itself a service — a whole-flow internal root is always
+// that synthetic node (real flows enter at a server or consumer span).
+func isSynthRoot(root *ir.CanonicalSpan) bool {
+	return root != nil && root.Kind == ir.KindInternal && root.Service == ""
+}
+
 func callerLabel(root *ir.CanonicalSpan) string {
 	if root != nil && root.Kind == ir.KindConsumer {
 		if root.Peer != "" {
