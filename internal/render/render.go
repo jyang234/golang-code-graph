@@ -217,10 +217,12 @@ func systemMermaidCore(caller string, root *ir.CanonicalSpan, fallback string) s
 	// the plan is built (so an id is stable); declarations are emitted only for the
 	// lifelines r.ref says an arrow or note touched, so an over-declared peer is
 	// pruned rather than drawn as a bare, dangling line.
-	services, ownedDB, brokerPeers := serviceInfra(root, fallback)
-	// Unify a messaging broker peer with the service of the same name (event_bus ->
-	// event-bus) before any alias is assigned, so both resolve to one participant.
-	r.merge = brokerServiceMerge(services, brokerPeers)
+	services, ownedDB, brokerPeers, peers := serviceInfra(root, fallback)
+	// Unify a messaging broker peer with the same-named service (event_bus -> event-bus)
+	// before any alias is assigned, so both resolve to one participant. In a fragment
+	// where the bus owns no spans there is no service to unify onto, so a same-named
+	// non-broker peer (an HTTP address for the same bus) serves as the target too.
+	r.merge = brokerServiceMerge(services, brokerPeers, peers)
 	plan := newParticipantPlan(r)
 	plan.loose(caller)                  // the ingress/bus, never boxed with a service
 	plan.service(entry, ownedDB[entry]) // the entry service leads, boxed with its dbs
@@ -383,9 +385,10 @@ func landingOf(s *ir.CanonicalSpan, fallback string) string {
 // it originates from one service. A database touched by more than one service, a
 // database that is itself a service, and every non-database peer (the broker,
 // external services) are shared and left unboxed.
-func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]bool, ownedDB map[string][]string, brokerPeers map[string]bool) {
+func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]bool, ownedDB map[string][]string, brokerPeers, peers map[string]bool) {
 	services = map[string]bool{}
 	brokerPeers = map[string]bool{}
+	peers = map[string]bool{} // every counterparty lifeline a span names, for separator-fold unification
 	dbOwners := map[string]map[string]bool{} // db lifeline -> owning services
 	// from is the lifeline an inbound hop into s was drawn from — the same threaded
 	// parent landing the renderer uses (writeSystemSpan), so ownership agrees with the
@@ -401,6 +404,9 @@ func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]
 		switch s.Kind {
 		case ir.KindServer, ir.KindConsumer, ir.KindInternal:
 			services[landingOf(s, fallback)] = true
+		}
+		if s.Peer != "" {
+			peers[s.Peer] = true
 		}
 		if (s.Kind == ir.KindProducer || s.Kind == ir.KindConsumer) && s.Peer != "" {
 			brokerPeers[s.Peer] = true // a messaging broker lifeline, candidate to unify with a service
@@ -439,27 +445,45 @@ func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]
 	for s := range ownedDB {
 		sort.Strings(ownedDB[s])
 	}
-	return services, ownedDB, brokerPeers
+	return services, ownedDB, brokerPeers, peers
 }
 
-// brokerServiceMerge maps each messaging broker peer onto the service that names the
+// brokerServiceMerge maps each messaging broker peer onto the lifeline that names the
 // same broker under separator spelling (event_bus -> event-bus), so the publish is
-// drawn onto the real service participant instead of a synthetic duplicate. It is
-// deliberately narrow — only a broker peer, only onto a service it matches under the
-// '_'/'-' fold — so an unrelated sanitize collision (two databases, an HTTP peer vs a
-// service) is left to keep its own distinct id. nil when nothing merges.
-func brokerServiceMerge(services, brokerPeers map[string]bool) map[string]string {
-	byFold := make(map[string]string, len(services))
+// drawn onto that real participant instead of a synthetic duplicate. The target is the
+// service of that name when one owns spans (the whole-flow case); failing that — a
+// fragment where the bus is only ever a peer — a same-named NON-broker peer (an HTTP
+// address for the same bus) collapses the two spellings into one lifeline. It stays
+// deliberately narrow: only a broker peer is remapped, only onto a '_'/'-' fold match,
+// so an unrelated sanitize collision between two non-broker lifelines (an HTTP peer vs a
+// service) keeps its own distinct id. nil when nothing merges.
+func brokerServiceMerge(services, brokerPeers, peers map[string]bool) map[string]string {
+	byFold := map[string]string{}
+	// Non-broker peers seed the fold map (sorted, first-wins, so a fold shared by two
+	// distinct peers resolves deterministically); a service of the same fold then
+	// overrides — it owns spans and is the stronger canonical target.
+	nb := make([]string, 0, len(peers))
+	for p := range peers {
+		if !brokerPeers[p] {
+			nb = append(nb, p)
+		}
+	}
+	sort.Strings(nb)
+	for _, p := range nb {
+		if byFold[foldSeparators(p)] == "" {
+			byFold[foldSeparators(p)] = p
+		}
+	}
 	for s := range services {
 		byFold[foldSeparators(s)] = s
 	}
 	var merge map[string]string
 	for p := range brokerPeers {
-		if s, ok := byFold[foldSeparators(p)]; ok && s != p {
+		if c, ok := byFold[foldSeparators(p)]; ok && c != p {
 			if merge == nil {
 				merge = map[string]string{}
 			}
-			merge[p] = s
+			merge[p] = c
 		}
 	}
 	return merge
@@ -583,10 +607,46 @@ func childFrom(m *ir.CanonicalSpan, fallback string) string {
 // entry span, or an internal self-op — no redundant arrow is drawn; the call that
 // arrived there is enough.
 func (r *renderer) writeSystemSpan(b *strings.Builder, m *ir.CanonicalSpan, from, fallback, indent string) {
+	cf := childFrom(m, fallback)
 	if drawTo := drawTarget(m, from, fallback); drawTo != from {
-		b.WriteString(indent + r.msg(from, drawTo, label(m)))
+		text := label(m)
+		// Stitched-pair label donation: a client/RPC hop that hands execution to the
+		// remote service (its children issue from the lifeline it lands on, cf == drawTo)
+		// usually nests that service's own inbound entry there. The entry lands on the
+		// lifeline it was reached from, so it self-suppresses its own hop — but only the
+		// entry carries http.route, while the client key names just the peer, which is
+		// redundant with the arrow's target. Let the suppressed entry donate its richer
+		// key to the drawn hop so the route survives.
+		if cf == drawTo {
+			if e := stitchedEntry(m, drawTo, fallback); e != nil {
+				text = label(e)
+			}
+		}
+		b.WriteString(indent + r.msg(from, drawTo, text))
 	}
-	r.writeSystemGroups(b, m.Children, childFrom(m, fallback), fallback, indent)
+	r.writeSystemGroups(b, m.Children, cf, fallback, indent)
+}
+
+// stitchedEntry returns the inbound server entry a drawn client/RPC hop stitched into:
+// the unique same-lifeline callee entry directly under m that lands on drawTo — and so
+// self-suppresses its own route-bearing hop, having been reached from there. It is the
+// donor whose key replaces m's peer-only label. Returns nil when m nests no such entry
+// (the ordinary cross-process case, where the callee's entry lands on a distinct
+// lifeline and draws its own hop) or more than one (ambiguous — donate nothing).
+func stitchedEntry(m *ir.CanonicalSpan, drawTo, fallback string) *ir.CanonicalSpan {
+	var found *ir.CanonicalSpan
+	for _, g := range m.Children {
+		for _, s := range g.Members {
+			if s.Kind != ir.KindServer || landingOf(s, fallback) != drawTo {
+				continue
+			}
+			if found != nil {
+				return nil
+			}
+			found = s
+		}
+	}
+	return found
 }
 
 // writeParticipants declares lifelines in a fixed order: the caller, the self

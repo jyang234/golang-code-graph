@@ -128,7 +128,8 @@ func mustContain(t *testing.T, out, want string) {
 
 // TestSystemMermaidCrossService: the whole-flow renderer switches lifelines per
 // span's owning Service, draws the cross-service hops, and collapses a callee's
-// own entry span (no redundant self-hop).
+// own entry span (no redundant self-hop) — the suppressed entry donating its
+// route-bearing key to the client hop that stitched into it.
 func TestSystemMermaidCrossService(t *testing.T) {
 	tr := &ir.CanonicalTrace{
 		Service: "loansvc",
@@ -148,7 +149,9 @@ func TestSystemMermaidCrossService(t *testing.T) {
 	out := SystemMermaid(tr)
 	for _, want := range []string{
 		"Client->>loansvc: HTTP POST /loan-application",
-		"loansvc->>credit_bureau: HTTP GET credit-bureau /score/{id}",
+		// The client hop wears the callee entry's route (HTTP GET /score), not its own
+		// peer-only key (HTTP GET credit-bureau …) — the peer is redundant with the arrow.
+		"loansvc->>credit_bureau: HTTP GET /score",
 		"credit_bureau->>postgres: DB postgres SELECT bureau",
 		"participant loansvc", "participant credit_bureau", "participant postgres",
 	} {
@@ -158,6 +161,27 @@ func TestSystemMermaidCrossService(t *testing.T) {
 	}
 	if strings.Contains(out, "credit_bureau->>credit_bureau") {
 		t.Errorf("callee entry span drew a redundant self-hop:\n%s", out)
+	}
+}
+
+// TestSystemMermaidStitchedClientDonatesRoute: a client span that carries only its
+// peer (no http.route — the otelhttp client shape) stitches into the callee's server
+// entry, which lands on the same lifeline and self-suppresses. Without donation the
+// drawn hop would read a bare "HTTP PUT event-bus"; the suppressed entry must hand its
+// route-bearing key over so the hop reads the informative "HTTP PUT /v1/publishers/{id}".
+func TestSystemMermaidStitchedClientDonatesRoute(t *testing.T) {
+	entry := &ir.CanonicalSpan{Op: "HTTP PUT /v1/publishers/{id}", Kind: ir.KindServer, Service: "event-bus"}
+	cli := &ir.CanonicalSpan{Op: "HTTP PUT event-bus", Kind: ir.KindClient, Peer: "event-bus", Service: "golang_test_app",
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{entry}}}}
+	root := &ir.CanonicalSpan{Op: "HTTP POST /drive", Kind: ir.KindServer, Service: "golang_test_app",
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{cli}}}}
+	out := SystemMermaid(&ir.CanonicalTrace{Service: "golang_test_app", Root: root})
+	mustContain(t, out, "golang_test_app->>event_bus: HTTP PUT /v1/publishers/{id}")
+	if strings.Contains(out, "HTTP PUT event-bus") {
+		t.Errorf("stitched client hop kept its peer-only key instead of the donated route:\n%s", out)
+	}
+	if strings.Contains(out, "event_bus->>event_bus") {
+		t.Errorf("the donor entry must still self-suppress, not draw its own hop:\n%s", out)
 	}
 }
 
@@ -476,6 +500,29 @@ func TestSystemMermaidNonBrokerCollisionStaysDistinct(t *testing.T) {
 	mustContain(t, out, "participant user_svc as user-svc")
 	mustContain(t, out, "participant user_svc1 as user_svc")
 	mustContain(t, out, "user_svc->>user_svc1: HTTP GET user_svc /x")
+}
+
+// TestSystemMermaidBrokerMergesOntoSameFoldPeer: in a fragment where the event bus owns
+// no spans, it is reached both as a broker (event_bus, from a publish) and as an HTTP
+// peer (event-bus, from a client call). With no service to anchor the canonical
+// spelling, the broker peer still folds onto the same-named non-broker peer, so the two
+// collapse into one lifeline rather than rendering event-bus alongside a suffixed
+// event_bus1 duplicate.
+func TestSystemMermaidBrokerMergesOntoSameFoldPeer(t *testing.T) {
+	httpCli := &ir.CanonicalSpan{Op: "HTTP DELETE event-bus", Kind: ir.KindClient, Peer: "event-bus", Service: "cgate"}
+	pub := &ir.CanonicalSpan{Op: "PUBLISH inbox", Kind: ir.KindProducer, Peer: "event_bus", Service: "cgate"}
+	root := &ir.CanonicalSpan{Op: "HTTP POST /x", Kind: ir.KindServer, Service: "cgate",
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{httpCli, pub}}}}
+	out := SystemMermaid(&ir.CanonicalTrace{Service: "cgate", Root: root})
+	if strings.Contains(out, "event_bus1") {
+		t.Errorf("broker and HTTP-peer spellings of the bus must unify, not suffix a duplicate:\n%s", out)
+	}
+	if n := strings.Count(out, " as event-bus\n") + strings.Count(out, " as event_bus\n"); n != 1 {
+		t.Errorf("want exactly one event-bus lifeline, got %d:\n%s", n, out)
+	}
+	// Both interactions land on the one merged lifeline.
+	mustContain(t, out, "cgate->>event_bus: HTTP DELETE event-bus")
+	mustContain(t, out, "cgate->>event_bus: PUBLISH inbox")
 }
 
 // TestSystemMermaidBrokerMergesOntoServiceParticipant: when a producer's broker peer
