@@ -12,6 +12,7 @@
 package opkey
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/jyang234/golang-code-graph/internal/canon/sql"
@@ -66,9 +67,9 @@ func Of(kind ir.Kind, attrs map[string]string, name string) (op, peer string) {
 		p := first(attrs, "peer.service", "server.address")
 		return httpKey("HTTP", method(attrs), p, route(attrs)), p
 	case ir.KindProducer:
-		return PublishPrefix + destination(attrs), brokerPeer(attrs)
+		return PublishPrefix + normalizeDestination(destination(attrs)), brokerPeer(attrs)
 	case ir.KindConsumer:
-		return ConsumePrefix + destination(attrs), brokerPeer(attrs)
+		return ConsumePrefix + normalizeDestination(destination(attrs)), brokerPeer(attrs)
 	default: // internal
 		if sys := dbSystem(attrs); sys != "" {
 			return dbKey(sys, attrs), dbPeer(sys, attrs)
@@ -78,16 +79,18 @@ func Of(kind ir.Kind, attrs map[string]string, name string) (op, peer string) {
 }
 
 // brokerPeer is the counterparty lifeline for a broker interaction, canonicalized
-// from messaging.system so distinct messaging systems do not collapse into one
-// "Bus" lifeline. A span carrying no messaging.system (the common in-process
-// event-bus shape) keeps the generic "Bus", so existing single-bus diagrams are
-// unchanged; a managed system (SNS, SQS, Kafka, …) names its own lifeline, so an
-// SNS publish and an event-bus consume no longer share a participant. An
-// unrecognized system uses its raw name rather than masquerading as the default
-// bus.
+// from messaging.system. Only a span carrying NO messaging.system gets the generic
+// "Bus" — there is nothing to name it after. A named system keeps a stable
+// identifying name: a friendly label for managed infrastructure that is never itself
+// a modeled service (SNS, SQS, Kafka, RabbitMQ), and otherwise the raw system name.
+// Keeping the raw name is deliberate: a first-party event bus that is also a service
+// in the flow (messaging.system == its service.name) then coincides with that service
+// participant by name — the broker is drawn as the real downstream rather than a
+// synthetic node that duplicates it. Distinct managed systems still get distinct
+// lifelines, so an SNS publish and an SQS receive never collapse together.
 func brokerPeer(attrs map[string]string) string {
 	switch strings.ToLower(first(attrs, "messaging.system")) {
-	case "", "event_bus", "eventbus":
+	case "":
 		return "Bus"
 	case "aws_sns", "sns":
 		return "SNS"
@@ -176,6 +179,7 @@ func messaging(kind ir.Kind, attrs map[string]string) (string, bool) {
 	if dest == "" {
 		return "", false
 	}
+	dest = normalizeDestination(dest)
 	switch messagingDirection(kind, attrs) {
 	case dirConsume:
 		return ConsumePrefix + dest, true
@@ -299,6 +303,84 @@ func route(attrs map[string]string) string {
 
 func destination(attrs map[string]string) string {
 	return first(attrs, "messaging.destination.name", "messaging.destination")
+}
+
+// destUUID matches a canonical UUID, which embeds '-' and so must be collapsed
+// before a destination is split on its delimiters.
+var destUUID = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// normalizeDestination parameterizes the volatile ids embedded in a messaging
+// destination (topic/queue) name, the same way url.Template does for a route path,
+// so a per-run id baked into the name does not churn the op key (and the gated
+// boundary effect). A full UUID and each id-shaped token — a long hex run, an 8+ hex
+// run containing a digit (an event id like fddd7c99, but not a word like "events"),
+// or a numeric run — become {id}; the structural parts survive, so
+// eb-dev-evt-fddd7c99-v1 -> eb-dev-evt-{id}-v1 and cgate-email:<uuid> ->
+// cgate-email:{id}. A destination with no id is returned unchanged.
+func normalizeDestination(d string) string {
+	if d == "" {
+		return d
+	}
+	d = destUUID.ReplaceAllString(d, "{id}")
+	var b strings.Builder
+	tokStart := 0
+	flush := func(end int) {
+		if end <= tokStart {
+			return
+		}
+		if tok := d[tokStart:end]; isDestID(tok) {
+			b.WriteString("{id}")
+		} else {
+			b.WriteString(tok)
+		}
+	}
+	for i := 0; i < len(d); i++ {
+		if isDestDelim(d[i]) {
+			flush(i)
+			b.WriteByte(d[i])
+			tokStart = i + 1
+		}
+	}
+	flush(len(d))
+	return b.String()
+}
+
+// isDestDelim reports whether c separates the structural parts of a destination name.
+func isDestDelim(c byte) bool {
+	switch c {
+	case '-', '_', '.', ':', '/', '~':
+		return true
+	}
+	return false
+}
+
+// isDestID reports whether a destination token is a volatile id rather than a
+// structural part: an all-numeric run of 4+ digits, a hex run of 16+ chars, or a hex
+// run of 8+ chars that contains a digit (so a generated id like fddd7c99 matches but
+// a hex-looking word like "deadbeef" or a short part like "eb"/"v1" does not).
+func isDestID(s string) bool {
+	if len(s) < 4 || s == "{id}" {
+		return false
+	}
+	allDigit, allHex, hasDigit := true, true, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isDigit := c >= '0' && c <= '9'
+		isHex := isDigit || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		hasDigit = hasDigit || isDigit
+		allDigit = allDigit && isDigit
+		allHex = allHex && isHex
+	}
+	switch {
+	case allDigit:
+		return true
+	case allHex && len(s) >= 16:
+		return true
+	case allHex && hasDigit && len(s) >= 8:
+		return true
+	default:
+		return false
+	}
 }
 
 func dbSystem(attrs map[string]string) string {

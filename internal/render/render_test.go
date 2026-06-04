@@ -413,6 +413,22 @@ func TestSystemMermaidProducerRootChildrenFromService(t *testing.T) {
 	}
 }
 
+// TestSystemMermaidBrokerMergesOntoServiceParticipant: when a producer's broker peer
+// coincides with a real service in the flow (messaging.system canonicalizes to a name
+// equal to a service.name — the clean/symmetric instrumentation case), the publish is
+// drawn to that service participant, not a synthetic duplicate "Bus" node.
+func TestSystemMermaidBrokerMergesOntoServiceParticipant(t *testing.T) {
+	prod := &ir.CanonicalSpan{Op: "PUBLISH cgate-email", Kind: ir.KindProducer, Peer: "event_bus", Service: "app", Async: true}
+	ebServer := &ir.CanonicalSpan{Op: "HTTP PUT /v1/events/{id}", Kind: ir.KindServer, Service: "event_bus"}
+	root := &ir.CanonicalSpan{Op: "HTTP POST /publish", Kind: ir.KindServer, Service: "app",
+		Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{prod, ebServer}}}}
+	out := SystemMermaid(&ir.CanonicalTrace{Service: "app", Root: root})
+	mustContain(t, out, "app--)event_bus: PUBLISH cgate-email")
+	if strings.Contains(out, "participant Bus") {
+		t.Errorf("a named broker that is a real service must not fabricate a synthetic Bus participant:\n%s", out)
+	}
+}
+
 // TestSystemMermaidConsumerRootUsesBrokerPeer: a consumer-rooted flow whose broker
 // is a managed system (Peer canonicalized to "SQS"/"SNS") draws the trigger arrow
 // from that broker and declares it exactly once — not from a hardcoded, dangling

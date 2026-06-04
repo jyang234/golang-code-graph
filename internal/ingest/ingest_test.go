@@ -509,10 +509,11 @@ func TestIngestKoalafiEventBridgeShape(t *testing.T) {
 	}
 
 	// #2 + #3: the boundary-effect set recovers the publish and two distinct SQS
-	// ops — none lost to bare HTTP, receive and delete not merged.
+	// ops — none lost to bare HTTP, receive and delete not merged. The per-run event
+	// id baked into the SNS topic is templated to {id} so the effect is run-stable.
 	got := BoundaryEffects(tr.Root)
 	want := []string{
-		"PUBLISH eb-dev-evt-f0a6abc6-v1",
+		"PUBLISH eb-dev-evt-{id}-v1",
 		"RPC SQS/DeleteMessage",
 		"RPC SQS/ReceiveMessage",
 	}
@@ -527,7 +528,7 @@ func TestIngestKoalafiEventBridgeShape(t *testing.T) {
 		t.Fatalf("want 4 sequential steps (one per disjoint trace), got %d:\n%s", n, marshalTrace(t, tr))
 	}
 	order := []string{
-		"PUBLISH eb-dev-evt-f0a6abc6-v1",
+		"PUBLISH eb-dev-evt-{id}-v1",
 		"RPC SQS/ReceiveMessage",
 		"RPC SQS/DeleteMessage",
 		"RPC SQS/ReceiveMessage",

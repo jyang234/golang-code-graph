@@ -237,10 +237,15 @@ func cmdIngest(args []string) error {
 	merged := fs.Bool("merged", false, "with --render-dir, also write system.context.md: all flows merged into one service-interaction graph")
 	choreography := fs.Bool("choreography", false, "with --merged, join publisher→subscriber on the event name instead of routing through a Bus node")
 	contracts := fs.String("contracts", "", "with --merged, comma-separated service source dirs whose static boundary contracts overlay the graph (dashed = untested)")
-	if err := fs.Parse(args); err != nil {
+	// Parse flags reorder-tolerantly: Go's flag package stops at the first
+	// positional, so `ingest <traces> --flags` would silently ignore the flags.
+	// Permute — parse, peel off the positional, parse the remainder — so flags may
+	// appear on either side of the traces path.
+	tracesPath, err := parsePermuted(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if tracesPath == "" {
 		return fmt.Errorf("usage: flowmap behavior ingest <traces-file-or-dir> [--flows-dir D] [--service-dir D] [--update] [--render-dir D [--root SVC] [--merged [--choreography] [--contracts dirs]]]")
 	}
 	if *root != "" && *renderDir == "" {
@@ -253,7 +258,7 @@ func cmdIngest(args []string) error {
 		return fmt.Errorf("--choreography/--contracts require --merged")
 	}
 
-	spans, err := otlpjson.DecodePath(fs.Arg(0))
+	spans, err := otlpjson.DecodePath(tracesPath)
 	if err != nil {
 		return err
 	}
@@ -649,6 +654,32 @@ func loadTrace(path string) (*ir.CanonicalTrace, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return t, nil
+}
+
+// parsePermuted parses fs allowing flags and a single positional in any order
+// (Go's flag package otherwise stops at the first positional). It returns the lone
+// positional, or "" if there is none, and errors if more than one is given.
+func parsePermuted(fs *flag.FlagSet, args []string) (string, error) {
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return "", err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+	switch len(positional) {
+	case 0:
+		return "", nil
+	case 1:
+		return positional[0], nil
+	default:
+		return "", fmt.Errorf("expected one traces path, got %d: %v", len(positional), positional)
+	}
 }
 
 // dirArg returns the first positional argument, defaulting to the current

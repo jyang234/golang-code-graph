@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,33 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/ingest"
 )
+
+// TestParsePermutedAcceptsFlagsEitherSide: the traces positional may appear before
+// or after the flags (Go's flag package alone would stop at the first positional and
+// silently drop trailing flags).
+func TestParsePermutedAcceptsFlagsEitherSide(t *testing.T) {
+	for _, args := range [][]string{
+		{"traces.json", "--render-dir", "out", "--update"},
+		{"--render-dir", "out", "traces.json", "--update"},
+		{"--render-dir", "out", "--update", "traces.json"},
+	} {
+		fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+		renderDir := fs.String("render-dir", "", "")
+		update := fs.Bool("update", false, "")
+		got, err := parsePermuted(fs, args)
+		if err != nil {
+			t.Fatalf("args %v: %v", args, err)
+		}
+		if got != "traces.json" || *renderDir != "out" || !*update {
+			t.Errorf("args %v: positional=%q render-dir=%q update=%v", args, got, *renderDir, *update)
+		}
+	}
+	// More than one positional is an error.
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	if _, err := parsePermuted(fs, []string{"a.json", "b.json"}); err == nil {
+		t.Error("two positionals should error")
+	}
+}
 
 func fixtureDir() string {
 	_, file, _, _ := runtime.Caller(0)
