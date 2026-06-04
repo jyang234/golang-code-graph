@@ -388,7 +388,7 @@ func landingOf(s *ir.CanonicalSpan, fallback string) string {
 func serviceInfra(root *ir.CanonicalSpan, fallback string) (services map[string]bool, ownedDB map[string][]string, brokerPeers, peers map[string]bool) {
 	services = map[string]bool{}
 	brokerPeers = map[string]bool{}
-	peers = map[string]bool{} // service-like counterparty lifelines (non-db), for separator-fold unification
+	peers = map[string]bool{}                // service-like counterparty lifelines (non-db), for separator-fold unification
 	dbOwners := map[string]map[string]bool{} // db lifeline -> owning services
 	// from is the lifeline an inbound hop into s was drawn from — the same threaded
 	// parent landing the renderer uses (writeSystemSpan), so ownership agrees with the
