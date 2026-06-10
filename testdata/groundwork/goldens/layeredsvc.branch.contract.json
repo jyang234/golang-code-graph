@@ -1,0 +1,32 @@
+{
+  "service": "layeredsvc",
+  "schema_version": "flowmap.boundary/v1",
+  "entrypoints": {
+    "http": [
+      {
+        "method": "GET",
+        "route": "/healthz",
+        "tier": 2
+      },
+      {
+        "method": "GET",
+        "route": "/users/{id}",
+        "tier": 1
+      }
+    ],
+    "consumers": []
+  },
+  "published": [],
+  "consumed": [],
+  "external_dependencies": [
+    {
+      "peer": "audit-svc",
+      "kind": "http",
+      "ops": [
+        "POST /events"
+      ],
+      "tier": 1
+    }
+  ],
+  "blind_spots": []
+}

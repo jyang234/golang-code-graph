@@ -24,6 +24,11 @@ func TestRunSmoke(t *testing.T) {
 			"../../testdata/groundwork/policies/layeredsvc.json",
 			"../../testdata/groundwork/goldens/layeredsvc.graph.json",
 			"../../testdata/groundwork/goldens/layeredsvc.branch-skip.graph.json"},
+		// verify passes on the good branch confined to its scope.
+		{"verify", "../../testdata/groundwork/policies/layeredsvc.json",
+			"../../testdata/groundwork/goldens/layeredsvc.graph.json",
+			"../../testdata/groundwork/goldens/layeredsvc.branch-good.graph.json",
+			"--scope", "example.com/layeredsvc/internal/handler,example.com/layeredsvc/internal/app"},
 	}
 	for _, args := range cases {
 		if err := run(args); err != nil {
@@ -46,6 +51,14 @@ func TestRunErrors(t *testing.T) {
 			"../../testdata/groundwork/goldens/layeredsvc.branch-skip.graph.json"},
 		{"review", "p", "b"}, // wrong arg count
 		{"verify-artifact", "/nonexistent/artifact.json", "p", "b", "br"},
+		// verify blocks on the skip branch (new violation).
+		{"verify", "../../testdata/groundwork/policies/layeredsvc.json",
+			"../../testdata/groundwork/goldens/layeredsvc.graph.json",
+			"../../testdata/groundwork/goldens/layeredsvc.branch-skip.graph.json"},
+		// diff reports a breaking contract change → non-zero.
+		{"diff", "../../testdata/groundwork/goldens/layeredsvc.contract.json",
+			"../../testdata/groundwork/goldens/layeredsvc.branch.contract.json"},
+		{"diff", "/nonexistent/a.json", "/nonexistent/b.json"},
 	}
 	for _, args := range cases {
 		if err := run(args); err == nil {

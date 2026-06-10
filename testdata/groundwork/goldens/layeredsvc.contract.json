@@ -1,0 +1,23 @@
+{
+  "service": "layeredsvc",
+  "schema_version": "flowmap.boundary/v1",
+  "entrypoints": {
+    "http": [
+      {
+        "method": "GET",
+        "route": "/users/{id}",
+        "tier": 1
+      },
+      {
+        "method": "PUT",
+        "route": "/users/{id}",
+        "tier": 1
+      }
+    ],
+    "consumers": []
+  },
+  "published": [],
+  "consumed": [],
+  "external_dependencies": [],
+  "blind_spots": []
+}

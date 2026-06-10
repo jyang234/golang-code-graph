@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/groundwork/contract"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
@@ -45,6 +46,10 @@ func run(args []string) error {
 		return cmdFitness(args[1:])
 	case "review":
 		return cmdReview(args[1:])
+	case "verify":
+		return cmdVerify(args[1:])
+	case "diff":
+		return cmdDiff(args[1:])
 	case "verify-artifact":
 		return cmdVerifyArtifact(args[1:])
 	case "policy-check":
@@ -64,6 +69,8 @@ usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
   groundwork fitness <policy.json> <graph.json> evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--json]   computed MR review artifact (BLOCK exits non-zero)
+  groundwork verify <policy> <base> <branch> [--scope p,q] [--json] pre-flight gate: new violations, scope creep, breaking contract
+  groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch>  prove an artifact is authentic (not tampered/stale)
   groundwork policy-check <policy.json>        load and validate a policy
   groundwork version
@@ -220,6 +227,99 @@ func cmdReview(args []string) error {
 		return fmt.Errorf("review verdict: BLOCK")
 	}
 	return nil
+}
+
+// cmdVerify runs the pre-flight gate over a base/branch graph pair: it blocks on
+// any newly-introduced violation, on a touched package outside the declared
+// --scope, or on a breaking contract change. Exits non-zero on BLOCK.
+func cmdVerify(args []string) error {
+	var rest, scope []string
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			asJSON = true
+		case a == "--scope":
+			if i++; i < len(args) {
+				scope = splitComma(args[i])
+			}
+		case strings.HasPrefix(a, "--scope="):
+			scope = splitComma(strings.TrimPrefix(a, "--scope="))
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) != 3 {
+		return fmt.Errorf("usage: groundwork verify <policy.json> <base-graph.json> <branch-graph.json> [--scope pkg,pkg] [--json]")
+	}
+	p, base, branch, err := loadReviewInputs(rest[0], rest[1], rest[2])
+	if err != nil {
+		return err
+	}
+	g := review.Gate(p, base, branch, scope)
+
+	if asJSON {
+		b, err := g.Marshal()
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stdout.Write(b); err != nil {
+			return err
+		}
+	} else {
+		fmt.Print(g.Render())
+	}
+	if !g.Pass {
+		return fmt.Errorf("verify: BLOCK")
+	}
+	return nil
+}
+
+// cmdDiff compares two boundary contracts and reports the inter-service surface
+// movement. Exits non-zero when a change is breaking.
+func cmdDiff(args []string) error {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: groundwork diff <base-contract.json> <branch-contract.json>")
+	}
+	base, err := contract.Load(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	branch, err := contract.Load(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	d := contract.Compare(base, branch)
+	if d.Empty() {
+		fmt.Println("no boundary-contract changes")
+		return nil
+	}
+	for _, c := range d.Changes {
+		tag := ""
+		if c.Breaking {
+			tag = "  ⚠ BREAKING"
+		}
+		fmt.Printf("%s %s %s%s\n", c.Op, c.Surface, c.Name, tag)
+	}
+	if d.Breaking() {
+		return fmt.Errorf("diff: breaking contract change(s)")
+	}
+	return nil
+}
+
+func splitComma(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // cmdVerifyArtifact recomputes an artifact from the source graphs and reports

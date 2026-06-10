@@ -30,6 +30,25 @@ done
 flowmap graph testdata/fixtures/loansvc >testdata/groundwork/goldens/loansvc.graph.json
 echo "wrote testdata/groundwork/goldens/loansvc.graph.json"
 
+# Boundary contracts for the `diff` demo. flowmap boundary writes in-place, so we
+# generate, copy to the goldens dir, and drop the in-fixture file. The branch
+# contract is the base with the PUT route removed (breaking), a /healthz route
+# added (additive), and a new outbound dependency (informational).
+go run ./cmd/flowmap boundary testdata/groundwork/layeredsvc >/dev/null
+cp testdata/groundwork/layeredsvc/.flowmap/boundary-contract.json testdata/groundwork/goldens/layeredsvc.contract.json
+rm -rf testdata/groundwork/layeredsvc/.flowmap
+python3 - <<'PY'
+import json
+c = json.load(open("testdata/groundwork/goldens/layeredsvc.contract.json"))
+c["entrypoints"]["http"] = [e for e in c["entrypoints"]["http"] if e["method"] != "PUT"]
+c["entrypoints"]["http"].append({"method": "GET", "route": "/healthz", "tier": 2})
+c["entrypoints"]["http"].sort(key=lambda e: (e["method"], e["route"]))
+c["external_dependencies"].append({"peer": "audit-svc", "kind": "http", "ops": ["POST /events"], "tier": 1})
+json.dump(c, open("testdata/groundwork/goldens/layeredsvc.branch.contract.json", "w"), indent=2)
+open("testdata/groundwork/goldens/layeredsvc.branch.contract.json", "a").write("\n")
+PY
+echo "wrote testdata/groundwork/goldens/layeredsvc{,.branch}.contract.json"
+
 # Branch goldens for the review demo. groundwork's `review` compares a base graph
 # to a branch graph; in CI both come from flowmap run on the respective code. Here
 # we synthesize the branch graphs by applying one documented feature delta to the

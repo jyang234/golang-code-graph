@@ -85,8 +85,16 @@ breadth.
   (`BLOCK` / `STRUCTURALLY-CLEAR` / `NO-STRUCTURAL-SIGNAL`) from day one,
   sha256 digest, and recompute-from-source verification.
   *Exit: the "publisher health endpoint" demo — same description, BLOCK vs CLEAR.*
-- **Phase 3 — `verify` + `diff`.** Pre-flight delta gate and boundary-contract
-  diff (consumes `flowmap boundary`). Mostly reuse of Phases 1–2.
+- **Phase 3 — `verify` + `diff`.** *Done.* `review.Gate` is the fail-closed
+  pre-flight gate: it blocks on a new violation, a touched package outside the
+  declared `--scope` (scope creep, computed from the same delta the review uses),
+  or a breaking contract change, and carries a reproducibility digest. The new
+  `contract` package decodes flowmap's boundary contract and `Compare` flags
+  breaking inter-service movement (removed route / published / consumed = breaking;
+  additions and dependency changes = informational). CLI: `groundwork verify
+  <policy> <base> <branch> [--scope p,q] [--json]` and `groundwork diff
+  <base-contract> <branch-contract>`, both fail-closed. Verified end-to-end on the
+  fixtures.
 - **Phase 4 — zero-touch CI (the "open next step").** A CODEOWNERS-gated CI job
   that regenerates *both* base and branch graphs from checked-out source and
   feeds them to `review`/`verify`. This is the trust anchor (§5), not polish.

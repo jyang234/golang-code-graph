@@ -103,10 +103,16 @@ type EffectChange struct {
 // cleared — the structural content the digest commits to.
 func digestOf(a Artifact) string {
 	a.Digest = ""
-	b, err := canonjson.Marshal(a)
+	return canonicalDigest(a)
+}
+
+// canonicalDigest is the shared digest primitive: sha256 over the canonical JSON
+// encoding of v. Callers clear any self-referential digest field on v first.
+func canonicalDigest(v any) string {
+	b, err := canonjson.Marshal(v)
 	if err != nil {
-		// canonjson only fails on unencodable values; Artifact has none.
-		panic("groundwork/review: marshal artifact: " + err.Error())
+		// canonjson only fails on unencodable values; our artifacts have none.
+		panic("groundwork/review: marshal for digest: " + err.Error())
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
