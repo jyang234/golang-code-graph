@@ -33,10 +33,10 @@ func checkLayering(p *policy.Policy, ix *graph.Index, r *Result) {
 			continue
 		}
 		fromRank, _ := p.LayerRank(fromLayer)
-		for _, to := range ix.Callees(from) {
+		for _, to := range effectiveLayeredCallees(p, ix, from) {
 			toLayer := p.LayerOf(PkgOf(to))
-			if toLayer == "" || toLayer == fromLayer {
-				continue
+			if toLayer == fromLayer {
+				continue // same layer (possibly via a helper) — allowed
 			}
 			toRank, _ := p.LayerRank(toLayer)
 			if toRank == fromRank+1 {
@@ -54,6 +54,38 @@ func checkLayering(p *policy.Policy, ix *graph.Index, r *Result) {
 			})
 		}
 	}
+}
+
+// effectiveLayeredCallees returns the layered functions `from` effectively calls:
+// its direct layered callees, plus any layered function reachable through a chain
+// of UNASSIGNED (non-layer) helper packages. Traversal stops at the first layered
+// node on each path — an intermediate layer absorbs the call, so the legitimate
+// spine handler→app→store yields only handler's direct callee (app), never store.
+// Only a skip smuggled through non-layer packages (handler→codec→store) surfaces
+// as an effective skip edge. Without this the gate judged direct edges only and a
+// bounce through any unassigned package evaded the layering invariant entirely.
+func effectiveLayeredCallees(p *policy.Policy, ix *graph.Index, from string) []string {
+	landed := map[string]bool{}
+	seen := map[string]bool{}
+	stack := append([]string{}, ix.Callees(from)...)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		pkg := PkgOf(n)
+		if isRootPkg(p.Layering.Roots, pkg) {
+			continue // never traverse into or land on the composition root
+		}
+		if p.LayerOf(pkg) != "" {
+			landed[n] = true // a layered node absorbs the call; stop descending here
+			continue
+		}
+		stack = append(stack, ix.Callees(n)...) // unassigned helper: keep descending
+	}
+	return sortedKeys(landed)
 }
 
 // layeringSummary describes the broken relationship in layer terms.

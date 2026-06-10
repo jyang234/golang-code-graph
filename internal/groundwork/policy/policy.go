@@ -58,10 +58,17 @@ type Exception struct {
 // match function FQNs or boundary effect targets (e.g. "boundary:bus PUBLISH").
 // This is the all-paths safety class — the unique value a test suite cannot
 // provide.
+//
+// RequireProof makes the rule fail closed: when the reachable frontier is blind
+// (a reflect/unsafe site or a <dynamic> effect), the default verdict is a
+// non-blocking caution ("cannot prove absence"), but a require_proof rule turns
+// that unprovability into a Violation. Use it for high-stakes safety invariants
+// (auth, payments) where "we could not prove X is unreachable" must not pass CI.
 type ReachRule struct {
-	Name string   `json:"name"`
-	From []string `json:"from"`
-	To   []string `json:"to"`
+	Name         string   `json:"name"`
+	From         []string `json:"from"`
+	To           []string `json:"to"`
+	RequireProof bool     `json:"require_proof,omitempty"`
 }
 
 // IOBudget caps the external write effects reachable from a single entrypoint —
@@ -129,6 +136,17 @@ func (p *Policy) Validate() error {
 		return fmt.Errorf("io_budget.max_writes_per_route must be non-negative")
 	}
 	return nil
+}
+
+// RootPackages returns the composition-root package paths (from the layering
+// config, if any) — the packages whose entrypoints are not service routes. It is
+// shared by the layering check (which exempts calls out of a root) and the I/O
+// budget (for which main is not a route).
+func (p *Policy) RootPackages() []string {
+	if p.Layering == nil {
+		return nil
+	}
+	return p.Layering.Roots
 }
 
 // LayerOf returns the name of the layer owning pkgPath (the longest matching

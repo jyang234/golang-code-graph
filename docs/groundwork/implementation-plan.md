@@ -234,5 +234,19 @@ the real `layeredsvc` base by one documented edge (see `regen.sh`).
 CLI: `groundwork review <policy> <base> <branch> [--json]` (BLOCK exits non-zero)
 and `groundwork verify-artifact <artifact> <policy> <base> <branch>`.
 
+**Post-Phase-2 review fixes** (from the max-effort `/code-review`):
+- **Layering judges *effective* edges, not just direct ones.** A skip smuggled
+  through an unassigned helper package (`handler → codec → store`) previously
+  evaded the gate entirely; now layering follows paths through non-layer packages
+  and stops at the first layer (the legitimate `handler→app→store` spine is
+  absorbed by `app`), so the bounce surfaces as a `handler → store` skip.
+- **I/O budget excludes the composition root.** `main`'s startup writes
+  (migrations/seeding) are no longer charged against a per-route budget; only
+  non-root entrypoints are judged (the boundary contract refines "route" further
+  in Phase 3).
+- **`must_not_reach` gained `require_proof`.** A high-stakes safety rule can now
+  fail closed: when the frontier is blind, the default is a non-blocking caution,
+  but a `require_proof` rule escalates that unprovability to a Violation.
+
 Next: Phase 3 (`verify` + `diff`) — pre-flight delta gate and boundary-contract
 diff; then Phase 4 (zero-touch CI: the trusted base+branch graph generation).

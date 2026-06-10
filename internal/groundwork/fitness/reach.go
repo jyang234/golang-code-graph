@@ -38,10 +38,16 @@ func checkMustNotReach(p *policy.Policy, ix *graph.Index, r *Result) {
 				To:       ev.target,
 			})
 		case noPathFound:
+			// Unprovable: no static path, but the frontier is blind. Advisory by
+			// default; a require_proof rule treats unprovability as a failure.
+			sev, note := Caution, "cannot prove absence"
+			if rule.RequireProof {
+				sev, note = Violation, "require_proof is set and absence cannot be proven"
+			}
 			r.add(Finding{
 				Rule:     "must_not_reach",
-				Severity: Caution,
-				Summary:  fmt.Sprintf("%s: no path found, but the frontier is blind (%s) — cannot prove absence", rule.Name, ev.target),
+				Severity: sev,
+				Summary:  fmt.Sprintf("%s: no path found, but the frontier is blind (%s) — %s", rule.Name, ev.target, note),
 				From:     ev.from,
 			})
 		case provenAbsent:

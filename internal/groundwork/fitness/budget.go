@@ -9,17 +9,24 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 )
 
-// checkIOBudget caps the external *write* effects reachable from a single
-// entrypoint — the side-effect-blowout guard. Each structural entrypoint
-// (Sources) is judged independently; reads (DB SELECT, outbound GET, bus
-// consume) do not count, only mutations (DB INSERT/UPDATE/DELETE, bus PUBLISH,
-// outbound POST/PUT/PATCH/DELETE).
+// checkIOBudget caps the external *write* effects reachable from a single route
+// — the side-effect-blowout guard. Each structural entrypoint (Sources) is judged
+// independently, EXCEPT the composition root (main), which is an entrypoint but
+// not a route and whose startup writes (migrations, seeding) must not be charged
+// against a per-route budget. Reads (DB SELECT, outbound GET, bus consume) do not
+// count, only mutations (DB INSERT/UPDATE/DELETE, bus PUBLISH, outbound
+// POST/PUT/PATCH/DELETE). "Route" is approximated by "non-root entrypoint"; the
+// boundary contract refines it to named HTTP routes and bus consumers.
 func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 	if p.IOBudget == nil {
 		return
 	}
 	max := p.IOBudget.MaxWritesPerRoute
+	roots := p.RootPackages()
 	for _, src := range ix.Sources() {
+		if isRootPkg(roots, PkgOf(src)) {
+			continue // the composition root (main) is an entrypoint but not a route
+		}
 		cone := append([]string{src}, ix.Reachable(src)...)
 		writes := map[string]bool{}
 		for _, e := range ix.Effects(cone...) {
