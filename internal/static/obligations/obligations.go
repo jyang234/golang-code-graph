@@ -530,7 +530,8 @@ func failureBranch(ifInstr *ssa.If, errVals map[ssa.Value]bool) (skipSucc int, o
 	}
 	xErr, yNil := errVals[bin.X], isNil(bin.Y)
 	yErr, xNil := errVals[bin.Y], isNil(bin.X)
-	if !(xErr && yNil) && !(yErr && xNil) {
+	errVsNil := (xErr && yNil) || (yErr && xNil)
+	if !errVsNil {
 		return 0, false
 	}
 	switch bin.Op.String() {

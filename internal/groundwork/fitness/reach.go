@@ -101,17 +101,11 @@ func evalReach(ix *graph.Index, froms []string, toPatterns []string) (verdict, e
 	return provenAbsent, evidence{}
 }
 
-// frontierBlindSite reports whether any node in the reachable cone sits on a
+// frontierBlindSiteWith reports whether any node in the reachable cone sits on a
 // blind spot — a reflect/HighFanOut site, a function in an unsafe/cgo/linkname
 // package, or a function that makes a <dynamic> boundary effect. If so, edges may
 // be hidden past it and a "no path" conclusion is not sound. It returns a
 // representative site for the caution message.
-func frontierBlindSite(ix *graph.Index, cone []string) (string, bool) {
-	return frontierBlindSiteWith(ix, cone, ix.Effects(cone...))
-}
-
-// frontierBlindSiteWith is frontierBlindSite for callers that already hold the
-// cone's effects — the probe must not redo the gather it sits next to.
 func frontierBlindSiteWith(ix *graph.Index, cone []string, effects []graph.Edge) (string, bool) {
 	for _, fn := range cone {
 		if bs := ix.BlindSpotsAt(fn); len(bs) > 0 {
