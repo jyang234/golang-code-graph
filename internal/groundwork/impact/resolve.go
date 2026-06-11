@@ -99,6 +99,9 @@ func hasField(label, token string) bool {
 // anything else. The closing lines are the honest limits and the handoff.
 func (c Card) Render() string {
 	var b strings.Builder
+	if c.Fault {
+		b.WriteString("What-if: the suspects below are hypothesized to be failing.\n\n")
+	}
 	section := func(title string, items []string) {
 		if len(items) == 0 {
 			return
@@ -110,7 +113,11 @@ func (c Card) Render() string {
 		b.WriteString("\n")
 	}
 	section("Suspects", c.Suspects)
-	section("Implicated entrypoints", c.Entrypoints)
+	entryTitle := "Implicated entrypoints"
+	if c.Fault {
+		entryTitle = "Entrypoints degraded if the suspects fail"
+	}
+	section(entryTitle, c.Entrypoints)
 	section("Upstream callers", c.Callers)
 	section("Reachable boundary effects", c.Effects)
 	if len(c.BlindSpots) > 0 {

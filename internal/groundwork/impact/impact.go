@@ -28,6 +28,23 @@ type Card struct {
 	Callers     []string          `json:"callers,omitempty"`     // reverse reach (who can be affected upstream)
 	Effects     []string          `json:"effects,omitempty"`     // boundary effects reachable from the suspects
 	BlindSpots  []graph.BlindSpot `json:"blind_spots,omitempty"` // gaps on any traversed path — where the card's claims stop being sound
+
+	// Fault marks the what-if framing: the suspects are HYPOTHESIZED to be
+	// failing, and the card reads as fault propagation — entrypoints degraded,
+	// effects that may not have happened. Same evidence, same determinism; only
+	// the question differs ("what if these fail" vs "what are these").
+	Fault bool `json:"fault,omitempty"`
+}
+
+// ForFault assembles the what-if card: mark the suspects as failing and read
+// the blast radius off the same index walks. For an event symptom the resolver
+// already returns both the publishers (who should emit) and the consumer
+// registrars (who is now starved), so both directions of "event T missing"
+// are in the suspect set.
+func ForFault(ix *graph.Index, fqns []string) Card {
+	c := ForNodes(ix, fqns)
+	c.Fault = true
+	return c
 }
 
 // ForNodes assembles the card for a set of suspect function FQNs.

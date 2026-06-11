@@ -71,7 +71,7 @@ func usage() {
 
 usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
-  groundwork triage (--frame|--table|--event|--peer) <v> [--json] <graph.json>  incident triage card from a symptom
+  groundwork triage (--frame|--table|--event|--peer) <v> [--fail] [--json] <graph.json>  incident triage card from a symptom
   groundwork fitness <policy.json> <graph.json> evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--json]   computed MR review artifact (BLOCK exits non-zero)
   groundwork verify <policy> <base> <branch> [--scope p,q] [--json] pre-flight gate: new violations, scope creep, breaking contract
@@ -96,6 +96,7 @@ func cmdTriage(args []string) error {
 	table := fs.String("table", "", "DB table name")
 	event := fs.String("event", "", "bus event name")
 	peer := fs.String("peer", "", "outbound peer name")
+	fail := fs.Bool("fail", false, "fault framing: treat the resolved suspects as failing (what-if)")
 	asJSON := fs.Bool("json", false, "emit the card as canonical JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -126,7 +127,11 @@ func cmdTriage(args []string) error {
 		return fmt.Errorf("triage: symptom resolved to nothing in this graph")
 	}
 
-	card := impact.ForNodes(ix, append(append([]string{}, res.Matches...), res.Possible...))
+	suspects := append(append([]string{}, res.Matches...), res.Possible...)
+	card := impact.ForNodes(ix, suspects)
+	if *fail {
+		card = impact.ForFault(ix, suspects)
+	}
 	if *asJSON {
 		b, err := canonjson.Marshal(struct {
 			Resolution impact.Resolution `json:"resolution"`

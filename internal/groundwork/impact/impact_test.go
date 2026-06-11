@@ -98,3 +98,46 @@ func TestResolvers(t *testing.T) {
 		t.Errorf("unknown event: matches=%v possible=%v, want only possible (the <dynamic> publisher)", r.Matches, r.Possible)
 	}
 }
+
+// IT-2 exit criterion: "peer P down" names exactly the entrypoints whose paths
+// cross a boundary:P edge — asserted against a hand-derived expected set from
+// the loansvc golden.
+func TestFaultPeerDown(t *testing.T) {
+	ix := index(t, "loansvc.graph.json")
+	r := ResolvePeer(ix, "credit-bureau")
+	if !reflect.DeepEqual(r.Matches, []string{"(*example.com/loansvc/internal/client.Bureau).Score"}) {
+		t.Fatalf("peer credit-bureau resolved to %v", r.Matches)
+	}
+	c := ForFault(ix, r.Matches)
+	if !c.Fault {
+		t.Fatal("fault framing not set")
+	}
+	want := []string{"(*example.com/loansvc/internal/origination.Evaluator).Evaluate$2"}
+	if !reflect.DeepEqual(c.Entrypoints, want) {
+		t.Errorf("degraded entrypoints = %v, want %v (hand-derived)", c.Entrypoints, want)
+	}
+	if !reflect.DeepEqual(c.Effects, []string{"boundary:credit-bureau GET /score/{id}"}) {
+		t.Errorf("effects = %v", c.Effects)
+	}
+}
+
+// An event symptom matches whichever side the service has — the publisher of
+// an outbound event, the consumer registrar of an inbound one — and the
+// <dynamic> publisher is offered as a flagged possible match for the outbound
+// case (it might be the event under a runtime-chosen name).
+func TestFaultEventMissing(t *testing.T) {
+	ix := index(t, "loansvc.graph.json")
+
+	r := ResolveEvent(ix, "loan.approved") // published by this service
+	if len(r.Matches) != 1 || len(r.Possible) == 0 {
+		t.Fatalf("loan.approved: matches=%v possible=%v, want one publisher plus the <dynamic> publisher flagged", r.Matches, r.Possible)
+	}
+	if c := ForFault(ix, r.Matches); len(c.Entrypoints) == 0 {
+		t.Error("publish-side fault card names no entrypoints")
+	}
+
+	r = ResolveEvent(ix, "payment.settled") // consumed by this service
+	if len(r.Matches) == 0 {
+		t.Fatalf("payment.settled resolved to nothing; the consumer registrar should match")
+	}
+}
