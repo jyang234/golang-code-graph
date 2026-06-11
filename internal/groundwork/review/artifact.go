@@ -75,12 +75,14 @@ type PkgDelta struct {
 }
 
 // Violation is a newly-introduced fitness finding (a violation or a caution),
-// carrying the exact edge it fires on.
+// carrying the exact edge it fires on. Detail is presentation-only evidence (a
+// witness path); it is excluded from the base-vs-branch finding key.
 type Violation struct {
 	Rule    string `json:"rule"`
 	Summary string `json:"summary"`
 	From    string `json:"from,omitempty"`
 	To      string `json:"to,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // ContractChange is one movement of the inter-service surface (entrypoints, bus
@@ -179,6 +181,9 @@ func (a Artifact) Render() string {
 			fmt.Fprintf(&b, "- %s — %s\n", v.Rule, v.Summary)
 			if v.From != "" {
 				fmt.Fprintf(&b, "  - %s\n", edge(v))
+			}
+			if v.Detail != "" {
+				fmt.Fprintf(&b, "  - via %s\n", v.Detail)
 			}
 		}
 		b.WriteString("\n")

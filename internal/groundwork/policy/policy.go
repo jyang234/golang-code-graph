@@ -24,6 +24,7 @@ type Policy struct {
 	Layers           []Layer           `json:"layers,omitempty"`
 	Layering         *Layering         `json:"layering,omitempty"`
 	MustNotReach     []ReachRule       `json:"must_not_reach,omitempty"`
+	MustPassThrough  []PassRule        `json:"must_pass_through,omitempty"`
 	IOBudget         *IOBudget         `json:"io_budget,omitempty"`
 	BlindSpotRatchet *BlindSpotRatchet `json:"blind_spot_ratchet,omitempty"`
 }
@@ -71,6 +72,50 @@ type ReachRule struct {
 	From         []string `json:"from"`
 	To           []string `json:"to"`
 	RequireProof bool     `json:"require_proof,omitempty"`
+}
+
+// PassRule is a waypoint invariant: every path from a function matching a From
+// pattern to a target matching a To pattern must pass through a function
+// matching a Through pattern — "every entrypoint-to-DB path goes through the
+// auth check". It is the interprocedural sibling of an intraprocedural
+// must-precede obligation, needing only the call graph: remove the Through
+// nodes and any From→To path that remains is a bypass.
+//
+// From supports the special selector "entrypoint:*", which matches every graph
+// source (node with no first-party caller). This is deliberate: naming the
+// handler package instead would let a brand-new handler package silently escape
+// the rule — the exact failure mode the rule exists to catch. Exempt the
+// composition root and probes via Allow, not by narrowing From.
+//
+// RequireProof has must_not_reach's discipline: when no bypass is found but the
+// walked frontier is blind, the default verdict is a caution ("cannot prove
+// every path is guarded"); require_proof turns that into a Violation.
+type PassRule struct {
+	Name         string      `json:"name"`
+	From         []string    `json:"from"`
+	To           []string    `json:"to"`
+	Through      []string    `json:"through"`
+	RequireProof bool        `json:"require_proof,omitempty"`
+	Allow        []Exception `json:"allow,omitempty"`
+}
+
+// EntrypointSelector is the From selector that expands to every graph source.
+const EntrypointSelector = "entrypoint:*"
+
+// Allowed reports whether a (source, target) bypass pair is covered by the
+// rule's allow-list. An exception side matches exactly or by prefix; an empty
+// side matches anything (an entry must declare at least one side — validated on
+// load).
+func (r *PassRule) Allowed(source, target string) bool {
+	match := func(s, pat string) bool {
+		return pat == "" || s == pat || strings.HasPrefix(s, pat)
+	}
+	for _, a := range r.Allow {
+		if match(source, a.From) && match(target, a.To) {
+			return true
+		}
+	}
+	return false
 }
 
 // IOBudget caps the external write effects reachable from a single entrypoint —
@@ -175,6 +220,19 @@ func (p *Policy) Validate() error {
 		}
 		if len(r.From) == 0 || len(r.To) == 0 {
 			return fmt.Errorf("must_not_reach[%d] (%s): from and to are both required", i, r.Name)
+		}
+	}
+	for i, r := range p.MustPassThrough {
+		if strings.TrimSpace(r.Name) == "" {
+			return fmt.Errorf("must_pass_through[%d]: name is required", i)
+		}
+		if len(r.From) == 0 || len(r.To) == 0 || len(r.Through) == 0 {
+			return fmt.Errorf("must_pass_through[%d] (%s): from, to and through are all required", i, r.Name)
+		}
+		for j, a := range r.Allow {
+			if a.From == "" && a.To == "" {
+				return fmt.Errorf("must_pass_through[%d] (%s): allow[%d] must declare from and/or to", i, r.Name, j)
+			}
 		}
 	}
 	if p.IOBudget != nil && p.IOBudget.MaxWritesPerRoute < 0 {

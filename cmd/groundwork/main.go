@@ -164,6 +164,9 @@ func cmdFitness(args []string) error {
 		if f.From != "" {
 			fmt.Printf("     %s\n", edgeLine(f))
 		}
+		if f.Detail != "" {
+			fmt.Printf("     via %s\n", f.Detail)
+		}
 	}
 	for _, f := range cautions {
 		fmt.Printf("⚠️  [%s] %s\n", f.Rule, f.Summary)
@@ -188,7 +191,7 @@ func edgeLine(f fitness.Finding) string {
 
 // ruleCount is a rough tally of configured invariants, for the OK summary.
 func ruleCount(p *policy.Policy) int {
-	n := len(p.MustNotReach)
+	n := len(p.MustNotReach) + len(p.MustPassThrough)
 	if p.Layering != nil {
 		n++
 	}
@@ -406,6 +409,9 @@ func cmdPolicyCheck(args []string) error {
 	}
 	if n := len(p.MustNotReach); n > 0 {
 		fmt.Printf("  must_not_reach: %d rule(s)\n", n)
+	}
+	if n := len(p.MustPassThrough); n > 0 {
+		fmt.Printf("  must_pass_through: %d rule(s)\n", n)
 	}
 	if p.IOBudget != nil {
 		fmt.Printf("  io_budget: max %d write(s) per route\n", p.IOBudget.MaxWritesPerRoute)

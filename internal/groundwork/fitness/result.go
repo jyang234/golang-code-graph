@@ -24,13 +24,17 @@ func (s Severity) String() string {
 
 // Finding is one result of evaluating a rule. From/To name the exact edge when
 // the finding is about one (layering, a reachable path); they are empty for
-// rule-level findings (a budget overflow names the route in Summary).
+// rule-level findings (a budget overflow names the route in Summary). Detail is
+// presentation only — extra evidence for the reader (e.g. a witness path) that
+// is never part of a finding's identity, so re-derived prose cannot make an old
+// finding look new in a base-vs-branch diff.
 type Finding struct {
 	Rule     string
 	Severity Severity
 	Summary  string
 	From     string
 	To       string
+	Detail   string
 }
 
 // Result is the full set of findings from evaluating a policy against a graph.

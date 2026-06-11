@@ -107,7 +107,7 @@ func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, c
 		if baseKeys[findingKey(f)] {
 			continue
 		}
-		v := Violation{Rule: f.Rule, Summary: f.Summary, From: f.From, To: f.To}
+		v := Violation{Rule: f.Rule, Summary: f.Summary, From: f.From, To: f.To, Detail: f.Detail}
 		if f.Severity == fitness.Violation {
 			violations = append(violations, v)
 		} else {

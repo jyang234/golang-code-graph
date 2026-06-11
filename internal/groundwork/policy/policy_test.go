@@ -67,11 +67,47 @@ func TestValidateErrors(t *testing.T) {
 			Service: "s", Version: 1,
 			BlindSpotRatchet: &BlindSpotRatchet{Allow: []BlindSpotException{{Kind: "reflect", Reason: "r"}}},
 		},
+		"pass no name": {
+			Service: "s", Version: 1,
+			MustPassThrough: []PassRule{{From: []string{"a"}, To: []string{"b"}, Through: []string{"c"}}},
+		},
+		"pass no through": {
+			Service: "s", Version: 1,
+			MustPassThrough: []PassRule{{Name: "r", From: []string{"a"}, To: []string{"b"}}},
+		},
+		"pass allow both empty": {
+			Service: "s", Version: 1,
+			MustPassThrough: []PassRule{{Name: "r", From: []string{"a"}, To: []string{"b"}, Through: []string{"c"},
+				Allow: []Exception{{Reason: "no sides"}}}},
+		},
 	}
 	for name, p := range cases {
 		if err := p.Validate(); err == nil {
 			t.Errorf("%s: Validate() = nil, want error", name)
 		}
+	}
+}
+
+func TestPassRuleAllowed(t *testing.T) {
+	r := &PassRule{Allow: []Exception{
+		{From: "example.com/svc.main", Reason: "composition root"},     // any target
+		{From: "pkg.Healthz", To: "boundary:db SELECT health"},         // exact pair
+		{To: "boundary:db SELECT version", Reason: "version endpoint"}, // any source
+	}}
+	if !r.Allowed("example.com/svc.main", "boundary:db INSERT x") {
+		t.Error("from-only entry must match any target")
+	}
+	if !r.Allowed("pkg.Healthz", "boundary:db SELECT health") {
+		t.Error("exact pair did not match")
+	}
+	if r.Allowed("pkg.Healthz", "boundary:db INSERT x") {
+		t.Error("pair entry matched a different target")
+	}
+	if !r.Allowed("pkg.Other", "boundary:db SELECT version") {
+		t.Error("to-only entry must match any source")
+	}
+	if r.Allowed("pkg.Other", "boundary:db DELETE users") {
+		t.Error("unrelated pair matched")
 	}
 }
 

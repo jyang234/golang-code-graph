@@ -145,6 +145,35 @@ func TestDetailChangeIsNotDrift(t *testing.T) {
 	}
 }
 
+// must_pass_through reports every bypass pair (unlike must_not_reach's single
+// witness) precisely so this works: a second bypass added on a branch must
+// surface as a NEW violation even when the base already carries one.
+func TestPassThroughSecondBypassIsNewViolation(t *testing.T) {
+	p := loadPolicy(t)
+	p.MustPassThrough = []policy.PassRule{{
+		Name:    "app-guards-db",
+		From:    []string{policy.EntrypointSelector},
+		To:      []string{"boundary:db"},
+		Through: []string{"(*example.com/layeredsvc/internal/app.Service)"},
+	}}
+	base := loadGraph(t, "layeredsvc.branch-skip.graph.json") // pre-existing bypass
+	branch := loadGraph(t, "layeredsvc.branch-skip.graph.json")
+	const v2Export = "(*example.com/layeredsvc/internal/handlerv2.Server).Export"
+	branch.Nodes = append(branch.Nodes, graph.Node{FQN: v2Export, Sig: "func()", Tier: 1})
+	branch.Edges = append(branch.Edges, graph.Edge{From: v2Export, To: sSelectUser, Tier: 2})
+
+	a := Review(p, base, branch)
+	var passViolations []Violation
+	for _, v := range a.NewViolations {
+		if v.Rule == "must_pass_through" {
+			passViolations = append(passViolations, v)
+		}
+	}
+	if len(passViolations) != 1 || passViolations[0].From != v2Export {
+		t.Fatalf("want only the second bypass as new, got %v", a.NewViolations)
+	}
+}
+
 func TestRatchetDeterministic(t *testing.T) {
 	p := withRatchet(t, &policy.BlindSpotRatchet{Gate: true})
 	base := loadGraph(t, "layeredsvc.graph.json")

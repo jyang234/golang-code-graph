@@ -69,6 +69,13 @@ own homework — so it is declarative and validated strictly on load.
      "from": ["(*example.com/layeredsvc/internal/handler.Server).GetUser"],
      "to":   ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]}
   ],
+  "must_pass_through": [
+    {"name": "app-guards-db",
+     "from": ["entrypoint:*"],
+     "to":   ["boundary:db"],
+     "through": ["(*example.com/layeredsvc/internal/app.Service)"],
+     "allow": [{"from": "example.com/layeredsvc.main", "reason": "composition root"}]}
+  ],
   "io_budget": {"max_writes_per_route": 2},
   "blind_spot_ratchet": {
     "gate": false,
@@ -77,7 +84,7 @@ own homework — so it is declarative and validated strictly on load.
 }
 ```
 
-It declares four invariant families:
+It declares five invariant families:
 
 - **`layers`** — ordered top→bottom; a call may stay within a layer or descend
   one, never skip a layer or call upward. `roots` exempts the composition root
@@ -88,6 +95,16 @@ It declares four invariant families:
 - **`must_not_reach`** — negative reachability invariants (the all-paths safety
   class). Add `"require_proof": true` to a high-stakes rule to make it fail closed
   when the graph cannot prove absence.
+- **`must_pass_through`** — waypoint invariants: every path from a `from`
+  source to a `to` target must pass through a `through` function ("every
+  entrypoint-to-DB path goes through the auth check"). `from` supports
+  `entrypoint:*`, which matches every graph source — deliberately, so a
+  brand-new handler package cannot silently escape the rule; exempt the
+  composition root via `allow`, not by narrowing `from`. A violation names the
+  bypassing (source, target) pair and shows one shortest bypass path; every
+  bypassing pair is reported, so a second bypass added on a branch surfaces as
+  a *new* violation. Three-valued like `must_not_reach`: "no bypass over a
+  blind frontier" is a caution, escalated by `require_proof`.
 - **`io_budget`** — caps external *writes* reachable from a route (the
   side-effect-blowout guard); reads don't count, and the composition root is
   exempt.
@@ -107,6 +124,7 @@ policy for "layeredsvc" (v1) — valid
   layers (top→bottom): handler → app → store
   layering: 0 allow-listed exception(s), 1 root package(s)
   must_not_reach: 1 rule(s)
+  must_pass_through: 1 rule(s)
   io_budget: max 2 write(s) per route
   blind_spot_ratchet: observe-only, 1 allow-listed exception(s)
 ```
