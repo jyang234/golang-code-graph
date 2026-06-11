@@ -19,14 +19,15 @@ import (
 
 // Policy is the whole declared architecture of one service.
 type Policy struct {
-	Service          string            `json:"service"`
-	Version          int               `json:"version"`
-	Layers           []Layer           `json:"layers,omitempty"`
-	Layering         *Layering         `json:"layering,omitempty"`
-	MustNotReach     []ReachRule       `json:"must_not_reach,omitempty"`
-	MustPassThrough  []PassRule        `json:"must_pass_through,omitempty"`
-	IOBudget         *IOBudget         `json:"io_budget,omitempty"`
-	BlindSpotRatchet *BlindSpotRatchet `json:"blind_spot_ratchet,omitempty"`
+	Service           string            `json:"service"`
+	Version           int               `json:"version"`
+	Layers            []Layer           `json:"layers,omitempty"`
+	Layering          *Layering         `json:"layering,omitempty"`
+	MustNotReach      []ReachRule       `json:"must_not_reach,omitempty"`
+	MustPassThrough   []PassRule        `json:"must_pass_through,omitempty"`
+	NoConcurrentReach []ConcurrentRule  `json:"no_concurrent_reach,omitempty"`
+	IOBudget          *IOBudget         `json:"io_budget,omitempty"`
+	BlindSpotRatchet  *BlindSpotRatchet `json:"blind_spot_ratchet,omitempty"`
 }
 
 // Layer names an architectural tier and the import-path prefixes that belong to
@@ -97,6 +98,18 @@ type PassRule struct {
 	Through      []string    `json:"through"`
 	RequireProof bool        `json:"require_proof,omitempty"`
 	Allow        []Exception `json:"allow,omitempty"`
+}
+
+// ConcurrentRule forbids reaching a target along a path entered via a
+// concurrent edge (a go/defer call site): "no DB writes from goroutines".
+// Catches the agent pattern of "make it async" introducing unsupervised
+// writes. v1 limitation, disclosed: the graph's concurrent flag conflates
+// `go` and `defer` sites; if defer noise appears in practice, the flag is
+// split in flowmap first (a small lockstep change planned then, not now).
+type ConcurrentRule struct {
+	Name         string   `json:"name"`
+	To           []string `json:"to"`
+	RequireProof bool     `json:"require_proof,omitempty"`
 }
 
 // EntrypointSelector is the From selector that expands to every graph source.
@@ -220,6 +233,14 @@ func (p *Policy) Validate() error {
 		}
 		if len(r.From) == 0 || len(r.To) == 0 {
 			return fmt.Errorf("must_not_reach[%d] (%s): from and to are both required", i, r.Name)
+		}
+	}
+	for i, r := range p.NoConcurrentReach {
+		if strings.TrimSpace(r.Name) == "" {
+			return fmt.Errorf("no_concurrent_reach[%d]: name is required", i)
+		}
+		if len(r.To) == 0 {
+			return fmt.Errorf("no_concurrent_reach[%d] (%s): to is required", i, r.Name)
 		}
 	}
 	for i, r := range p.MustPassThrough {

@@ -264,7 +264,7 @@ func edgeLine(f fitness.Finding) string {
 
 // ruleCount is a rough tally of configured invariants, for the OK summary.
 func ruleCount(p *policy.Policy) int {
-	n := len(p.MustNotReach) + len(p.MustPassThrough)
+	n := len(p.MustNotReach) + len(p.MustPassThrough) + len(p.NoConcurrentReach)
 	if p.Layering != nil {
 		n++
 	}
@@ -485,6 +485,9 @@ func cmdPolicyCheck(args []string) error {
 	}
 	if n := len(p.MustPassThrough); n > 0 {
 		fmt.Printf("  must_pass_through: %d rule(s)\n", n)
+	}
+	if n := len(p.NoConcurrentReach); n > 0 {
+		fmt.Printf("  no_concurrent_reach: %d rule(s)\n", n)
 	}
 	if p.IOBudget != nil {
 		fmt.Printf("  io_budget: max %d write(s) per route\n", p.IOBudget.MaxWritesPerRoute)

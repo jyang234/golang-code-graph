@@ -15,6 +15,7 @@ func Check(p *policy.Policy, ix *graph.Index) Result {
 	checkLayering(p, ix, &r)
 	checkMustNotReach(p, ix, &r)
 	checkMustPassThrough(p, ix, &r)
+	checkNoConcurrentReach(p, ix, &r)
 	checkIOBudget(p, ix, &r)
 	checkObligations(p, ix, &r)
 	r.sort()
