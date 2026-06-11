@@ -63,11 +63,38 @@ func TestValidateErrors(t *testing.T) {
 		"negative budget": {
 			Service: "s", Version: 1, IOBudget: &IOBudget{MaxWritesPerRoute: -1},
 		},
+		"ratchet allow no site": {
+			Service: "s", Version: 1,
+			BlindSpotRatchet: &BlindSpotRatchet{Allow: []BlindSpotException{{Kind: "reflect", Reason: "r"}}},
+		},
 	}
 	for name, p := range cases {
 		if err := p.Validate(); err == nil {
 			t.Errorf("%s: Validate() = nil, want error", name)
 		}
+	}
+}
+
+func TestBlindSpotRatchetAllows(t *testing.T) {
+	var nilRatchet *BlindSpotRatchet
+	if nilRatchet.Allows("reflect", "pkg.Fn") {
+		t.Error("nil ratchet allowed a blind spot; it must allow nothing")
+	}
+	r := &BlindSpotRatchet{Allow: []BlindSpotException{
+		{Site: "example.com/svc/internal/codec"},   // any kind, prefix
+		{Kind: "HighFanOut", Site: "pkg.Dispatch"}, // kind-narrowed, exact
+	}}
+	if !r.Allows("reflect", "example.com/svc/internal/codec.Decode") {
+		t.Error("prefix allow entry did not match")
+	}
+	if !r.Allows("HighFanOut", "pkg.Dispatch") {
+		t.Error("exact kind+site allow entry did not match")
+	}
+	if r.Allows("reflect", "pkg.Dispatch") {
+		t.Error("kind-narrowed entry matched a different kind")
+	}
+	if r.Allows("reflect", "example.com/svc/other.Fn") {
+		t.Error("entry matched an unrelated site")
 	}
 }
 

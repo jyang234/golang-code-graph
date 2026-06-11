@@ -21,6 +21,7 @@ type GateResult struct {
 	NewViolations    []Violation      `json:"new_violations,omitempty"`
 	ScopeEscapes     []string         `json:"scope_escapes,omitempty"`
 	BreakingContract []ContractChange `json:"breaking_contract,omitempty"`
+	NewBlindSpots    []BlindSpotDelta `json:"new_blind_spots,omitempty"`
 	Digest           string           `json:"digest"`
 }
 
@@ -42,13 +43,22 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string) GateResul
 
 	escapes := scopeEscapes(d, scope)
 
+	// New blind spots gate only when the policy says so (blind_spot_ratchet.gate);
+	// otherwise they are review-artifact information, not a merge blocker — so
+	// everything a GateResult lists is a reason it failed.
+	var blindSpots []BlindSpotDelta
+	if p.GatesBlindSpots() {
+		blindSpots = newBlindSpots(p, base, branch)
+	}
+
 	g := GateResult{
 		Service:          p.Service,
 		NewViolations:    newViolations,
 		ScopeEscapes:     escapes,
 		BreakingContract: breaking,
+		NewBlindSpots:    blindSpots,
 	}
-	g.Pass = len(newViolations) == 0 && len(escapes) == 0 && len(breaking) == 0
+	g.Pass = len(newViolations) == 0 && len(escapes) == 0 && len(breaking) == 0 && len(blindSpots) == 0
 	g.Digest = gateDigest(g)
 	return g
 }
@@ -118,6 +128,12 @@ func (g GateResult) Render() string {
 		fmt.Fprintf(&b, "🔌 %d breaking contract change(s)\n", len(g.BreakingContract))
 		for _, c := range g.BreakingContract {
 			fmt.Fprintf(&b, "- %s %s %s\n", c.Op, c.Surface, c.Name)
+		}
+	}
+	if len(g.NewBlindSpots) > 0 {
+		fmt.Fprintf(&b, "🕳️  %d new blind spot(s) — gated by blind_spot_ratchet; allow-list with a reason or remove the dynamic construct\n", len(g.NewBlindSpots))
+		for _, s := range g.NewBlindSpots {
+			fmt.Fprintf(&b, "- %s %s\n", s.Kind, s.Site)
 		}
 	}
 	return b.String()

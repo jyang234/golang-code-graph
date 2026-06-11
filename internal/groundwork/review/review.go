@@ -27,6 +27,7 @@ func Review(p *policy.Policy, base, branch *graph.Graph) Artifact {
 	contract := contractChanges(d, baseIx, branchIx)
 	effects := ioEffects(d)
 	reach := reachExisting(d, baseIx, branchIx)
+	blindSpots := newBlindSpots(p, base, branch)
 
 	a := Artifact{
 		Service:       p.Service,
@@ -37,22 +38,59 @@ func Review(p *policy.Policy, base, branch *graph.Graph) Artifact {
 		Effects:       effects,
 		Reach:         reach,
 		NewCautions:   newCautions,
+		NewBlindSpots: blindSpots,
 	}
-	a.Verdict = verdict(d, newViolations, contract)
+	a.Verdict = verdict(p, d, newViolations, contract, blindSpots)
 	a.Digest = digestOf(a)
 	return a
 }
 
-// verdict applies the three-valued rule: an empty delta abstains; a new violation
-// or a breaking contract change blocks; otherwise the structure is clear.
-func verdict(d graphDelta, violations []Violation, contract []ContractChange) Verdict {
-	if d.empty() {
-		return NoStructuralSignal
-	}
+// verdict applies the three-valued rule: a new violation, a breaking contract
+// change, or (when the policy gates the blind-spot ratchet) a new blind spot
+// blocks; an empty delta abstains; otherwise the structure is clear. A new
+// blind spot suppresses the abstention even when the node/edge delta is empty —
+// "the graph's knowledge of this code shrank" IS a structural signal, and a
+// body-only change that introduces reflection must not read as the graph
+// having nothing to say.
+func verdict(p *policy.Policy, d graphDelta, violations []Violation, contract []ContractChange, blindSpots []BlindSpotDelta) Verdict {
 	if len(violations) > 0 || anyBreaking(contract) {
 		return Block
 	}
+	if p.GatesBlindSpots() && len(blindSpots) > 0 {
+		return Block
+	}
+	if d.empty() && len(blindSpots) == 0 {
+		return NoStructuralSignal
+	}
 	return StructurallyClear
+}
+
+// newBlindSpots returns the branch's blind spots absent from the base and not
+// covered by the policy's allow-list — the blind-spot ratchet's drift. Identity
+// is (kind, site); Detail is carried for display but never keys the diff.
+func newBlindSpots(p *policy.Policy, base, branch *graph.Graph) []BlindSpotDelta {
+	key := func(kind, site string) string { return kind + "\x00" + site }
+	baseKeys := map[string]bool{}
+	for _, s := range base.BlindSpots {
+		baseKeys[key(s.Kind, s.Site)] = true
+	}
+	seen := map[string]bool{}
+	var out []BlindSpotDelta
+	for _, s := range branch.BlindSpots {
+		k := key(s.Kind, s.Site)
+		if baseKeys[k] || seen[k] || p.BlindSpotRatchet.Allows(s.Kind, s.Site) {
+			continue
+		}
+		seen[k] = true
+		out = append(out, BlindSpotDelta{Kind: s.Kind, Site: s.Site, Detail: s.Detail})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Site < out[j].Site
+	})
+	return out
 }
 
 // newFindings runs fitness on both graphs and returns the findings present on the

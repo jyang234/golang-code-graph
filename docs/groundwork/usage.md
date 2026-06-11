@@ -69,11 +69,15 @@ own homework — so it is declarative and validated strictly on load.
      "from": ["(*example.com/layeredsvc/internal/handler.Server).GetUser"],
      "to":   ["boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"]}
   ],
-  "io_budget": {"max_writes_per_route": 2}
+  "io_budget": {"max_writes_per_route": 2},
+  "blind_spot_ratchet": {
+    "gate": false,
+    "allow": [{"kind": "reflect", "site": "example.com/layeredsvc/internal/codec", "reason": "audited decoder"}]
+  }
 }
 ```
 
-It declares three invariant families:
+It declares four invariant families:
 
 - **`layers`** — ordered top→bottom; a call may stay within a layer or descend
   one, never skip a layer or call upward. `roots` exempts the composition root
@@ -87,6 +91,13 @@ It declares three invariant families:
 - **`io_budget`** — caps external *writes* reachable from a route (the
   side-effect-blowout guard); reads don't count, and the composition root is
   exempt.
+- **`blind_spot_ratchet`** — the drift ratchet on the graph's *own* soundness:
+  no new blind spots base→branch without a reviewed `allow` entry. Every other
+  check is only as good as the substrate, so unchecked growth in dynamic
+  dispatch erodes them all silently. `review` always reports new blind spots
+  (even with no ratchet configured); `gate: true` additionally makes them
+  block `verify` — observe first, gate once the baseline is clean. The ratchet
+  is one-directional: pre-existing and removed blind spots never fire it.
 
 Validate one with `policy-check`:
 
@@ -97,6 +108,7 @@ policy for "layeredsvc" (v1) — valid
   layering: 0 allow-listed exception(s), 1 root package(s)
   must_not_reach: 1 rule(s)
   io_budget: max 2 write(s) per route
+  blind_spot_ratchet: observe-only, 1 allow-listed exception(s)
 ```
 
 ---

@@ -19,12 +19,13 @@ import (
 
 // Policy is the whole declared architecture of one service.
 type Policy struct {
-	Service      string      `json:"service"`
-	Version      int         `json:"version"`
-	Layers       []Layer     `json:"layers,omitempty"`
-	Layering     *Layering   `json:"layering,omitempty"`
-	MustNotReach []ReachRule `json:"must_not_reach,omitempty"`
-	IOBudget     *IOBudget   `json:"io_budget,omitempty"`
+	Service          string            `json:"service"`
+	Version          int               `json:"version"`
+	Layers           []Layer           `json:"layers,omitempty"`
+	Layering         *Layering         `json:"layering,omitempty"`
+	MustNotReach     []ReachRule       `json:"must_not_reach,omitempty"`
+	IOBudget         *IOBudget         `json:"io_budget,omitempty"`
+	BlindSpotRatchet *BlindSpotRatchet `json:"blind_spot_ratchet,omitempty"`
 }
 
 // Layer names an architectural tier and the import-path prefixes that belong to
@@ -77,6 +78,49 @@ type ReachRule struct {
 // outbound-sync/outbound-async kind; reads do not count.
 type IOBudget struct {
 	MaxWritesPerRoute int `json:"max_writes_per_route"`
+}
+
+// BlindSpotRatchet is the drift ratchet on the graph's own soundness: no new
+// blind spots base→branch without a reviewed allow-list entry. Every other
+// check is only as good as the substrate; unchecked growth in dynamic dispatch
+// erodes them all silently. Review always reports new (unallowed) blind spots;
+// Gate makes them merge-blocking only when Gate is true, so adopters observe
+// first and gate once the baseline is clean.
+type BlindSpotRatchet struct {
+	Gate  bool                 `json:"gate,omitempty"`
+	Allow []BlindSpotException `json:"allow,omitempty"`
+}
+
+// BlindSpotException is one reviewed-and-accepted blind spot. Site matches the
+// blind spot's site exactly or by prefix (the same convention as a layering
+// Exception); an empty Kind matches any kind.
+type BlindSpotException struct {
+	Kind   string `json:"kind,omitempty"`
+	Site   string `json:"site"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Allows reports whether a blind spot with this kind and site is covered by an
+// allow-list entry. A nil ratchet allows nothing (every new blind spot is
+// reported — just never gated).
+func (r *BlindSpotRatchet) Allows(kind, site string) bool {
+	if r == nil {
+		return false
+	}
+	for _, a := range r.Allow {
+		if a.Kind != "" && a.Kind != kind {
+			continue
+		}
+		if site == a.Site || hasPrefix(site, a.Site) {
+			return true
+		}
+	}
+	return false
+}
+
+// GatesBlindSpots reports whether new blind spots block the pre-flight gate.
+func (p *Policy) GatesBlindSpots() bool {
+	return p.BlindSpotRatchet != nil && p.BlindSpotRatchet.Gate
 }
 
 // Load decodes and validates a policy from JSON. Unknown fields are rejected so a
@@ -135,6 +179,13 @@ func (p *Policy) Validate() error {
 	}
 	if p.IOBudget != nil && p.IOBudget.MaxWritesPerRoute < 0 {
 		return fmt.Errorf("io_budget.max_writes_per_route must be non-negative")
+	}
+	if p.BlindSpotRatchet != nil {
+		for i, a := range p.BlindSpotRatchet.Allow {
+			if strings.TrimSpace(a.Site) == "" {
+				return fmt.Errorf("blind_spot_ratchet.allow[%d]: site is required", i)
+			}
+		}
 	}
 	return nil
 }

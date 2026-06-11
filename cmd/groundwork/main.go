@@ -410,5 +410,12 @@ func cmdPolicyCheck(args []string) error {
 	if p.IOBudget != nil {
 		fmt.Printf("  io_budget: max %d write(s) per route\n", p.IOBudget.MaxWritesPerRoute)
 	}
+	if r := p.BlindSpotRatchet; r != nil {
+		mode := "observe-only"
+		if r.Gate {
+			mode = "gating"
+		}
+		fmt.Printf("  blind_spot_ratchet: %s, %d allow-listed exception(s)\n", mode, len(r.Allow))
+	}
 	return nil
 }

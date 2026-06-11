@@ -63,6 +63,7 @@ type Artifact struct {
 	Effects       []EffectChange   `json:"io_effects,omitempty"`
 	Reach         []string         `json:"reachable_from,omitempty"`
 	NewCautions   []Violation      `json:"new_cautions,omitempty"`
+	NewBlindSpots []BlindSpotDelta `json:"new_blind_spots,omitempty"`
 	Digest        string           `json:"digest"`
 }
 
@@ -97,6 +98,16 @@ type EffectChange struct {
 	Op     string `json:"op"`
 	Effect string `json:"effect"`
 	Write  bool   `json:"write,omitempty"`
+}
+
+// BlindSpotDelta is one newly-introduced gap in the graph's knowledge — the
+// blind-spot ratchet's unit of drift. Identity is (kind, site); Detail is
+// presentation only and never part of the base-vs-branch key, so a re-worded
+// disclosure does not resurface as "new".
+type BlindSpotDelta struct {
+	Kind   string `json:"kind"`
+	Site   string `json:"site"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // digestOf returns the sha256 of a's canonical encoding with the Digest field
@@ -210,6 +221,18 @@ func (a Artifact) Render() string {
 		fmt.Fprintf(&b, "⚠️  %d new caution(s) — the graph cannot prove these\n", len(a.NewCautions))
 		for _, c := range a.NewCautions {
 			fmt.Fprintf(&b, "- %s — %s\n", c.Rule, c.Summary)
+		}
+		b.WriteString("\n")
+	}
+
+	if len(a.NewBlindSpots) > 0 {
+		fmt.Fprintf(&b, "🕳️  %d new blind spot(s) — the graph's knowledge of this code shrank\n", len(a.NewBlindSpots))
+		for _, s := range a.NewBlindSpots {
+			fmt.Fprintf(&b, "- %s %s", s.Kind, s.Site)
+			if s.Detail != "" {
+				fmt.Fprintf(&b, " — %s", s.Detail)
+			}
+			b.WriteString("\n")
 		}
 	}
 	return b.String()
