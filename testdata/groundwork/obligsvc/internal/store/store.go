@@ -16,3 +16,19 @@ func (t *Tx) Commit() error { t.closed = true; return nil }
 
 // Rollback releases the transaction on failure.
 func (t *Tx) Rollback() { t.closed = true }
+
+// TxError is a concrete error type: the obligations analysis must treat it as
+// the error result (types.Implements), not as the resource.
+type TxError struct{ msg string }
+
+// Error implements error.
+func (e *TxError) Error() string { return e.msg }
+
+// BeginTxC acquires a transaction with a concrete error type.
+func (s *Store) BeginTxC() (*Tx, *TxError) { return &Tx{}, nil }
+
+// Acquire is a single-result error acquire (semaphore shape).
+func (s *Store) Acquire() error { return nil }
+
+// Release releases the semaphore.
+func (s *Store) Release() {}

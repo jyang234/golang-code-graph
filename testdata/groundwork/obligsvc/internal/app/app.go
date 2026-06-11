@@ -65,3 +65,76 @@ func DisburseRacy(approved bool) {
 	}
 	bus.Publish("loan.approved")
 }
+
+// handle recovers in a deferred NAMED function: control can rejoin invisibly,
+// so the analysis must abstain (CANT-PROVE).
+func handle() { _ = recover() }
+
+// TransferRecoverNamed abstains: recover via a deferred named function.
+func TransferRecoverNamed(s *store.Store) error {
+	defer handle()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// TransferClosure is the errcheck-clean cleanup idiom: the deferred closure
+// releasing the captured tx is in-frame and credited (SATISFIED).
+func TransferClosure(s *store.Store) error {
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { tx.Rollback() }()
+	return tx.Commit()
+}
+
+// TransferAnnotate has a named result captured by an annotating defer: the
+// failure branch must still be recognized through the alloc/load web
+// (SATISFIED).
+func TransferAnnotate(s *store.Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { tx.Rollback() }()
+	return tx.Commit()
+}
+
+func annotate(err error) error { return err }
+
+// TransferConcrete acquires with a concrete error type (*store.TxError): it is
+// the err, not the resource, and its failure branch prunes (SATISFIED).
+func TransferConcrete(s *store.Store) error {
+	tx, terr := s.BeginTxC()
+	if terr != nil {
+		return terr
+	}
+	defer func() { tx.Rollback() }()
+	return tx.Commit()
+}
+
+// HoldSem is the single-result error acquire: the failure branch must prune
+// even with no tuple Extract (SATISFIED).
+func HoldSem(s *store.Store) error {
+	if err := s.Acquire(); err != nil {
+		return err
+	}
+	defer s.Release()
+	return nil
+}
+
+// DeferredPublish publishes via defer with no audit anywhere: the deferred B
+// still happens and still needs its A (VIOLATED, and the rule must not read
+// as inert).
+func DeferredPublish() { defer bus.Publish("loan.approved") }
+
+// DeferredPublishAudited: the audit dominates the defer registration
+// (SATISFIED).
+func DeferredPublishAudited() {
+	audit.Write("loan.approved")
+	defer bus.Publish("loan.approved")
+}

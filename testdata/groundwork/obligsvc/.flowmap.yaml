@@ -9,6 +9,15 @@ obligations:
   - name: audit-before-publish
     require: "example.com/obligsvc/internal/audit#Write"
     before: "example.com/obligsvc/internal/bus#Publish"
+  - name: txc-must-close
+    acquire: "example.com/obligsvc/internal/store#BeginTxC"
+    release:
+      - "example.com/obligsvc/internal/store#Commit"
+      - "example.com/obligsvc/internal/store#Rollback"
+  - name: sem-must-release
+    acquire: "example.com/obligsvc/internal/store#Acquire"
+    release:
+      - "example.com/obligsvc/internal/store#Release"
   # Deliberately inert: the anchor was "renamed away". The UNMATCHED disclosure
   # is the fixture's dead-guardrail case.
   - name: renamed-away

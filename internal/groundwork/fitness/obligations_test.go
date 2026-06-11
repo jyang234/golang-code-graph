@@ -16,8 +16,8 @@ func TestObligationsJudged(t *testing.T) {
 	res := Check(&policy.Policy{Service: "obligsvc", Version: 1}, graph.NewIndex(g))
 
 	v := res.Violations()
-	if len(v) != 2 {
-		t.Fatalf("want 2 obligation violations (Transfer leak, DisburseRacy), got %v", v)
+	if len(v) != 3 {
+		t.Fatalf("want 3 obligation violations (Transfer leak, DisburseRacy, DeferredPublish), got %v", v)
 	}
 	froms := map[string]bool{}
 	for _, f := range v {
@@ -26,13 +26,19 @@ func TestObligationsJudged(t *testing.T) {
 		}
 		froms[f.From] = true
 	}
-	if !froms["example.com/obligsvc/internal/app.Transfer"] || !froms["example.com/obligsvc/internal/app.DisburseRacy"] {
-		t.Errorf("violations name %v, want Transfer and DisburseRacy", froms)
+	for _, want := range []string{
+		"example.com/obligsvc/internal/app.Transfer",
+		"example.com/obligsvc/internal/app.DisburseRacy",
+		"example.com/obligsvc/internal/app.DeferredPublish",
+	} {
+		if !froms[want] {
+			t.Errorf("violations name %v, missing %s", froms, want)
+		}
 	}
 
 	c := res.Cautions()
-	if len(c) != 2 {
-		t.Fatalf("want 2 obligation cautions (CANT-PROVE, UNMATCHED), got %v", c)
+	if len(c) != 3 {
+		t.Fatalf("want 3 obligation cautions (2x CANT-PROVE, UNMATCHED), got %v", c)
 	}
 	var inert, cantProve bool
 	for _, f := range c {
@@ -55,7 +61,12 @@ func TestObligationsSatisfiedIsSilent(t *testing.T) {
 	for _, f := range res.Findings {
 		switch f.From {
 		case "example.com/obligsvc/internal/app.TransferDefer",
-			"example.com/obligsvc/internal/app.Disburse":
+			"example.com/obligsvc/internal/app.Disburse",
+			"example.com/obligsvc/internal/app.TransferClosure",
+			"example.com/obligsvc/internal/app.TransferAnnotate",
+			"example.com/obligsvc/internal/app.TransferConcrete",
+			"example.com/obligsvc/internal/app.HoldSem",
+			"example.com/obligsvc/internal/app.DeferredPublishAudited":
 			t.Errorf("SATISFIED site produced a finding: %v", f)
 		}
 	}

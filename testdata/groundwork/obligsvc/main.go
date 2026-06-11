@@ -18,4 +18,11 @@ func main() {
 	}
 	app.Disburse(true)
 	app.DisburseRacy(true)
+	_ = app.TransferRecoverNamed(s)
+	_ = app.TransferClosure(s)
+	_ = app.TransferAnnotate(s)
+	_ = app.TransferConcrete(s)
+	_ = app.HoldSem(s)
+	app.DeferredPublish()
+	app.DeferredPublishAudited()
 }

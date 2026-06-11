@@ -36,6 +36,7 @@ package obligations
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -220,75 +221,152 @@ func checkRelease(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 	return out
 }
 
-// usesRecover reports whether fn or any of its anonymous functions (deferred
-// closures run in fn's frame) calls the recover builtin.
+// usesRecover reports whether a panic in fn can be swallowed: recover stops
+// fn's unwinding only when called directly by a function fn DEFERS, so the
+// check is defer-rooted — resolve each Defer's target (a named function or a
+// closure; StaticCallee handles both) and scan it for a direct recover call.
+// A blanket AnonFuncs scan would be both under-broad (defer handlePanic()
+// missed) and over-broad (a recover inside a synchronously-called closure
+// affects that closure's frame, not fn's). Also scan fn itself: a direct
+// recover call is legal (always returns nil) but signals intent the CFG
+// cannot model. Disclosed residual: a DYNAMIC deferred func value (e.g.
+// `defer cancel()`) cannot be resolved; abstaining there would abstain on
+// most real Go, so it is accepted — the same accepted-imprecision register
+// as ignoring implicit runtime panics.
 func usesRecover(fn *ssa.Function) bool {
-	check := func(f *ssa.Function) bool {
-		for _, b := range f.Blocks {
-			for _, in := range b.Instrs {
-				if c, ok := in.(ssa.CallInstruction); ok {
-					if bi, ok := c.Common().Value.(*ssa.Builtin); ok && bi.Name() == "recover" {
-						return true
-					}
-				}
-			}
-		}
-		return false
-	}
-	if check(fn) {
+	if callsRecoverDirectly(fn) {
 		return true
 	}
-	for _, anon := range fn.AnonFuncs {
-		if check(anon) {
-			return true
+	for _, b := range fn.Blocks {
+		for _, in := range b.Instrs {
+			d, ok := in.(*ssa.Defer)
+			if !ok {
+				continue
+			}
+			if target := d.Common().StaticCallee(); target != nil && callsRecoverDirectly(target) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// ownershipEscapes reports whether the acquired value's lifecycle leaves the
-// function: returned, stored, captured by a closure, or handed to a goroutine.
-// Passing the value as a plain call argument is NOT an escape — the check is
-// value-blind and a callee that releases it must be listed as a release ref.
-// The walk follows value-preserving forwarding (tuple extracts, phis,
-// interface boxing, conversions) so an escape through an alias is still seen.
-func ownershipEscapes(acq *ssa.Call) (string, bool) {
-	seen := map[ssa.Value]bool{}
-	work := resourceValues(acq)
-	for len(work) > 0 {
-		v := work[len(work)-1]
-		work = work[:len(work)-1]
-		if seen[v] {
-			continue
+func callsRecoverDirectly(f *ssa.Function) bool {
+	for _, b := range f.Blocks {
+		for _, in := range b.Instrs {
+			if c, ok := in.(ssa.CallInstruction); ok {
+				if bi, ok := c.Common().Value.(*ssa.Builtin); ok && bi.Name() == "recover" {
+					return true
+				}
+			}
 		}
-		seen[v] = true
+	}
+	return false
+}
+
+// valueWeb returns the set of SSA values aliasing root inside its function:
+// tuple extracts, phis, value-preserving conversions, and — the case SSA does
+// not lift — loads from a local Alloc the value was stored into (named
+// results, variables captured by closures). One alias model serves both the
+// resource (escape analysis, release credit) and the acquire's error result
+// (failure-branch pruning); recognizing aliases by narrow syntactic shape in
+// each consumer is how the same value silently stops being tracked.
+func valueWeb(root ssa.Value) map[ssa.Value]bool {
+	web := map[ssa.Value]bool{}
+	var add func(v ssa.Value)
+	add = func(v ssa.Value) {
+		if web[v] {
+			return
+		}
+		web[v] = true
 		refs := v.Referrers()
 		if refs == nil {
-			continue
+			return
 		}
 		for _, in := range *refs {
 			switch r := in.(type) {
 			case *ssa.Extract, *ssa.Phi, *ssa.MakeInterface, *ssa.ChangeType,
 				*ssa.ChangeInterface, *ssa.Convert, *ssa.TypeAssert:
-				work = append(work, r.(ssa.Value))
-			case *ssa.Return:
-				return "acquired value is returned — its lifecycle leaves the function", true
+				add(r.(ssa.Value))
 			case *ssa.Store:
-				if r.Val == v {
-					return "acquired value is stored — its lifecycle leaves the function", true
+				if r.Val != v {
+					continue
 				}
-			case *ssa.MakeClosure:
-				return "acquired value is captured by a closure — releases there are invisible", true
-			case *ssa.Go:
-				return "acquired value is handed to a goroutine — concurrent release is out of scope", true
+				if alloc, ok := r.Addr.(*ssa.Alloc); ok {
+					web[alloc] = true // the slot itself, for capture analysis
+					if arefs := alloc.Referrers(); arefs != nil {
+						for _, ain := range *arefs {
+							if ld, ok := ain.(*ssa.UnOp); ok && ld.Op == token.MUL {
+								add(ld)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	add(root)
+	return web
+}
+
+// ownershipEscapes reports whether the acquired value's lifecycle leaves the
+// function: returned, stored to non-local memory, captured by a closure that
+// outlives the call, or handed to a goroutine. Passing the value as a plain
+// call argument is NOT an escape — the check is value-blind and a callee that
+// releases it must be listed as a release ref. A store into a LOCAL slot is
+// alias propagation, not escape (the slot's loads join the web); a closure
+// capturing the value whose only use is a `defer` in this function stays
+// in-frame (leakPath credits its releases).
+func ownershipEscapes(acq *ssa.Call) (string, bool) {
+	for _, root := range resourceValues(acq) {
+		for v := range valueWeb(root) {
+			refs := v.Referrers()
+			if refs == nil {
+				continue
+			}
+			for _, in := range *refs {
+				switch r := in.(type) {
+				case *ssa.Return:
+					return "acquired value is returned — its lifecycle leaves the function", true
+				case *ssa.Store:
+					if r.Val != v {
+						continue // writing INTO the value, not moving it
+					}
+					if _, local := r.Addr.(*ssa.Alloc); !local {
+						return "acquired value is stored — its lifecycle leaves the function", true
+					}
+				case *ssa.MakeClosure:
+					if !onlyDeferred(r) {
+						return "acquired value is captured by a closure — releases there are invisible", true
+					}
+				case *ssa.Go:
+					return "acquired value is handed to a goroutine — concurrent release is out of scope", true
+				}
 			}
 		}
 	}
 	return "", false
 }
 
+// onlyDeferred reports whether every use of a closure is a `defer` in the
+// enclosing function — the cleanup idiom. Such a closure runs in this frame
+// at exit; any other use (called later, stored, passed, returned, spawned)
+// means the capture outlives the analysis and must abstain.
+func onlyDeferred(mc *ssa.MakeClosure) bool {
+	refs := mc.Referrers()
+	if refs == nil || len(*refs) == 0 {
+		return false
+	}
+	for _, in := range *refs {
+		if _, ok := in.(*ssa.Defer); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // resourceValues returns the SSA values holding the acquire's resource — the
-// non-error result components. The error result is deliberately excluded:
+// non-error result components. The error results are deliberately excluded:
 // `return err` on the failure branch is not the resource escaping.
 func resourceValues(acq *ssa.Call) []ssa.Value {
 	sig := acq.Call.Signature()
@@ -314,7 +392,11 @@ func resourceValues(acq *ssa.Call) []ssa.Value {
 	return out
 }
 
-func isErrorType(t interface{ String() string }) bool { return t.String() == "error" }
+// errorInterface is the universe error type, for semantic (not name-string)
+// matching: a concrete error type like *pkg.TxError is still an error.
+var errorInterface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+
+func isErrorType(t types.Type) bool { return types.Implements(t, errorInterface) }
 
 // leakPath walks the CFG forward from the acquire, looking for a function exit
 // reachable without passing a release site. A release via plain call or defer
@@ -324,7 +406,7 @@ func isErrorType(t interface{ String() string }) bool { return t.String() == "er
 // pruned: an If whose condition tests the acquire's error result against nil
 // only has its success arm followed.
 func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref) (token.Pos, bool) {
-	errVals := acquireErrValues(acq)
+	errVals := errorValuesOf(acq)
 	visited := map[*ssa.BasicBlock]bool{}
 
 	var walk func(b *ssa.BasicBlock, from int) (token.Pos, bool)
@@ -336,7 +418,7 @@ func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref) (token.Pos, bool)
 					return token.NoPos, false // released: this path is covered
 				}
 			case *ssa.Defer:
-				if anyRef(releases, in) {
+				if deferReleases(in, releases) {
 					return token.NoPos, false // deferred release covers every later exit
 				}
 			case *ssa.Return:
@@ -377,26 +459,60 @@ func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref) (token.Pos, bool)
 	return walk(blk, start)
 }
 
-// acquireErrValues collects the SSA values holding the acquire's error result
-// (the Extract of its last tuple component when that is an error), so the
-// failure branch testing it can be recognized and pruned.
-func acquireErrValues(acq *ssa.Call) map[ssa.Value]bool {
+// deferReleases reports whether a Defer covers the obligation: it defers a
+// release directly, or defers an ANONYMOUS closure whose body calls a release
+// — the errcheck-clean idiom `defer func() { _ = tx.Rollback() }()`. The
+// one-level scan is deliberately limited to closures: a deferred NAMED helper
+// that releases must be listed as a release ref, keeping the rule vocabulary
+// explicit (the value-blind contract).
+func deferReleases(d *ssa.Defer, releases []ref) bool {
+	if anyRef(releases, d) {
+		return true
+	}
+	callee := d.Common().StaticCallee()
+	if callee == nil || callee.Parent() == nil {
+		return false // not an anonymous closure of this function
+	}
+	for _, b := range callee.Blocks {
+		for _, in := range b.Instrs {
+			if c, ok := in.(*ssa.Call); ok && anyRef(releases, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// errorValuesOf collects every SSA value aliasing the acquire's error
+// result(s) — the call itself for a single-result error acquire, the
+// error-typed Extracts for a tuple, each expanded through valueWeb so the
+// failure-branch test is recognized even when err is a named result, is
+// captured by an annotating defer (stored to an alloc and reloaded), or
+// merges through a phi. The narrow direct-Extract version produced false
+// VIOLATED on exactly those idioms.
+func errorValuesOf(acq *ssa.Call) map[ssa.Value]bool {
 	out := map[ssa.Value]bool{}
+	sig := acq.Call.Signature()
+	if sig == nil || sig.Results().Len() == 0 {
+		return out
+	}
+	if sig.Results().Len() == 1 {
+		if isErrorType(sig.Results().At(0).Type()) {
+			for v := range valueWeb(acq) {
+				out[v] = true
+			}
+		}
+		return out
+	}
 	refs := acq.Referrers()
 	if refs == nil {
 		return out
 	}
-	sig := acq.Call.Signature()
-	if sig == nil || sig.Results().Len() < 2 {
-		return out
-	}
-	last := sig.Results().Len() - 1
-	if sig.Results().At(last).Type().String() != "error" {
-		return out
-	}
 	for _, in := range *refs {
-		if ex, ok := in.(*ssa.Extract); ok && ex.Index == last {
-			out[ex] = true
+		if ex, ok := in.(*ssa.Extract); ok && isErrorType(sig.Results().At(ex.Index).Type()) {
+			for v := range valueWeb(ex) {
+				out[v] = true
+			}
 		}
 	}
 	return out
@@ -443,13 +559,19 @@ func checkPrecede(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 	var aSites, bSites []sited
 	for _, b := range fn.Blocks {
 		for i, in := range b.Instrs {
-			call, ok := in.(*ssa.Call) // only a plain call counts: a deferred A runs at exit, after B
+			call, ok := in.(ssa.CallInstruction)
 			if !ok {
 				continue
 			}
-			if require.matchesCall(call) {
+			// A Require site must be a plain call: a deferred A runs at exit,
+			// AFTER the B it is supposed to precede.
+			if _, plain := in.(*ssa.Call); plain && require.matchesCall(call) {
 				aSites = append(aSites, sited{call, b, i})
 			}
+			// A Before site is ANY call form: a deferred or spawned B still
+			// happens and still needs its A. The registration/spawn point is
+			// the site — sound, since an A dominating the registration runs
+			// before the deferred B can.
 			if before.matchesCall(call) {
 				bSites = append(bSites, sited{call, b, i})
 			}

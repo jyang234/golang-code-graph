@@ -287,3 +287,136 @@ func TestCheckDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// RF-4: the six idioms the review confirmed empirically broken, locked as
+// permanent fixtures with their post-fix verdicts.
+const rf4Src = `package fix
+
+type Tx struct{ closed bool }
+type TxError struct{ msg string }
+
+func (e *TxError) Error() string { return e.msg }
+
+type Store struct{ tx *Tx }
+
+func (s *Store) BeginTx() (*Tx, error)     { return &Tx{}, nil }
+func (s *Store) BeginTxC() (*Tx, *TxError) { return &Tx{}, nil }
+func (s *Store) Acquire() error            { return nil }
+func (s *Store) Release()                  {}
+func (t *Tx) Commit() error                { t.closed = true; return nil }
+func (t *Tx) Rollback() error              { t.closed = true; return nil }
+
+func annotate(err error) error { return err }
+func handle()                  { _ = recover() }
+
+// Single-result error acquire: the failure branch must still be pruned.
+func HoldSem(s *Store) error {
+	if err := s.Acquire(); err != nil {
+		return err
+	}
+	defer s.Release()
+	return nil
+}
+
+// Named result captured by an annotating defer: err lives in an alloc and the
+// nil-test compares a load — the web must still recognize the failure branch.
+func TransferAnnotate(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return tx.Commit()
+}
+
+// Concrete error type: *TxError implements error; it is the err, not the
+// resource, and its failure branch prunes.
+func TransferConcrete(s *Store) error {
+	tx, terr := s.BeginTxC()
+	if terr != nil {
+		return terr
+	}
+	defer func() { _ = tx.Rollback() }()
+	return tx.Commit()
+}
+
+// The errcheck-clean cleanup idiom: a deferred closure releasing the captured
+// resource is in-frame and credited, not an "escape".
+func TransferClosure(s *Store) error {
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return tx.Commit()
+}
+
+// recover in a deferred NAMED function rejoins this frame: must abstain.
+func TransferRecoverNamed(s *Store) error {
+	defer handle()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+`
+
+func TestRF4ReleaseIdioms(t *testing.T) {
+	fns := buildSSA(t, rf4Src)
+	rules := []config.ObligationRule{
+		{Name: "tx-must-close", Acquire: "example.com/fix#BeginTx",
+			Release: []string{"example.com/fix#Commit", "example.com/fix#Rollback"}},
+		{Name: "txc-must-close", Acquire: "example.com/fix#BeginTxC",
+			Release: []string{"example.com/fix#Commit", "example.com/fix#Rollback"}},
+		{Name: "sem-must-release", Acquire: "example.com/fix#Acquire",
+			Release: []string{"example.com/fix#Release"}},
+	}
+	fs := Check(rules, fns, "")
+
+	want := map[string]Status{
+		"HoldSem":              Satisfied,
+		"TransferAnnotate":     Satisfied,
+		"TransferConcrete":     Satisfied,
+		"TransferClosure":      Satisfied,
+		"TransferRecoverNamed": CantProve,
+	}
+	for fn, wantStatus := range want {
+		if f := one(t, fs, fn); f.Status != wantStatus {
+			t.Errorf("%s = %s (%s), want %s", fn, f.Status, f.Detail, wantStatus)
+		}
+	}
+	if f := one(t, fs, "TransferRecoverNamed"); !strings.Contains(f.Detail, "recover") {
+		t.Errorf("recover abstention reason = %q", f.Detail)
+	}
+}
+
+// RF-4: a deferred Before still happens and still needs its Require — and a
+// rule whose only B is deferred must not read as UNMATCHED/inert.
+func TestRF4DeferredBefore(t *testing.T) {
+	src := `package fix
+
+func audit(event string)   {}
+func publish(event string) {}
+
+func DeferredPublish()        { defer publish("x") }
+func DeferredPublishAudited() { audit("x"); defer publish("x") }
+`
+	fns := buildSSA(t, src)
+	fs := Check([]config.ObligationRule{{
+		Name: "audit-before-publish", Require: "example.com/fix#audit", Before: "example.com/fix#publish",
+	}}, fns, "")
+
+	if f := one(t, fs, "DeferredPublish"); f.Status != Violated {
+		t.Errorf("unaudited deferred publish = %s, want VIOLATED (and not UNMATCHED)", f.Status)
+	}
+	if f := one(t, fs, "DeferredPublishAudited"); f.Status != Satisfied {
+		t.Errorf("audit-dominated deferred publish = %s (%s), want SATISFIED", f.Status, f.Detail)
+	}
+	for _, f := range fs {
+		if f.Status == Unmatched {
+			t.Errorf("rule with deferred-only B sites reported inert: %v", f)
+		}
+	}
+}
