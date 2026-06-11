@@ -191,3 +191,39 @@ func TestServeMCPFleetSession(t *testing.T) {
 		t.Errorf("scoped entrypoints must be the single-service unprefixed form: %q", text(got[6]))
 	}
 }
+
+// The transcript is deterministic on purpose (no timestamps): the same
+// session produces identical bytes, so the log's shape is locked exactly —
+// an init marker per initialize, and per call the raw params plus the
+// resolution (answering service, "*" for fleet-wide, absent when resolution
+// failed) and the isError outcome. `groundwork transcript` reads this.
+func TestMCPTranscriptLog(t *testing.T) {
+	srv := &mcpServer{path: "../../testdata/groundwork/goldens/obligsvc.graph.json"}
+	if err := srv.load(); err != nil {
+		t.Fatal(err)
+	}
+	fleet := &mcpFleet{names: []string{"oblig"}, services: map[string]*mcpServer{"oblig": srv}}
+	var log strings.Builder
+	fleet.log = &log
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ground","arguments":{"fqn":"example.com/obligsvc/internal/app.DisburseAndCharge"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fleet-events","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"reach","arguments":{"service":"nope","fqn":"x"}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"triage","arguments":{}}}`,
+	}, "\n") + "\n"
+	var out strings.Builder
+	if err := serveMCP(strings.NewReader(in), &out, fleet); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		`{"init":true}`,
+		`{"call":{"name":"ground","arguments":{"fqn":"example.com/obligsvc/internal/app.DisburseAndCharge"}},"service":"oblig"}`,
+		`{"call":{"name":"fleet-events","arguments":{}},"service":"*"}`,
+		`{"call":{"name":"reach","arguments":{"service":"nope","fqn":"x"}},"isError":true}`,
+		`{"call":{"name":"triage","arguments":{}},"service":"oblig","isError":true}`,
+	}, "\n") + "\n"
+	if log.String() != want {
+		t.Errorf("transcript bytes:\ngot:\n%swant:\n%s", log.String(), want)
+	}
+}

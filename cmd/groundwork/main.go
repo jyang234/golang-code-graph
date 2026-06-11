@@ -23,6 +23,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/impact"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/review"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/transcript"
 )
 
 var version = "dev"
@@ -63,6 +64,8 @@ func run(args []string) error {
 		return cmdVerifyArtifact(args[1:])
 	case "exceptions":
 		return cmdExceptions(args[1:])
+	case "transcript":
+		return cmdTranscript(args[1:])
 	case "init":
 		return cmdInit(args[1:])
 	case "policy-check":
@@ -91,6 +94,7 @@ usage:
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch>  prove an artifact is authentic (not tampered/stale)
   groundwork exceptions <policy.json> <graph.json> [--json]      audit every allow-list entry; flag dead ones
+  groundwork transcript <calls.jsonl> [--json]   summarize an mcp --log transcript: sessions, tool/service mix, cross-service hops
   groundwork init <graph.json> [--name <svc>] [--guide <out.md>]  propose a baseline policy from measured facts
   groundwork policy-check <policy.json>        load and validate a policy
   groundwork version
@@ -656,6 +660,34 @@ func cmdExceptions(args []string) error {
 	} else {
 		fmt.Printf("\nall %d exception(s) live and justified\n", len(xs))
 	}
+	return nil
+}
+
+// cmdTranscript summarizes an `mcp --log` transcript: the reader half of the
+// E4 measurement apparatus, and the evidence the MCP tiers 2–3 plan defers
+// to. Counts only — per-session query volume, tool and service mix,
+// cross-service hops, error/correction rates; the qualitative half of E4
+// (do conclusions cite card facts?) stays human-judged and the card says so.
+// Read-only, exit 0: it informs a keep/retire decision, it does not make one.
+func cmdTranscript(args []string) error {
+	asJSON, rest := takeFlag(args, "--json", "-json")
+	if len(rest) != 1 {
+		return fmt.Errorf("usage: groundwork transcript <calls.jsonl> [--json]")
+	}
+	entries, err := transcript.Load(rest[0])
+	if err != nil {
+		return err
+	}
+	s := transcript.Summarize(entries)
+	if asJSON {
+		b, err := canonjson.Marshal(s)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Print(transcript.Render(s))
 	return nil
 }
 

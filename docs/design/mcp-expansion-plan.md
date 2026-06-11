@@ -73,3 +73,12 @@ team-wide record) will show whether agents actually make cross-service hops
 and whether shared serving earns its keep. If the transcripts come back
 empty, the honest move is documented retirement, the same standard every
 other surface in this repo is held to.
+
+The instrument for that decision is built: each transcript line now carries
+its resolution (answering service, fleet-wide, or failed) and isError
+outcome, an init marker bounds sessions, and `groundwork transcript
+calls.jsonl [--json]` computes the keep/retire evidence — per-session query
+counts, tool/service mix, cross-service hops, correction rates —
+deterministically (no timestamps; a replayed drill produces identical
+bytes). What it deliberately does not compute: value. Whether conclusions
+cite card facts is E4's human-judged half, and the card says so.

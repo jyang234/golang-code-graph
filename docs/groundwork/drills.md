@@ -74,6 +74,15 @@ whether conclusions cite card facts, exploratory query counts, and
 first-attempt `verify` block rates on the fix. Run it as a human-judged
 exercise when adopting; record results here.
 
+The quantitative half is instrumented: run the server with `--log
+calls.jsonl` and read it with `groundwork transcript calls.jsonl [--json]` —
+sessions and per-session query counts, the tool and service mix,
+cross-service hops (do agents actually walk publisher→consumer across
+services?), and error/correction rates. The transcript is deterministic
+(no timestamps), so a replayed drill produces identical bytes and the
+summary is diffable evidence. The card states its own limit: counts measure
+usage, not value — whether conclusions cite card facts stays human-judged.
+
 ## Standing limitations these drills do NOT cover
 
 Causes outside the code entirely (the fault card's scope statement exists for

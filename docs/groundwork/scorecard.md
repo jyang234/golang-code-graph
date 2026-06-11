@@ -46,6 +46,7 @@ no committed lock would be ⚠️, not ✅.
 | Ground cards (pre-edit binding rules) | ✅ | The defining test seeds the violation the card warns about and asserts the named rules fire; same matchers as the checks | Binding ≠ exhaustive: only declared rules appear; an unconfigured hazard is invisible by definition |
 | MCP server | ✅ | Scripted-session tests: handshake, discovery, cards, isError tool results, -32601; fleet session: prefixed entrypoints, fleet-events join, explicit-hop errors; HTTP session: bearer auth, Origin rejection, 405/202/400 transport discipline, fail-closed exposure guard | Staleness flagged but reload is manual by design; fleet-events covers loaded services only; HTTP auth is one static bearer token (TLS/identity belong to a reverse proxy); no SSE streams or sessions (stateless by design); first-of-kind surface with no field hours |
 | Effectiveness drills as ratchet | 📐 | E1–E3 committed; numbers reprint on every `-v` run | They measure that triage does its job well, not that its job covers everything |
+| Transcript instrument (`--log` + `transcript`) | ✅ | Byte-exact log-format test; summary semantics (sessions, hops through fleet-wide calls, corrections) locked by unit tests; strict decode fails closed on unknown lines | Counts measure usage, not value — E4's qualitative half (do conclusions cite card facts?) stays human-judged; no E4 field data yet |
 
 ## Cross-cutting properties
 

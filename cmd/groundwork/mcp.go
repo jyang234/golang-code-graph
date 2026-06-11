@@ -282,6 +282,14 @@ func (f *mcpFleet) dispatch(req rpcRequest) rpcResponse {
 	resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
 	switch req.Method {
 	case "initialize":
+		if f.log != nil {
+			// The session boundary: per-session query counts are an E4
+			// measure, and a session that initialized and then asked nothing
+			// is itself evidence.
+			f.mu.Lock()
+			_, _ = f.log.Write([]byte("{\"init\":true}\n"))
+			f.mu.Unlock()
+		}
 		proto := f.proto
 		if proto == "" {
 			proto = "2024-11-05"
@@ -297,10 +305,29 @@ func (f *mcpFleet) dispatch(req rpcRequest) rpcResponse {
 		resp.Result = map[string]any{"tools": toolDefs()}
 	case "tools/call":
 		f.mu.Lock()
+		result, service := f.callTool(req.Params)
 		if f.log != nil {
-			_, _ = f.log.Write(append(append([]byte(`{"call":`), req.Params...), '}', 10))
+			// One JSON line per call, written AFTER the call so the line can
+			// carry its resolution: the service that answered ("*" for the
+			// fleet-wide lenses, absent when resolution failed) and whether
+			// the result was an isError. Deterministic on purpose — no
+			// timestamps — so a replayed drill produces identical bytes;
+			// `groundwork transcript` is the reader.
+			params := req.Params
+			if len(params) == 0 {
+				params = json.RawMessage("null")
+			}
+			line := append([]byte(`{"call":`), params...)
+			if service != "" {
+				q, _ := json.Marshal(service)
+				line = append(append(line, []byte(`,"service":`)...), q...)
+			}
+			if isErr, _ := result["isError"].(bool); isErr {
+				line = append(line, []byte(`,"isError":true`)...)
+			}
+			_, _ = f.log.Write(append(line, '}', '\n'))
 		}
-		resp.Result = f.callTool(req.Params)
+		resp.Result = result
 		f.mu.Unlock()
 	default:
 		resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
@@ -385,26 +412,32 @@ type toolArgs struct {
 // callTool dispatches one tools/call. Failures are tool results (isError),
 // never protocol errors: the agent reads the reason and corrects its call.
 // The fleet-wide lenses (fleet-events, the no-service entrypoints listing)
-// are answered here; everything else resolves to one service first.
-func (f *mcpFleet) callTool(params json.RawMessage) map[string]any {
+// are answered here; everything else resolves to one service first. The
+// second return is the transcript's resolution label: the answering
+// service's name, "*" for a fleet-wide answer, "" when resolution failed.
+func (f *mcpFleet) callTool(params json.RawMessage) (map[string]any, string) {
 	var call struct {
 		Name      string   `json:"name"`
 		Arguments toolArgs `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
-		return toolError("malformed tools/call params: " + err.Error())
+		return toolError("malformed tools/call params: " + err.Error()), ""
 	}
 	if call.Name == "fleet-events" {
-		return f.fleetEvents()
+		return f.fleetEvents(), "*"
 	}
 	if call.Name == "entrypoints" && call.Arguments.Service == "" && len(f.names) > 1 {
-		return f.fleetEntrypoints()
+		return f.fleetEntrypoints(), "*"
 	}
 	srv, errRes := f.resolve(call.Arguments.Service)
 	if errRes != nil {
-		return errRes
+		return errRes, ""
 	}
-	return srv.call(call.Name, call.Arguments)
+	service := call.Arguments.Service
+	if service == "" {
+		service = f.names[0] // the lone service: resolve already enforced it
+	}
+	return srv.call(call.Name, call.Arguments), service
 }
 
 // fleetEntrypoints lists every service's named roots, prefixed by service —

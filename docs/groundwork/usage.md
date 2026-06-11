@@ -201,6 +201,7 @@ groundwork init <graph> [--guide …]                     propose a baseline pol
 groundwork mcp <graph> [--policy …]                     serve the lenses as MCP tools over stdio
 groundwork mcp --service <name>=<graph> …               one server, several services' maps (+ fleet-events)
 groundwork mcp … --http <addr> [--token <secret>]       team-shared streamable-HTTP transport
+groundwork transcript <calls.jsonl> [--json]            summarize an mcp --log transcript (the E4 reader)
 groundwork fitness <policy> <graph>                     evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--json]     computed MR review artifact
 groundwork verify <policy> <base> <branch> [--scope …]  fail-closed pre-flight gate
@@ -527,8 +528,14 @@ including effects possibly committed before the fault), `exceptions`,
 `fitness`, and
 `reload`. A graph file that changes on disk is flagged on every response —
 the server never reloads silently; `reload` re-verifies the stamp. `--log`
-writes a deterministic transcript of tool calls (the E4 measurement
-apparatus). **No write tools, ever**: a tool that edited rules would let the
+writes a deterministic transcript (the E4 measurement apparatus): one JSON
+line per tool call carrying the raw params, the resolution (the answering
+service, `*` for fleet-wide lenses, absent when resolution failed), and the
+isError outcome, plus an `init` marker per session — no timestamps, so a
+replayed drill produces identical bytes. `groundwork transcript calls.jsonl`
+is the reader: sessions, per-session query counts, tool/service mix,
+cross-service hops, error/correction rates.
+**No write tools, ever**: a tool that edited rules would let the
 agent author its own guardrails. The
 agent's edit loop becomes ground → edit → verify with one rule set at both
 ends; the incident loop becomes triage → narrow → `flowmap behavior ingest`.
