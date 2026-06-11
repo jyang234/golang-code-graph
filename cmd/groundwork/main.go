@@ -49,6 +49,8 @@ func run(args []string) error {
 		return cmdTriage(args[1:])
 	case "ground":
 		return cmdGround(args[1:])
+	case "mcp":
+		return cmdMCP(args[1:])
 	case "fitness":
 		return cmdFitness(args[1:])
 	case "review":
@@ -78,6 +80,7 @@ usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
   groundwork triage (--frame|--table|--event|--peer) <v> [--fail] [--json] <graph.json>  incident triage card from a symptom
   groundwork ground <graph.json> <fqn> [--policy <policy.json>] [--json]  pre-edit grounding card: what binds this function
+  groundwork mcp <graph.json> [--policy <policy.json>]  serve triage/reach/ground/exceptions as MCP tools over stdio
   groundwork fitness <policy.json> <graph.json> evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--json]   computed MR review artifact (BLOCK exits non-zero)
   groundwork verify <policy> <base> <branch> [--scope p,q] [--json] pre-flight gate: new violations, scope creep, breaking contract

@@ -142,7 +142,9 @@ policy for "layeredsvc" (v1) — valid
 ```
 groundwork reach <graph> <fqn>                          explore one function's blast radius
 groundwork triage (--frame|--table|--event|--peer) <v> [--fail] <graph>   incident triage card
+groundwork ground <graph> <fqn> [--policy …]            pre-edit grounding card: what binds this function
 groundwork exceptions <policy> <graph>                  audit allow-lists; flag dead entries
+groundwork mcp <graph> [--policy …]                     serve the lenses as MCP tools over stdio
 groundwork fitness <policy> <graph>                     evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--json]     computed MR review artifact
 groundwork verify <policy> <base> <branch> [--scope …]  fail-closed pre-flight gate
@@ -407,3 +409,33 @@ active suppression (layering, `must_pass_through`, `blind_spot_ratchet`) with
 its reason, and flags **DEAD** entries — ones that no longer suppress anything
 in the current graph. Delete them: a stale excuse can silently cover a future
 violation. Read-only, exit 0; the measurable target is a dead count of zero.
+
+---
+
+## Pre-edit grounding (`ground`) and the MCP surface (`mcp`)
+
+Deterministic prevention is cheaper than deterministic rejection. The ground
+card surfaces, *before* an edit, the same rules that will gate the merge after
+it:
+
+```console
+$ groundwork ground graph.json '(*example.com/svc/internal/store.Store).Tx' --policy policy.json
+```
+
+The card carries the function's identity (signature, tier, policy layer), its
+one-hop neighborhood and entrypoint cover, the boundary effects it can reach,
+the **binding rules** — layering membership, `must_not_reach` sources,
+`must_pass_through` waypoints, `no_concurrent_reach` targets, plus the
+graph-borne obligation verdicts and partial-effect facts that bind with no
+policy at all — and every blind spot touching those claims. Binding rules are
+derived with the exact matchers the checks use, so the card never promises a
+guardrail that does not bind.
+
+`groundwork mcp <graph.json> [--policy <policy.json>]` serves four tools over
+MCP stdio (newline-delimited JSON-RPC, protocol 2024-11-05, no third-party
+dependencies): `ground`, `reach`, `triage` (with the `fail` what-if framing,
+including effects possibly committed before the fault), and `exceptions`. The
+agent's edit loop becomes ground → edit → verify with one rule set at both
+ends; the incident loop becomes triage → narrow → `flowmap behavior ingest`.
+The server only ever reads the CI-generated graph it was started with — the
+same trust posture as every other groundwork surface.
