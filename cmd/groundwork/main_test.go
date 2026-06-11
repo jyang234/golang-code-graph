@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
+)
 
 func TestRunSmoke(t *testing.T) {
 	cases := [][]string{
@@ -78,5 +82,25 @@ func TestRunErrors(t *testing.T) {
 		if err := run(args); err == nil {
 			t.Errorf("run(%v) = nil, want error", args)
 		}
+	}
+}
+
+// The stamp check is opt-in at both ends: silent when not asked, loud on
+// mismatch or when verification was requested of an unstamped graph.
+func TestVerifyStamp(t *testing.T) {
+	stamped := &graph.Graph{Stamp: "abc123", Nodes: []graph.Node{}}
+	bare := &graph.Graph{Nodes: []graph.Node{}}
+
+	if err := verifyStamp(bare, "", false); err != nil {
+		t.Errorf("no --expect must check nothing: %v", err)
+	}
+	if err := verifyStamp(stamped, "abc123", true); err != nil {
+		t.Errorf("matching stamp rejected: %v", err)
+	}
+	if err := verifyStamp(stamped, "def456", true); err == nil {
+		t.Error("mismatched stamp accepted")
+	}
+	if err := verifyStamp(bare, "abc123", true); err == nil {
+		t.Error("unstamped graph accepted under --expect")
 	}
 }

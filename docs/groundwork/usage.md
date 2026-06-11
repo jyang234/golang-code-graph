@@ -446,7 +446,11 @@ could not name statically (`<dynamic>`) is offered as a flagged *possible*
 match. The card is the map (what the suspects could touch), not the route
 taken: with an OTel trace of the failing request, `flowmap behavior ingest`
 locates the actual divergence inside the suspect set. Triage interrogates the
-graph of the *deployed* commit — a stale map mis-triages.
+graph of the *deployed* commit — a stale map mis-triages (stamp graphs in CI
+and verify with `--expect`, below). Fault cards also state their epistemic
+scope where over-reading happens: causes outside the code (config, infra,
+data, deploys) are not on the map, and committed-effect facts cover
+same-function orderings only — their absence is never an all-clear.
 
 ---
 
@@ -550,7 +554,20 @@ $ flowmap behavior ingest --flows-dir flows/ incident-trace.otlp.json
 ```
 
 Triage interrogates the *deployed* commit's graph — a stale map mis-triages,
-which is why the per-deploy archive matters.
+which is why the per-deploy archive matters. To make that check mechanical,
+stamp the graph in CI and verify at use (opt-in at both ends — no warning
+noise on routine local runs):
+
+```console
+$ flowmap graph --stamp "$GITHUB_SHA" svc/ > graph-$GITHUB_SHA.json   # CI
+$ groundwork triage --expect "$DEPLOYED_SHA" --peer credit-bureau graph.json
+$ groundwork mcp graph.json --policy policy.json --expect "$DEPLOYED_SHA"
+```
+
+The stamp is caller-supplied, never derived — deriving it would make the graph
+a function of more than the code and break byte-identical regeneration.
+A mismatch (or a missing stamp under `--expect`) fails loudly: "this is not
+the graph for the code you think it is."
 
 ### Agents: the MCP server
 

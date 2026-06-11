@@ -29,11 +29,15 @@ import (
 // engine module's first third-party server dependency for three methods.
 func cmdMCP(args []string) error {
 	policyPath, hasPolicy, args := takeValueFlag(args, "--policy", "-policy")
+	expect, hasExpect, args := takeValueFlag(args, "--expect", "-expect")
 	if len(args) != 1 {
-		return fmt.Errorf("usage: groundwork mcp <graph.json> [--policy <policy.json>]")
+		return fmt.Errorf("usage: groundwork mcp <graph.json> [--policy <policy.json>] [--expect <stamp>]")
 	}
 	g, err := graph.LoadFile(args[0])
 	if err != nil {
+		return err
+	}
+	if err := verifyStamp(g, expect, hasExpect); err != nil {
 		return err
 	}
 	var p *policy.Policy

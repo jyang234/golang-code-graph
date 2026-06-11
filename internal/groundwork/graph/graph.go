@@ -32,6 +32,11 @@ const dynamicMarker = "<dynamic>"
 // Graph is one call-graph view as emitted by `flowmap graph`. It is the whole,
 // unscoped service graph unless Entrypoint is set.
 type Graph struct {
+	// Stamp is the producer's caller-supplied identity (typically the deployed
+	// commit SHA). Consumers pass --expect to verify they hold the graph for
+	// the code they think they do — a stale map mis-triages. Opt-in at both
+	// ends: an absent stamp is only an error when verification was asked for.
+	Stamp       string            `json:"stamp,omitempty"`
 	Entrypoint  string            `json:"entrypoint,omitempty"`
 	Nodes       []Node            `json:"nodes"`
 	Edges       []Edge            `json:"edges"`
