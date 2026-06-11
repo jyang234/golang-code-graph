@@ -84,7 +84,7 @@ own homework — so it is declarative and validated strictly on load.
 }
 ```
 
-It declares five invariant families:
+It declares six invariant families:
 
 - **`layers`** — ordered top→bottom; a call may stay within a layer or descend
   one, never skip a layer or call upward. `roots` exempts the composition root
