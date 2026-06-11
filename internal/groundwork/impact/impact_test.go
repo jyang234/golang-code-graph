@@ -190,3 +190,19 @@ func TestFaultPartialEffects(t *testing.T) {
 		t.Error("non-fault card carries partial-effect sections")
 	}
 }
+
+// The fault card states its epistemic scope next to the evidence — including
+// (especially) when the partial-effect sections are empty, so their absence
+// cannot read as an all-clear. The plain card carries no fault scope block.
+func TestFaultCardStatesScope(t *testing.T) {
+	ix := index(t, "layeredsvc.graph.json")
+	fault := ForFault(ix, []string{sSelectUser}).Render() // no effect_order facts here
+	for _, want := range []string{"causes outside the code", "same-function orderings only"} {
+		if !strings.Contains(fault, want) {
+			t.Errorf("fault card missing scope statement %q", want)
+		}
+	}
+	if plain := ForNodes(ix, []string{sSelectUser}).Render(); strings.Contains(plain, "same-function orderings") {
+		t.Error("plain card carries the fault scope block")
+	}
+}

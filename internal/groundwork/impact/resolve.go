@@ -155,5 +155,16 @@ func (c Card) Render() string {
 	b.WriteString("This card is the map (what the suspects COULD touch), not the route taken.\n")
 	b.WriteString("With an OTel trace of the failing request, `flowmap behavior ingest` locates\n")
 	b.WriteString("the actual divergence inside this suspect set.\n")
+	if c.Fault {
+		// The fault card's epistemic scope, stated where over-reading happens —
+		// next to the evidence. (a) The card bounds the CODE-shaped hypothesis
+		// space only; (b) the effect-order coverage limit is voiced precisely as
+		// coverage, not correctness, so listed (sound) facts are not discounted
+		// — and it prints even when the sections are empty, which is exactly
+		// when absence must not read as an all-clear.
+		b.WriteString("Scope: causes outside the code (config, infra, data, deploys) are not on\n")
+		b.WriteString("this map. Committed-effect facts cover same-function orderings only; an\n")
+		b.WriteString("effect committed in a caller before the faulting call is not listed.\n")
+	}
 	return b.String()
 }

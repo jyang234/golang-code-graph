@@ -27,6 +27,11 @@ import (
 // unsafe/cgo/linkname) — disclosures that belong with the "what can happen" map
 // rather than the gated boundary contract.
 type Graph struct {
+	// Stamp is an optional caller-supplied identity (typically the commit SHA
+	// CI built from). It is an argument, never derived, so determinism holds:
+	// the graph stays a pure function of its inputs, and goldens are generated
+	// unstamped. groundwork's triage/mcp verify it via --expect.
+	Stamp      string                 `json:"stamp,omitempty"`
 	Entrypoint string                 `json:"entrypoint,omitempty"`
 	Nodes      []Node                 `json:"nodes"`
 	Edges      []Edge                 `json:"edges"`

@@ -78,7 +78,7 @@ func usage() {
 
 usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
-  groundwork triage (--frame|--table|--event|--peer) <v> [--fail] [--json] <graph.json>  incident triage card from a symptom
+  groundwork triage (--frame|--table|--event|--peer) <v> [--fail] [--expect <stamp>] [--json] <graph.json>  incident triage card
   groundwork ground <graph.json> <fqn> [--policy <policy.json>] [--json]  pre-edit grounding card: what binds this function
   groundwork mcp <graph.json> [--policy <policy.json>]  serve triage/reach/ground/exceptions as MCP tools over stdio
   groundwork fitness <policy.json> <graph.json> evaluate the policy's invariants (non-zero exit on violation)
@@ -107,8 +107,9 @@ func cmdTriage(args []string) error {
 	peer, hasPeer, args := takeValueFlag(args, "--peer", "-peer")
 	fail, args := takeFlag(args, "--fail", "-fail")
 	asJSON, args := takeFlag(args, "--json", "-json")
+	expect, hasExpect, args := takeValueFlag(args, "--expect", "-expect")
 	if len(args) != 1 {
-		return fmt.Errorf("usage: groundwork triage (--frame|--table|--event|--peer) <value> [--fail] [--json] <graph.json>")
+		return fmt.Errorf("usage: groundwork triage (--frame|--table|--event|--peer) <value> [--fail] [--expect <stamp>] [--json] <graph.json>")
 	}
 	set := 0
 	for _, has := range []bool{hasFrame, hasTable, hasEvent, hasPeer} {
@@ -122,6 +123,9 @@ func cmdTriage(args []string) error {
 	}
 	g, err := graph.LoadFile(args[0])
 	if err != nil {
+		return err
+	}
+	if err := verifyStamp(g, expect, hasExpect); err != nil {
 		return err
 	}
 	ix := graph.NewIndex(g)
@@ -164,6 +168,24 @@ func cmdTriage(args []string) error {
 		fmt.Printf("⚠️  %d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
 	}
 	fmt.Print(card.Render())
+	return nil
+}
+
+// verifyStamp enforces an opt-in identity check: when the caller says which
+// code they believe the graph describes (--expect, typically the deployed
+// SHA), a missing or mismatched stamp fails loudly — a stale map mis-triages,
+// and silently so. When not asked, nothing is checked and nothing is printed:
+// a routine local run against a freshly generated graph must not cry wolf.
+func verifyStamp(g *graph.Graph, expect string, hasExpect bool) error {
+	if !hasExpect {
+		return nil
+	}
+	if g.Stamp == "" {
+		return fmt.Errorf("graph carries no stamp but --expect %q was given; regenerate with `flowmap graph --stamp <sha>` in CI", expect)
+	}
+	if g.Stamp != expect {
+		return fmt.Errorf("graph stamp %q does not match --expect %q — this is not the graph for the code you think it is", g.Stamp, expect)
+	}
 	return nil
 }
 

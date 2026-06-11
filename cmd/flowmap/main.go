@@ -107,6 +107,7 @@ func cmdBoundary(args []string) error {
 func cmdGraph(args []string) error {
 	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
 	entry := fs.String("entry", "", `scope to the subgraph reachable from this entry point (e.g. "POST /loan-application")`)
+	stamp := fs.String("stamp", "", "identity stamp (e.g. the commit SHA) recorded in the graph; consumers can verify with --expect")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -120,6 +121,11 @@ func cmdGraph(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The stamp is caller-supplied, never derived: deriving it (from git HEAD,
+	// a timestamp) would make the graph a function of more than the code and
+	// break byte-identical regeneration. Unstamped output is byte-identical to
+	// pre-stamp flowmap; CI passes --stamp "$GITHUB_SHA" explicitly.
+	g.Stamp = *stamp
 	b, err := g.Marshal()
 	if err != nil {
 		return err
