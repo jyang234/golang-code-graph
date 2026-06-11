@@ -194,3 +194,6 @@ func (ix *Index) Edges() []Edge { return ix.g.Edges }
 
 // Obligations returns the graph's path-obligation verdicts.
 func (ix *Index) Obligations() []Obligation { return ix.g.Obligations }
+
+// EffectOrder returns the graph's partial-effect order facts.
+func (ix *Index) EffectOrder() []EffectOrderFact { return ix.g.EffectOrder }

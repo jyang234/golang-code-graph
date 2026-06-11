@@ -4,6 +4,7 @@ package app
 
 import (
 	"example.com/obligsvc/internal/audit"
+	"example.com/obligsvc/internal/billing"
 	"example.com/obligsvc/internal/bus"
 	"example.com/obligsvc/internal/store"
 )
@@ -137,4 +138,23 @@ func DeferredPublish() { defer bus.Publish("loan.approved") }
 func DeferredPublishAudited() {
 	audit.Write("loan.approved")
 	defer bus.Publish("loan.approved")
+}
+
+// DisburseAndCharge is the IT-3 disburse scenario: the publish DOMINATES the
+// fallible charge, so a fault at the charge means loan.approved is CERTAINLY
+// already committed — approved-but-uncharged loans.
+func DisburseAndCharge(id string) error {
+	audit.Write("loan.approved")
+	bus.Publish("loan.approved")
+	return billing.Charge(id)
+}
+
+// DisburseAndChargeRisky publishes on one arm only: the publish CAN precede
+// the charge but does not dominate it (possibly-committed, not certainly).
+func DisburseAndChargeRisky(id string, approved bool) error {
+	audit.Write("loan.approved")
+	if approved {
+		bus.Publish("loan.approved")
+	}
+	return billing.Charge(id)
 }

@@ -32,11 +32,26 @@ const dynamicMarker = "<dynamic>"
 // Graph is one call-graph view as emitted by `flowmap graph`. It is the whole,
 // unscoped service graph unless Entrypoint is set.
 type Graph struct {
-	Entrypoint  string       `json:"entrypoint,omitempty"`
-	Nodes       []Node       `json:"nodes"`
-	Edges       []Edge       `json:"edges"`
-	BlindSpots  []BlindSpot  `json:"blind_spots"`
-	Obligations []Obligation `json:"obligations,omitempty"`
+	Entrypoint  string            `json:"entrypoint,omitempty"`
+	Nodes       []Node            `json:"nodes"`
+	Edges       []Edge            `json:"edges"`
+	BlindSpots  []BlindSpot       `json:"blind_spots"`
+	Obligations []Obligation      `json:"obligations,omitempty"`
+	EffectOrder []EffectOrderFact `json:"effect_order,omitempty"`
+}
+
+// EffectOrderFact is one partial-effect order fact flowmap computed from a
+// function's CFG: the named committed effect can execute before the named
+// fallible call on some path (Always: on every path reaching it). Triage reads
+// these to answer "if this call faults, what may already be committed?" —
+// possibly-committed when Always is false, certainly-committed when true.
+type EffectOrderFact struct {
+	Fn         string `json:"fn"`
+	Effect     string `json:"effect"`
+	EffectSite string `json:"effect_site"`
+	Callee     string `json:"callee"`
+	CalleeSite string `json:"callee_site"`
+	Always     bool   `json:"always,omitempty"`
 }
 
 // Obligation is one path-obligation verdict flowmap computed from a function's

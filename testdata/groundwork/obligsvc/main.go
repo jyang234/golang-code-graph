@@ -29,6 +29,8 @@ func main() {
 	_ = app.HoldSem(s)
 	app.DeferredPublish()
 	app.DeferredPublishAudited()
+	_ = app.DisburseAndCharge("id")
+	_ = app.DisburseAndChargeRisky("id", true)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/transfer", func(w http.ResponseWriter, r *http.Request) {

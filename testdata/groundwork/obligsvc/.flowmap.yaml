@@ -1,5 +1,8 @@
 version: 1
 service: obligsvc
+classify:
+  busPublish:
+    - "example.com/obligsvc/internal/bus#Publish"
 obligations:
   - name: tx-must-close
     acquire: "example.com/obligsvc/internal/store#BeginTx"

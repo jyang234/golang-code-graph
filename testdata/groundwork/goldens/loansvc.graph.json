@@ -464,5 +464,23 @@
       "tier": 3
     }
   ],
-  "blind_spots": []
+  "blind_spots": [],
+  "effect_order": [
+    {
+      "fn": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
+      "effect": "boundary:bus PUBLISH loan.approved",
+      "effect_site": "internal/origination/evaluate.go:89",
+      "callee": "(*example.com/loansvc/internal/origination.Evaluator).notify",
+      "callee_site": "internal/origination/evaluate.go:95",
+      "always": true
+    },
+    {
+      "fn": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
+      "effect": "boundary:bus PUBLISH disbursement.initiated",
+      "effect_site": "internal/origination/evaluate.go:92",
+      "callee": "(*example.com/loansvc/internal/origination.Evaluator).notify",
+      "callee_site": "internal/origination/evaluate.go:95",
+      "always": true
+    }
+  ]
 }

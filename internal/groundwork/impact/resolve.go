@@ -137,6 +137,8 @@ func (c Card) Render() string {
 		entryTitle = "Entrypoints degraded if the suspects fail"
 	}
 	section(entryTitle, c.Entrypoints)
+	section("⚡ Effects CERTAINLY committed before the fault", c.CertainlyCommitted)
+	section("⚡ Effects possibly committed before the fault", c.PossiblyCommitted)
 	section("Upstream callers", c.Callers)
 	section("Reachable boundary effects", c.Effects)
 	if len(c.BlindSpots) > 0 {

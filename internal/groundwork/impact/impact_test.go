@@ -3,6 +3,7 @@ package impact
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -146,5 +147,46 @@ func TestFaultEventMissing(t *testing.T) {
 	r = ResolveEvent(ix, "payment.settled") // consumed by this service
 	if len(r.Matches) == 0 {
 		t.Fatalf("payment.settled resolved to nothing; the consumer registrar should match")
+	}
+}
+
+// IT-3 exit criterion: the disburse scenario reproduces. Fail the charge call
+// and the card reports loan.approved as committed-before-the-fault — certainly
+// where the publish dominates the charge, possibly where it sits on one arm.
+func TestFaultPartialEffects(t *testing.T) {
+	ix := index(t, "obligsvc.graph.json")
+	r := ResolveFrame(ix, "Charge")
+	if len(r.Matches) != 1 {
+		t.Fatalf("Charge resolved to %v", r.Matches)
+	}
+	c := ForFault(ix, r.Matches)
+
+	wantIn := func(list []string, sub, which string) {
+		t.Helper()
+		for _, s := range list {
+			if strings.Contains(s, sub) {
+				return
+			}
+		}
+		t.Errorf("%s = %v, want an entry containing %q", which, list, sub)
+	}
+	wantIn(c.CertainlyCommitted, "loan.approved", "CertainlyCommitted")
+	wantIn(c.PossiblyCommitted, "loan.approved", "PossiblyCommitted")
+	if !strings.Contains(c.Render(), "CERTAINLY committed") {
+		t.Error("rendered fault card hides the partial-effect section")
+	}
+
+	// Negative: a fault at a function that is no fact's fallible callee
+	// commits nothing.
+	clean := ForFault(ix, []string{"example.com/obligsvc/internal/audit.Write"})
+	if len(clean.PossiblyCommitted)+len(clean.CertainlyCommitted) != 0 {
+		t.Errorf("non-fallible-callee fault reported committed effects: %v / %v",
+			clean.PossiblyCommitted, clean.CertainlyCommitted)
+	}
+
+	// And the plain (non-fault) card never carries the sections.
+	plain := ForNodes(ix, r.Matches)
+	if len(plain.PossiblyCommitted)+len(plain.CertainlyCommitted) != 0 {
+		t.Error("non-fault card carries partial-effect sections")
 	}
 }

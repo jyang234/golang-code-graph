@@ -13,6 +13,7 @@
 package impact
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
@@ -34,6 +35,15 @@ type Card struct {
 	// effects that may not have happened. Same evidence, same determinism; only
 	// the question differs ("what if these fail" vs "what are these").
 	Fault bool `json:"fault,omitempty"`
+
+	// The partial-effect answer (IT-3), fault mode only: external effects that
+	// can have already happened when a suspect faults — read off flowmap's
+	// effect_order facts. Certainly = the effect dominates the fault site (it
+	// happened on ANY path reaching the fault); Possibly = a path exists where
+	// it happened first. This is the inconsistent-state lead the responder is
+	// after: "loan.approved published, charge failed".
+	PossiblyCommitted  []string `json:"possibly_committed,omitempty"`
+	CertainlyCommitted []string `json:"certainly_committed,omitempty"`
 }
 
 // ForFault assembles the what-if card: mark the suspects as failing and read
@@ -44,6 +54,25 @@ type Card struct {
 func ForFault(ix *graph.Index, fqns []string) Card {
 	c := ForNodes(ix, fqns)
 	c.Fault = true
+
+	// Partial effects: a fact applies when its fallible callee is one of the
+	// hypothesized-failing suspects — the effect named by the fact may already
+	// be committed when that call faults.
+	suspect := setutil.StringSet(c.Suspects)
+	possibly, certainly := map[string]bool{}, map[string]bool{}
+	for _, f := range ix.EffectOrder() {
+		if !suspect[f.Callee] {
+			continue
+		}
+		entry := fmt.Sprintf("%s — before the fault at %s in %s", f.Effect, f.CalleeSite, fitness.ShortName(f.Fn))
+		if f.Always {
+			certainly[entry] = true
+		} else {
+			possibly[entry] = true
+		}
+	}
+	c.PossiblyCommitted = setutil.SortedKeys(possibly)
+	c.CertainlyCommitted = setutil.SortedKeys(certainly)
 	return c
 }
 
