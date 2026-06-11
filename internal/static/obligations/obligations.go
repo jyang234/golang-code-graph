@@ -198,10 +198,10 @@ func checkRelease(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 	}
 
 	var out []Finding
-	for _, acq := range acquires {
+	for i, acq := range acquires {
 		f := Finding{
 			Rule: rule.Name, Kind: config.KindMustRelease,
-			Fn: fn.RelString(nil), Site: site(fn, acq.Pos(), baseDir),
+			Fn: fn.RelString(nil), Site: site(fn, acq.Pos(), baseDir, i),
 		}
 		switch {
 		case usesRecover(fn):
@@ -211,7 +211,7 @@ func checkRelease(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 				f.Status, f.Detail = CantProve, why
 			} else if exitPos, leaked := leakPath(fn, acq, releases); leaked {
 				f.Status = Violated
-				f.Detail = fmt.Sprintf("exit at %s reachable without release", site(fn, exitPos, baseDir))
+				f.Detail = fmt.Sprintf("exit at %s reachable without release", site(fn, exitPos, baseDir, 0))
 			} else {
 				f.Status = Satisfied
 			}
@@ -582,10 +582,10 @@ func checkPrecede(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 	}
 
 	var out []Finding
-	for _, bs := range bSites {
+	for i, bs := range bSites {
 		f := Finding{
 			Rule: rule.Name, Kind: config.KindMustPrecede,
-			Fn: fn.RelString(nil), Site: site(fn, bs.instr.Common().Pos(), baseDir),
+			Fn: fn.RelString(nil), Site: site(fn, bs.instr.Common().Pos(), baseDir, i),
 		}
 		dominated := false
 		for _, as := range aSites {
@@ -608,23 +608,28 @@ func checkPrecede(rule *config.ObligationRule, fn *ssa.Function, baseDir string)
 
 // ---- positions ---------------------------------------------------------------
 
-// site renders a position as "dir/file.go:NN", relative to baseDir with forward
-// slashes — the first source positions ever emitted into graph.json, normalized
-// so CI and local runs produce byte-identical output.
-func site(fn *ssa.Function, pos token.Pos, baseDir string) string {
+// site renders a position as "dir/file.go:NN", relative to baseDir with
+// forward slashes — the first source positions ever emitted into graph.json.
+// The normalization is TOTAL: no rung of the fallback ladder emits a
+// machine-specific path, because Site is finding identity and the output must
+// be byte-identical across checkouts. Outside baseDir (a package above the
+// service dir, generated code) the portable package-qualified form
+// "<pkg-import-path>/<file base>:<line>" is used; an invalid position yields
+// a synthetic-but-unique "<pkg>:synthetic#<ordinal>" so identities never
+// collapse onto "".
+func site(fn *ssa.Function, pos token.Pos, baseDir string, ordinal int) string {
 	p := fn.Prog.Fset.Position(pos)
 	if !p.IsValid() {
-		return ""
+		return fmt.Sprintf("%s:synthetic#%d", pkgPathOf(fn), ordinal)
 	}
-	name := p.Filename
+	line := ":" + strconv.Itoa(p.Line)
 	if baseDir != "" {
-		if rel, err := filepath.Rel(baseDir, name); err == nil && !strings.HasPrefix(rel, "..") {
-			name = rel
+		if rel, err := filepath.Rel(baseDir, p.Filename); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel) + line
 		}
-	} else {
-		name = filepath.Base(name)
+		return pkgPathOf(fn) + "/" + filepath.Base(p.Filename) + line
 	}
-	return filepath.ToSlash(name) + ":" + strconv.Itoa(p.Line)
+	return filepath.Base(p.Filename) + line
 }
 
 // exitPos is the best position for an exit instruction: its own, else the

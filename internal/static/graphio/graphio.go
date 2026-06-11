@@ -98,7 +98,12 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 		g.Edges = append(g.Edges, nodeEdges...)
 	}
 
-	if rules := res.Config.Obligations; len(rules) > 0 {
+	// Obligations are a whole-service disclosure (a level-2 slice of the FULL
+	// graph). An entry-scoped view evaluates only the entry's cone, where a
+	// rule anchored elsewhere would read UNMATCHED ("inert") and out-of-cone
+	// verdicts would vanish — scoping artifacts presented as rule deadness. So
+	// the section rides unscoped builds only.
+	if rules := res.Config.Obligations; len(rules) > 0 && entry == "" {
 		// Site paths are anchored at the service directory (made absolute, so the
 		// emitted module-relative form is identical regardless of where flowmap
 		// was invoked from — the cross-machine determinism requirement).

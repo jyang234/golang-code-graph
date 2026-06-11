@@ -40,3 +40,29 @@ func TestObligationsPathInvariant(t *testing.T) {
 		t.Fatal("obligsvc graph carries no obligations section")
 	}
 }
+
+// RF-5: obligations are a whole-service disclosure; an entry-scoped view must
+// not carry the section (UNMATCHED there would be a scoping artifact).
+func TestEntryScopedBuildOmitsObligations(t *testing.T) {
+	res, err := analyze.Analyze(filepath.Join("..", "..", "..", "testdata", "groundwork", "obligsvc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := ""
+	for _, r := range res.Roots.Roots {
+		if r.Name != "" {
+			entry = r.Name
+			break
+		}
+	}
+	if entry == "" {
+		t.Fatal("obligsvc has no named entrypoint to scope to")
+	}
+	g, err := Build(res, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Obligations != nil {
+		t.Fatalf("entry-scoped build carries %d obligations; the section is full-graph-only", len(g.Obligations))
+	}
+}

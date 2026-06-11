@@ -39,6 +39,11 @@
       "tier": 1
     },
     {
+      "fqn": "example.com/obligsvc.main$1",
+      "sig": "func(w http.ResponseWriter, r *http.Request)",
+      "tier": 1
+    },
+    {
       "fqn": "example.com/obligsvc/internal/app.DeferredPublish",
       "sig": "func app.DeferredPublish()",
       "tier": 3
@@ -224,6 +229,11 @@
     {
       "from": "example.com/obligsvc.main",
       "to": "example.com/obligsvc/internal/app.TransferRecoverNamed",
+      "tier": 2
+    },
+    {
+      "from": "example.com/obligsvc.main$1",
+      "to": "example.com/obligsvc/internal/app.Transfer",
       "tier": 2
     },
     {

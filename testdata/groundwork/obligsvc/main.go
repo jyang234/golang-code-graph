@@ -1,9 +1,13 @@
 // obligsvc is groundwork's path-obligations fixture: every app function is
 // reachable from main so the call graph (and therefore the obligations check)
-// covers each verdict shape.
+// covers each verdict shape. The HTTP route exists so the fixture has a NAMED
+// entrypoint — entry-scoped builds must omit the obligations section, and that
+// needs an entry to scope to.
 package main
 
 import (
+	"net/http"
+
 	"example.com/obligsvc/internal/app"
 	"example.com/obligsvc/internal/store"
 )
@@ -25,4 +29,10 @@ func main() {
 	_ = app.HoldSem(s)
 	app.DeferredPublish()
 	app.DeferredPublishAudited()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/transfer", func(w http.ResponseWriter, r *http.Request) {
+		_ = app.Transfer(&store.Store{})
+	})
+	_ = http.ListenAndServe(":0", mux)
 }

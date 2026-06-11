@@ -420,3 +420,33 @@ func DeferredPublishAudited() { audit("x"); defer publish("x") }
 		}
 	}
 }
+
+// RF-5: the site ladder is total — no rung emits a machine-specific path, and
+// no input collapses identity onto "".
+func TestSiteLadder(t *testing.T) {
+	fns := buildSSA(t, txSrc)
+	var fn *ssa.Function
+	for _, f := range fns {
+		if f.Name() == "Transfer" {
+			fn = f
+			break
+		}
+	}
+	if fn == nil {
+		t.Fatal("Transfer not built")
+	}
+
+	// Rung 3: an invalid position yields a synthetic-but-unique identity.
+	if got := site(fn, token.NoPos, "/anywhere", 2); got != "example.com/fix:synthetic#2" {
+		t.Errorf("synthetic site = %q", got)
+	}
+	// Rung 2: a file outside baseDir gets the portable package-qualified form,
+	// never the raw absolute filename.
+	got := site(fn, fn.Pos(), "/definitely/not/a/parent", 0)
+	if !strings.HasPrefix(got, "example.com/fix/fixture.go:") {
+		t.Errorf("out-of-dir site = %q, want pkg-qualified portable form", got)
+	}
+	if strings.Contains(got, "/definitely") || strings.HasPrefix(got, "/") {
+		t.Errorf("out-of-dir site leaked a machine path: %q", got)
+	}
+}
