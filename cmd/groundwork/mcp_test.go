@@ -26,10 +26,14 @@ func TestServeMCPSession(t *testing.T) {
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"exceptions","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":7,"method":"unknown/method"}`,
+		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"entrypoints","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"fitness","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"reload","arguments":{}}}`,
 	}, "\n") + "\n"
 
 	var out strings.Builder
-	if err := serveMCP(strings.NewReader(in), &out, graph.NewIndex(g), nil); err != nil {
+	srv := &mcpServer{path: "../../testdata/groundwork/goldens/obligsvc.graph.json", ix: graph.NewIndex(g)}
+	if err := serveMCP(strings.NewReader(in), &out, srv); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,8 +52,8 @@ func TestServeMCPSession(t *testing.T) {
 		}
 		got = append(got, r)
 	}
-	if len(got) != 7 {
-		t.Fatalf("want 7 responses (the notification is silent), got %d", len(got))
+	if len(got) != 10 {
+		t.Fatalf("want 10 responses (the notification is silent), got %d", len(got))
 	}
 
 	text := func(r resp) string {
@@ -64,8 +68,8 @@ func TestServeMCPSession(t *testing.T) {
 	if pv, _ := got[0].Result["protocolVersion"].(string); pv != "2024-11-05" {
 		t.Errorf("initialize protocolVersion = %q", pv)
 	}
-	if tools, _ := got[1].Result["tools"].([]any); len(tools) != 4 {
-		t.Errorf("tools/list = %d tools, want 4", len(tools))
+	if tools, _ := got[1].Result["tools"].([]any); len(tools) != 7 {
+		t.Errorf("tools/list = %d tools, want 7", len(tools))
 	}
 	if !strings.Contains(text(got[2]), "Binding rules") || !strings.Contains(text(got[2]), "partial-effect") {
 		t.Errorf("ground card missing binding rules: %q", text(got[2]))
@@ -81,5 +85,14 @@ func TestServeMCPSession(t *testing.T) {
 	}
 	if got[6].Error == nil || got[6].Error.Code != -32601 {
 		t.Error("unknown method must be a JSON-RPC method-not-found error")
+	}
+	if !strings.Contains(text(got[7]), "/transfer") {
+		t.Errorf("entrypoints listing missing the route: %q", text(got[7]))
+	}
+	if isErr, _ := got[8].Result["isError"].(bool); !isErr {
+		t.Error("policy-less fitness must be an isError tool result")
+	}
+	if !strings.Contains(text(got[9]), "reloaded") {
+		t.Errorf("reload result: %q", text(got[9]))
 	}
 }

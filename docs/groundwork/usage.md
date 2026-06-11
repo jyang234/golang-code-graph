@@ -197,6 +197,7 @@ groundwork reach <graph> <fqn>                          explore one function's b
 groundwork triage (--frame|--route|--table|--event|--peer) <v> [--fail] <graph>   incident triage card
 groundwork ground <graph> <fqn> [--policy …]            pre-edit grounding card: what binds this function
 groundwork exceptions <policy> <graph>                  audit allow-lists; flag dead entries
+groundwork init <graph> [--guide …]                     propose a baseline policy from measured facts
 groundwork mcp <graph> [--policy …]                     serve the lenses as MCP tools over stdio
 groundwork fitness <policy> <graph>                     evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--json]     computed MR review artifact
@@ -477,6 +478,25 @@ violation. Read-only, exit 0; the measurable target is a dead count of zero.
 
 ---
 
+## Bootstrapping a policy (`init`)
+
+The cold-start answer: `groundwork init graph.json --out policy.json --guide
+POLICY-GUIDE.md` derives a baseline policy from the service's measured facts —
+layers from the package call DAG, a waypoint that already guards every
+entrypoint-to-DB-write path, read-only invariants for routes that write
+nothing today, the write budget at the current maximum, and the existing
+blind spots allow-listed observe-first. **Everything is a ratchet of current
+truth, self-verified clean against the graph it came from**; where the
+inference is already violated by current code, the rule is relaxed with a
+`baseline at init` allow entry and the guide reports it as a latent finding —
+which is signal, not noise. The guide is written for the refining agent: each
+section carries its evidence, its "tighten by" steps (`require_proof`,
+`gate: true`), and the questions only the team can answer (obligations need
+intent, not inference). A CODEOWNER reviews and commits — init proposes from
+facts; it never decides.
+
+---
+
 ## Pre-edit grounding (`ground`) and the MCP surface (`mcp`)
 
 Deterministic prevention is cheaper than deterministic rejection. The ground
@@ -496,10 +516,17 @@ policy at all — and every blind spot touching those claims. Binding rules are
 derived with the exact matchers the checks use, so the card never promises a
 guardrail that does not bind.
 
-`groundwork mcp <graph.json> [--policy <policy.json>]` serves four tools over
+`groundwork mcp <graph.json> [--policy …] [--expect …] [--log calls.jsonl]`
+serves seven tools over
 MCP stdio (newline-delimited JSON-RPC, protocol 2024-11-05, no third-party
 dependencies): `ground`, `reach`, `triage` (with the `fail` what-if framing,
-including effects possibly committed before the fault), and `exceptions`. The
+including effects possibly committed before the fault), `exceptions`,
+`entrypoints` (what the route/event symptoms can address), `fitness`, and
+`reload`. A graph file that changes on disk is flagged on every response —
+the server never reloads silently; `reload` re-verifies the stamp. `--log`
+writes a deterministic transcript of tool calls (the E4 measurement
+apparatus). **No write tools, ever**: a tool that edited rules would let the
+agent author its own guardrails. The
 agent's edit loop becomes ground → edit → verify with one rule set at both
 ends; the incident loop becomes triage → narrow → `flowmap behavior ingest`.
 The server only ever reads the CI-generated graph it was started with — the
@@ -528,6 +555,9 @@ answer, and the only state between them is canonical JSON.
     groundwork review policy.json base.json branch.json --json > review-artifact.json
 ```
 
+`groundwork fitness --sarif` emits SARIF 2.1.0, so obligation violations land
+as inline annotations at their witness lines in the PR review UI; the
+composite action `.github/actions/setup-groundwork` installs both binaries.
 Post `groundwork review`'s text form as the PR comment; archive the `--json`
 artifact so any later verifier can run
 `groundwork verify-artifact <artifact> <policy> <base> <branch>` and prove it
