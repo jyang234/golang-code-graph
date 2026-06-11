@@ -116,6 +116,7 @@ threaded through every output.
 | You want to… | Read |
 |---|---|
 | Understand the concepts and every groundwork surface | [`docs/groundwork/usage.md`](docs/groundwork/usage.md) — the practical guide, primer included |
+| See how it changes the day-to-day — responder, developer, reviewer, each before/after with Claude Code | [`docs/groundwork/personas.md`](docs/groundwork/personas.md) |
 | Wire flowmap into a service (OTel → contract → flow tests → CI) | [`docs/adopting-flowmap.md`](docs/adopting-flowmap.md) |
 | Understand *why* it is built this way (thesis, failure modes, pressure tests) | [`docs/groundwork/README.md`](docs/groundwork/README.md) and [`docs/groundwork/distilled-learnings.md`](docs/groundwork/distilled-learnings.md) |
 | See the component specifications (the source of truth) | `docs/*.md` (tier map, static extractor, canonicalization, capture harness, golden diff) |
