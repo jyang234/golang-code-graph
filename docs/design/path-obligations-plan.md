@@ -16,6 +16,24 @@ Scope decisions made when this plan was cut:
   CODEOWNERS-gated document as the classify hints. groundwork never sees rules,
   only findings.
 - **D-OB3 — sequencing**: this lands before the incident-triage work.
+- **D-OB5 — the `obligations` section is the generic findings envelope.** Its
+  shape `{rule, kind, fn, site, status, detail}` carries *any* future
+  flowmap-side (SSA/CFG-level) check: `kind` is an open registry, not an enum
+  of two. A new check kind is therefore flowmap analysis + a registered kind —
+  **zero graph.json schema changes**, so the strict-decode lockstep tax (§2) is
+  paid once, here, not per future check.
+- **D-OB6 — finding identity is the site, never the prose.** The
+  base-vs-branch diff keys findings on `Rule + From + To + Summary`
+  (`internal/groundwork/review/review.go:59-84`). Obligation findings put the
+  fn FQN in `From`, the `file.go:line` site in `To`, and build `Summary` only
+  from key fields (`rule: status`); free text lives in `detail` and never
+  enters the key. This is framework policy for all future check kinds: a
+  wording tweak must never make old findings look "new" — that would silently
+  break the ratchet.
+
+Sibling extensions that ride this machinery but live graph-side (call-graph
+level, no SSA) are planned separately in
+[`guardrail-extensions-plan.md`](guardrail-extensions-plan.md).
 
 ---
 
@@ -91,6 +109,15 @@ for acquire / release / require / before targets (matching the rule FQNs the
 same way the classify-hint matcher does). Functions with no relevant site
 produce nothing — the common case, so cost is near zero on rule-free services.
 
+**Dead-rule disclosure.** A rule whose anchor (`acquire` / `before`) matches
+**zero call sites** across the whole service emits a single
+`{rule, kind, status: "UNMATCHED"}` entry (fn/site empty). A rule that
+silently stopped matching after a rename is a guardrail that fell off without
+anyone noticing — the same failure mode as a test that stopped running, and
+the human reviewer must be able to see that the rules they believe are
+protecting them actually bind. flowmap is the only side that knows the rules,
+so the disclosure is emitted here and judged by groundwork (§6).
+
 **must-release.** For each acquire site: walk forward over `Blocks` from the
 acquire instruction; a path is *covered* if it passes a release call or a
 `defer` of a release that was registered before the exit. If a function exit
@@ -143,9 +170,10 @@ graph.json.
 - `graph.Graph` gains the `Obligations []Obligation` field (lockstep with
   graphio, §2).
 - `fitness.Check` gains `checkObligations`: `VIOLATED` → `Violation`,
-  `CANT-PROVE` → `Caution`, `SATISFIED` → no finding. Finding key =
-  (rule, fn, site), so `review`/`verify`'s new-findings diff and the
-  three-valued verdict need **zero changes**.
+  `CANT-PROVE` → `Caution`, `UNMATCHED` → `Caution` ("rule matches nothing —
+  inert guardrail"), `SATISFIED` → no finding. Finding key = (rule, fn, site)
+  per D-OB6, so `review`/`verify`'s new-findings diff and the three-valued
+  verdict need **zero changes**.
 - A future `require_proof` escalation (CANT-PROVE → gate-failing for named
   rules) is policy-side and deliberately out of slice 1.
 
@@ -162,6 +190,7 @@ It exercises one case per verdict per kind:
 | `TransferEscape` | acquire, tx passed to helper | must-release `CANT-PROVE` |
 | `Disburse` | audit dominates publish | must-precede `SATISFIED` |
 | `DisburseRacy` | publish on a branch with no audit | must-precede `VIOLATED` |
+| *(config)* | rule anchored on a renamed-away FQN | `UNMATCHED` |
 
 Unit tests in `internal/static/obligations` build SSA from inline source
 snippets (table-driven), covering defer ordering, multi-exit, loops,
@@ -172,9 +201,10 @@ release-on-one-arm, and each abstention trigger.
 - **Phase OB-0 — config.** `obligations:` schema + validation in
   `internal/config`. *Exit: malformed rules rejected with positional errors;
   valid rules round-trip.*
-- **Phase OB-1 — analysis.** `internal/static/obligations` with both walks,
-  unit-tested against inline-SSA tables. *Exit: every fixture-shape above
-  verdicts correctly at the package level.*
+- **Phase OB-1 — analysis.** `internal/static/obligations` with both walks
+  plus dead-rule detection, unit-tested against inline-SSA tables. *Exit:
+  every fixture-shape above (including `UNMATCHED`) verdicts correctly at the
+  package level.*
 - **Phase OB-2 — emission, lockstep.** Wire into
   `internal/static/analyze/analyze.go`; graphio emits `obligations`; groundwork
   decodes it; goldens regenerated. One commit. *Exit: `flowmap graph obligsvc`

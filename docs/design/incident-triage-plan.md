@@ -155,9 +155,13 @@ strict decode + golden regen in one commit), omitted entirely when empty.
   Blocked on path-obligations Phases OB-1/OB-2.
 - **Phase IT-4 — MCP surface.** Wrap the impact library as the agent-facing
   tools (`triage(symptom)`, `reach(fqn)`, `fail(symptom)`), enabling the
-  interactive walk ("now show who publishes T"). Design sketch only in this
-  plan; it is a separate effort and the first MCP surface in the repo, so it
-  carries its own (small) infrastructure decision.
+  interactive walk ("now show who publishes T"). The same server also carries
+  the **pre-edit grounding tools** (`ground(fqn)`, `rules(scope)`) from
+  [`guardrail-extensions-plan.md`](guardrail-extensions-plan.md) GX-5 — one
+  library, one server, the incident lens and the pre-edit guardrail lens
+  together. Design sketch only in this plan; it is a separate effort and the
+  first MCP surface in the repo, so it carries its own (small) infrastructure
+  decision.
 
 ## 7. Operational prerequisite: graph-per-deploy
 
