@@ -34,10 +34,22 @@ and an extension is planned by answering them:
    / no finding. Finding identity is the site, never the prose (D-OB6), so the
    base-vs-branch new-findings diff and the digest work unchanged.
 5. **Prove** — a fixture shape per verdict, golden-regenerated.
+6. **Validate** — at two levels, declared in the plan before code:
+   - *landed correctly* — deterministic outcomes a machine checks: fixture
+     verdicts, byte-identical repeat runs, the gate firing end-to-end on a
+     seeded branch;
+   - *effective* — an empirical signal that the check delivers its stated
+     value (catch rate on seeded defects, suppression/abstention rates,
+     reviewer or agent outcomes), **with a keep/kill threshold named up
+     front**. A check that is correct but never fires on anything real, or
+     fires mostly noise, is removed — an inert or noisy guardrail erodes
+     trust in every other one.
 
 **Acceptance criterion** for any proposed check: it must be expressible as a
 pure function with a sound abstention. Anything heuristic, sampled, or
 value-semantic fails the criterion and belongs outside this framework.
+(Effectiveness validation is exempt from the determinism requirement — it
+measures the framework, it is not part of any verdict path.)
 
 ## 2. GX-1 — `must_pass_through` (call-graph waypoint invariant)
 
@@ -199,3 +211,71 @@ GX-2 → GX-1 → OB-0..3 → IT-0..2 → GX-3 → GX-4 → GX-5/IT-3/IT-4.** Th
 and the auth-path guard are the highest guardrail-value-per-line in the whole
 portfolio, have zero dependencies, and require no schema lockstep — they ship
 while the SSA track is still in its first phase.
+
+## 8. Verifiable outcomes and validation
+
+Per the recipe's step 6: *landed* outcomes are deterministic and CI-checked;
+*effective* outcomes are empirical with named keep/kill thresholds.
+
+**GX-1 `must_pass_through`:**
+
+- *Landed:* layeredsvc fixtures verdict correctly (guarded → no finding,
+  bypass → Violation with deterministic witness path, blind frontier →
+  Caution, `require_proof` → Violation). The defining test: **add a brand-new
+  handler package with an unguarded route to the fixture — the rule fires
+  with no policy change** (the property FQN-glob selectors cannot give).
+  Allow-listed pairs never fire.
+- *Effective:* seeded-bypass trial — across ~5 agent-style edits that add or
+  reroute an entrypoint past the waypoint, `verify` blocks 100% (soundness
+  defect otherwise). Track allow-list growth per quarter: *kill threshold —
+  if legitimate exemptions grow faster than guarded routes, the rule shape is
+  wrong for that codebase and gets redesigned, not suppressed into noise.*
+
+**GX-2 blind-spot ratchet:**
+
+- *Landed:* a branch fixture introducing a new dynamic-dispatch site surfaces
+  it in the review artifact's `new_blind_spots`; with `gate: true`, `verify`
+  blocks; an allow-list entry suppresses exactly that site; base-equal
+  branches report none.
+- *Effective:* the value claim is that substrate soundness stops drifting.
+  Measure the blind-spot count trend on a real service across one quarter of
+  (agent-generated) MRs after enabling the gate. *Keep signal: the count is
+  flat or each increase has a reviewed allow-list entry. Kill signal: the
+  allow-list becomes a rubber stamp (entries added without reasons) — then
+  gating is theater and should revert to observe-only.*
+
+**GX-3 `no_concurrent_reach`:**
+
+- *Landed:* fixture with a goroutine-reached forbidden boundary → Violation;
+  the same call on the synchronous path → no finding; blind frontier →
+  Caution.
+- *Effective:* the disclosed go/defer conflation is the named risk. *Decision
+  point: if defer-origin false positives appear in the first real
+  deployment, the flowmap flag-split ships before the rule is promoted;* if a
+  quarter passes with no configured rule on a real service, GX-3 parks (same
+  ROI gate as obligations E4).
+
+**GX-4 `groundwork exceptions`:**
+
+- *Landed:* the listing covers every suppression source that exists at build
+  time (layering, GX-1, GX-2), deterministically ordered; deleting a
+  fixture's allow-listed edge flags that entry as dead on the next run.
+- *Effective:* on first run against a real policy, every listed exception is
+  either justified (has a reason) or deleted within the review cycle —
+  *the measurable outcome is dead-exception count reaching and holding zero.*
+  If the surface is never consulted in review after a quarter, it parks.
+
+**GX-5 ground cards + feedback loop:**
+
+- *Landed:* cards are byte-identical across runs; on fixtures, the *binding
+  rules* section names exactly the rules that demonstrably fire on that
+  function (cross-checked by seeding a violation at the function and
+  asserting the named rule is the one that catches it) — the card never
+  promises a guardrail that is not actually binding.
+- *Effective:* the clearest experiment in the portfolio, and the one closest
+  to the framework's stated goal. A/B an agent on ~10 small tasks against a
+  rule-bearing service: with `ground`/`rules` consulted before editing vs.
+  without. *Measure: first-attempt `verify` block rate.* The value claim —
+  deterministic prevention is cheaper than deterministic rejection — predicts
+  a materially lower block rate with grounding. If the rate does not move,
+  the pre-edit loop is not earning its MCP surface and IT-4 ships without it.

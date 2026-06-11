@@ -163,7 +163,52 @@ strict decode + golden regen in one commit), omitted entirely when empty.
   first MCP surface in the repo, so it carries its own (small) infrastructure
   decision.
 
-## 7. Operational prerequisite: graph-per-deploy
+## 7. Verifiable outcomes and validation
+
+**Landed correctly — deterministic, machine-checked (CI):**
+
+- **O1 — resolver correctness.** Each of the five symptom kinds resolves to
+  the hand-verified expected node set on the fixtures; an ambiguous symptom
+  returns the full candidate list (never a guess); a `<dynamic>` near-match is
+  returned flagged as *possible*.
+- **O2 — card determinism.** Byte-identical `--json` cards across repeat runs
+  for every symptom kind and for `--fail`.
+- **O3 — blast-radius exactness.** On the loansvc golden graph, `--fail
+  --peer P` names exactly the entrypoints whose paths cross a `boundary:P`
+  edge — asserted against a committed, hand-derived expected set, not against
+  the implementation's own output.
+- **O4 — blind-spot honesty.** A card whose traversal crosses any blind spot
+  or `<dynamic>` edge always carries the disclosure; a test constructs the
+  crossing and asserts the card is never silently clean.
+- **O5 — partial-effect (IT-3).** The disburse scenario reproduces: fail the
+  charge site, the card reports `loan.approved` as
+  possibly-committed-before-fault; move the publish below the charge, it
+  disappears.
+
+**Effective — empirical, time-boxed after IT-2 (E1–E3) and IT-4 (E4):**
+
+- **E1 — staged incident drills.** Seed ~5 fault scenarios into loansvc (peer
+  timeout, missing event, bad table write), each with a captured OTel trace.
+  For each, measure: (a) *recall* — the true culprit is in the suspect set
+  (over-approximation should make this ~always true; a miss indicates a
+  resolver gap or stale graph, both defects); (b) *scoping power* — suspect
+  set size as a fraction of the service. *Kill threshold: if the median
+  suspect set is most of the graph, the card narrows nothing and the surface
+  is not pulling its weight.*
+- **E2 — graph-to-trace handoff.** For each drill with a trace, `behavior
+  ingest` locates the actual divergence *inside* the card's suspect set —
+  validating the "graph to narrow, telemetry to locate" claim end-to-end.
+- **E3 — staleness demonstration (negative validation).** Run triage with a
+  graph one commit behind a routing change and document the mis-scoping. This
+  is deliberate: it converts the graph-per-deploy prerequisite (§8) from an
+  assertion into evidence.
+- **E4 — agent drill.** Give Claude the same staged incident with the MCP
+  tools vs. with only the raw repo; compare whether its conclusions cite card
+  facts and how many exploratory queries it needs. Qualitative, documented
+  per drill — this is the "arm Claude" value claim, so it must be observed at
+  least once before IT-4 is called done.
+
+## 8. Operational prerequisite: graph-per-deploy
 
 Triage interrogates the graph of the *running* commit; a stale map mis-triages.
 This plan does not build the retention pipeline, but it sharpens the existing

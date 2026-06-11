@@ -231,7 +231,50 @@ release-on-one-arm, and each abstention trigger.
   fixture → BLOCK with exactly one new violation). *Exit: the worked example
   from the idea doc reproduces end-to-end.*
 
-## 9. Honest limits (carried over, still true)
+## 9. Verifiable outcomes and validation
+
+**Landed correctly — deterministic, machine-checked (CI):**
+
+- **O1 — verdict correctness.** Every obligsvc fixture shape (§7, including
+  `UNMATCHED` and both interface-matching directions) produces exactly its
+  expected verdict, at the unit level and through the golden graph.
+- **O2 — determinism.** graph.json with obligations is byte-identical across
+  repeat runs *and* across two different checkout paths (the
+  position-normalization test, §4).
+- **O3 — zero-impact guarantee.** A rule-free service's graph.json is
+  byte-identical to pre-feature output.
+- **O4 — the gate, end-to-end.** A branch fixture introducing the §1 worked
+  example's leak makes `verify` BLOCK with exactly one new violation; reverting
+  it returns STRUCTURALLY-CLEAR. The drift ratchet: flipping a SATISFIED
+  function to VIOLATED surfaces as a *new* finding against the old base.
+- **O5 — key stability (D-OB6).** Changing only a finding's `detail` prose
+  between base and branch produces zero new findings.
+
+**Effective — empirical, time-boxed after OB-3 lands:**
+
+- **E1 — seeded-defect catch rate.** Mechanically seed the target bug class
+  into loansvc (delete a release call on one branch; move a publish above its
+  audit) across ~10 variants. *Keep threshold: the gate fires on 100% of
+  seeded intraprocedural violations* — anything less means the walk has a
+  soundness hole, which is a defect, not a tuning matter.
+- **E2 — abstention rate.** Configure realistic rules on loansvc and measure
+  the CANT-PROVE fraction. The Go-specific bet (§"why worth having" in the
+  idea doc) is that idiomatic `defer` keeps abstention low. *Kill threshold:
+  if a majority of real acquire sites abstain, the SATISFIED proof is hollow —
+  revisit the escape analysis or the interprocedural question before
+  promoting the feature.*
+- **E3 — false-positive budget.** Track VIOLATED findings dismissed as
+  infeasible-path. First confirmed case triggers the planned allow-list work;
+  *sustained noise (rule producing more dismissed than accepted findings) →
+  that rule is removed.* Trust in the gate is the asset; one noisy rule
+  spends it for all.
+- **E4 — adoption (the existing ROI gate, now measurable).** Within one
+  quarter of landing: at least one rule configured on a real service by its
+  owners, with a low steady-state UNMATCHED rate. Rules that exist only in
+  fixtures mean the feature was speculative — documented outcome, not a
+  silent shelf.
+
+## 10. Honest limits (carried over, still true)
 
 VIOLATED is existential modulo path feasibility — tune toward soundness and add
 an allow-list (mirroring layering's) only when a real infeasible-path false
