@@ -15,9 +15,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/canonjson"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/contract"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/impact"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/review"
 )
@@ -42,6 +44,8 @@ func run(args []string) error {
 		return nil
 	case "reach":
 		return cmdReach(args[1:])
+	case "triage":
+		return cmdTriage(args[1:])
 	case "fitness":
 		return cmdFitness(args[1:])
 	case "review":
@@ -67,6 +71,7 @@ func usage() {
 
 usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
+  groundwork triage (--frame|--table|--event|--peer) <v> [--json] <graph.json>  incident triage card from a symptom
   groundwork fitness <policy.json> <graph.json> evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--json]   computed MR review artifact (BLOCK exits non-zero)
   groundwork verify <policy> <base> <branch> [--scope p,q] [--json] pre-flight gate: new violations, scope creep, breaking contract
@@ -78,6 +83,69 @@ usage:
 The graph must be produced by trusted CI (flowmap graph <service>); groundwork
 only ever reads it.
 `)
+}
+
+// cmdTriage resolves an incident symptom (stack frame, DB table, bus event, or
+// outbound peer) to suspect functions and prints the triage card: implicated
+// entrypoints, upstream callers, reachable boundary effects, and the blind
+// spots past which the card's claims are unsound. Read-only and exploratory:
+// exit 0 unless the symptom resolves to nothing at all.
+func cmdTriage(args []string) error {
+	fs := flag.NewFlagSet("triage", flag.ContinueOnError)
+	frame := fs.String("frame", "", "stack frame (FQN, runtime frame form, or suffix)")
+	table := fs.String("table", "", "DB table name")
+	event := fs.String("event", "", "bus event name")
+	peer := fs.String("peer", "", "outbound peer name")
+	asJSON := fs.Bool("json", false, "emit the card as canonical JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: groundwork triage (--frame|--table|--event|--peer) <value> [--json] <graph.json>")
+	}
+	g, err := graph.LoadFile(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	ix := graph.NewIndex(g)
+
+	var res impact.Resolution
+	switch {
+	case *frame != "":
+		res = impact.ResolveFrame(ix, *frame)
+	case *table != "":
+		res = impact.ResolveTable(ix, *table)
+	case *event != "":
+		res = impact.ResolveEvent(ix, *event)
+	case *peer != "":
+		res = impact.ResolvePeer(ix, *peer)
+	default:
+		return fmt.Errorf("triage: one of --frame, --table, --event, --peer is required")
+	}
+	if len(res.Matches) == 0 && len(res.Possible) == 0 {
+		return fmt.Errorf("triage: symptom resolved to nothing in this graph")
+	}
+
+	card := impact.ForNodes(ix, append(append([]string{}, res.Matches...), res.Possible...))
+	if *asJSON {
+		b, err := canonjson.Marshal(struct {
+			Resolution impact.Resolution `json:"resolution"`
+			Card       impact.Card       `json:"card"`
+		}{res, card})
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	if res.Ambiguous {
+		fmt.Printf("symptom is ambiguous — %d candidates, all included:\n\n", len(res.Matches))
+	}
+	if len(res.Possible) > 0 {
+		fmt.Printf("⚠️  %d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
+	}
+	fmt.Print(card.Render())
+	return nil
 }
 
 // cmdReach reports the bidirectional reachability of one function: who breaks if
