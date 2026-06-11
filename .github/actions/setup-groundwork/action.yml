@@ -1,0 +1,14 @@
+name: Setup flowmap + groundwork
+description: >
+  Install the flowmap (producer) and groundwork (judge) binaries for the
+  structural gate. Pin this action to a commit; the binaries are built from
+  the pinned source, so the gate's behavior is exactly as reviewed.
+runs:
+  using: composite
+  steps:
+    - name: install binaries
+      shell: bash
+      run: |
+        go install github.com/jyang234/golang-code-graph/cmd/flowmap@${{ github.action_ref || 'latest' }}
+        go install github.com/jyang234/golang-code-graph/cmd/groundwork@${{ github.action_ref || 'latest' }}
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"

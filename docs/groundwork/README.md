@@ -14,6 +14,10 @@ groundwork is a sound *local/advisory* tool, not yet an adversary-resistant gate
 
 ## Start here
 
+- **[`personas.md`](personas.md)** — the three seats (incident responder,
+  feature developer, PR reviewer), each contrasted before/after with Claude
+  Code: what kind of claims the session contains, where attention goes, and
+  whose judgment the verdicts rest on.
 - **[`drills.md`](drills.md)** — the measured effectiveness record: the staged
   incident drills (recall, scoping power, the trace handoff, the staleness
   demonstration) committed as test assertions, plus the E4 design awaiting a

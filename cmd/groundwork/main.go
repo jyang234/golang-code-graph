@@ -63,6 +63,8 @@ func run(args []string) error {
 		return cmdVerifyArtifact(args[1:])
 	case "exceptions":
 		return cmdExceptions(args[1:])
+	case "init":
+		return cmdInit(args[1:])
 	case "policy-check":
 		return cmdPolicyCheck(args[1:])
 	case "help", "-h", "--help":
@@ -87,6 +89,7 @@ usage:
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch>  prove an artifact is authentic (not tampered/stale)
   groundwork exceptions <policy.json> <graph.json> [--json]      audit every allow-list entry; flag dead ones
+  groundwork init <graph.json> [--name <svc>] [--guide <out.md>]  propose a baseline policy from measured facts
   groundwork policy-check <policy.json>        load and validate a policy
   groundwork version
 
@@ -291,12 +294,13 @@ func cmdReach(args []string) error {
 // where it cannot prove a negative) — and returns an error so CI exits non-zero
 // when any invariant is broken.
 func cmdFitness(args []string) error {
+	sarif, args := takeFlag(args, "--sarif", "-sarif")
 	fs := flag.NewFlagSet("fitness", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return fmt.Errorf("usage: groundwork fitness <policy.json> <graph.json>")
+		return fmt.Errorf("usage: groundwork fitness <policy.json> <graph.json> [--sarif]")
 	}
 	p, err := policy.Load(fs.Arg(0))
 	if err != nil {
@@ -308,6 +312,17 @@ func cmdFitness(args []string) error {
 	}
 	res := fitness.Check(p, graph.NewIndex(g))
 
+	if sarif {
+		b, err := toSARIF(res.Findings)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		if !res.OK() {
+			return fmt.Errorf("%d invariant violation(s)", len(res.Violations()))
+		}
+		return nil
+	}
 	violations, cautions := res.Violations(), res.Cautions()
 	for _, f := range violations {
 		printFinding("⛔", f)
@@ -614,6 +629,81 @@ func cmdExceptions(args []string) error {
 		fmt.Printf("\nall %d exception(s) live and justified\n", len(xs))
 	}
 	return nil
+}
+
+// cmdInit proposes a baseline policy derived from the graph's measured facts
+// (the cold-start answer): the policy JSON goes to stdout (or --out), the
+// review guide — evidence, tightening instructions, latent findings, and the
+// questions only the team can answer — to --guide. Everything emitted is a
+// ratchet of current truth, self-verified clean against the source graph; a
+// CODEOWNER reviews and commits.
+func cmdInit(args []string) error {
+	name, hasName, args := takeValueFlag(args, "--name", "-name")
+	guidePath, hasGuide, args := takeValueFlag(args, "--guide", "-guide")
+	outPath, hasOut, args := takeValueFlag(args, "--out", "-out")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: groundwork init <graph.json> [--name <service>] [--out <policy.json>] [--guide <guide.md>]")
+	}
+	g, err := graph.LoadFile(args[0])
+	if err != nil {
+		return err
+	}
+	ix := graph.NewIndex(g)
+	if !hasName {
+		name = inferServiceName(ix)
+	}
+	p, guideMD := fitness.Propose(ix, name)
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("init produced an invalid policy (bug): %w", err)
+	}
+	b, err := canonjson.Marshal(p)
+	if err != nil {
+		return err
+	}
+	if hasOut {
+		if err := os.WriteFile(outPath, append(b, 10), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "proposed policy written to %s\n", outPath)
+	} else {
+		fmt.Println(string(b))
+	}
+	if hasGuide {
+		if err := os.WriteFile(guidePath, []byte(guideMD), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "review guide written to %s — it is the refining agent's checklist\n", guidePath)
+	} else {
+		fmt.Fprintf(os.Stderr, "tip: --guide <file.md> writes the review guide (evidence, tightening steps, latent findings)\n")
+	}
+	return nil
+}
+
+// inferServiceName takes the last segment of the longest common package
+// prefix of the graph's nodes — the module root's name, in practice.
+func inferServiceName(ix *graph.Index) string {
+	nodes := ix.Nodes()
+	if len(nodes) == 0 {
+		return "service"
+	}
+	prefix := fitness.PkgOf(nodes[0])
+	for _, fqn := range nodes[1:] {
+		p := fitness.PkgOf(fqn)
+		for !strings.HasPrefix(p, prefix) && prefix != "" {
+			if i := strings.LastIndexByte(prefix, '/'); i >= 0 {
+				prefix = prefix[:i]
+			} else {
+				prefix = ""
+			}
+		}
+	}
+	if i := strings.LastIndexByte(prefix, '/'); i >= 0 {
+		prefix = prefix[i+1:]
+	}
+	if prefix == "" {
+		return "service"
+	}
+	return prefix
 }
 
 // cmdPolicyCheck loads and validates a policy, printing a one-line-per-rule

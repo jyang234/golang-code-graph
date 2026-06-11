@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -30,23 +31,73 @@ import (
 func cmdMCP(args []string) error {
 	policyPath, hasPolicy, args := takeValueFlag(args, "--policy", "-policy")
 	expect, hasExpect, args := takeValueFlag(args, "--expect", "-expect")
+	logPath, hasLog, args := takeValueFlag(args, "--log", "-log")
 	if len(args) != 1 {
-		return fmt.Errorf("usage: groundwork mcp <graph.json> [--policy <policy.json>] [--expect <stamp>]")
+		return fmt.Errorf("usage: groundwork mcp <graph.json> [--policy <policy.json>] [--expect <stamp>] [--log <calls.jsonl>]")
 	}
-	g, err := graph.LoadFile(args[0])
+	srv := &mcpServer{path: args[0], expect: expect, hasExpect: hasExpect}
+	if err := srv.load(); err != nil {
+		return err
+	}
+	if hasPolicy {
+		p, err := policy.Load(policyPath)
+		if err != nil {
+			return err
+		}
+		srv.p = p
+	}
+	if hasLog {
+		// The E4 measurement apparatus: a deterministic transcript of tool
+		// calls, one JSON line each, for analyzing how an agent actually used
+		// the surface during a drill.
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		srv.log = f
+	}
+	return serveMCP(os.Stdin, os.Stdout, srv)
+}
+
+// mcpServer is the per-session state: the loaded graph, its file identity
+// (for staleness detection), the optional policy, and the optional call log.
+// NO WRITE TOOLS, EVER: a tool that edited policy or rules would let the
+// agent author its own guardrails — the one thing the trust model forbids.
+// Graph generation likewise stays in CLI/CI; this server only ever reads.
+type mcpServer struct {
+	path      string
+	mtime     time.Time
+	ix        *graph.Index
+	p         *policy.Policy
+	expect    string
+	hasExpect bool
+	log       io.Writer
+}
+
+func (s *mcpServer) load() error {
+	g, err := graph.LoadFile(s.path)
 	if err != nil {
 		return err
 	}
-	if err := verifyStamp(g, expect, hasExpect); err != nil {
+	if err := verifyStamp(g, s.expect, s.hasExpect); err != nil {
 		return err
 	}
-	var p *policy.Policy
-	if hasPolicy {
-		if p, err = policy.Load(policyPath); err != nil {
-			return err
-		}
+	if st, err := os.Stat(s.path); err == nil {
+		s.mtime = st.ModTime()
 	}
-	return serveMCP(os.Stdin, os.Stdout, graph.NewIndex(g), p)
+	s.ix = graph.NewIndex(g)
+	return nil
+}
+
+// staleNote flags a changed graph file on every response rather than silently
+// reloading: answers must never change mid-session without disclosure.
+func (s *mcpServer) staleNote() string {
+	st, err := os.Stat(s.path)
+	if err == nil && !st.ModTime().Equal(s.mtime) {
+		return "⚠️ the graph file changed on disk after this server loaded it — call the reload tool (or restart) before trusting further answers\n\n"
+	}
+	return ""
 }
 
 type rpcRequest struct {
@@ -71,7 +122,7 @@ type rpcError struct {
 // serveMCP runs the request loop until EOF. Notifications (no id) are
 // consumed silently per JSON-RPC; tool failures are MCP tool results with
 // isError, not protocol errors, so the agent can read and recover from them.
-func serveMCP(r io.Reader, w io.Writer, ix *graph.Index, p *policy.Policy) error {
+func serveMCP(r io.Reader, w io.Writer, srv *mcpServer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
 	enc := json.NewEncoder(w)
@@ -97,7 +148,10 @@ func serveMCP(r io.Reader, w io.Writer, ix *graph.Index, p *policy.Policy) error
 		case "tools/list":
 			resp.Result = map[string]any{"tools": toolDefs()}
 		case "tools/call":
-			resp.Result = callTool(req.Params, ix, p)
+			if srv.log != nil {
+				_, _ = srv.log.Write(append(append([]byte(`{"call":`), req.Params...), '}', 10))
+			}
+			resp.Result = srv.callTool(req.Params)
 		default:
 			resp.Error = &rpcError{Code: -32601, Message: "method not found: " + req.Method}
 		}
@@ -141,6 +195,21 @@ func toolDefs() []map[string]any {
 			}),
 		},
 		{
+			"name":        "entrypoints",
+			"description": "List the service's named roots (HTTP routes, consumed topics) with their handler functions — what triage's route/event symptoms can address.",
+			"inputSchema": obj(map[string]any{}),
+		},
+		{
+			"name":        "fitness",
+			"description": "Evaluate every policy invariant against the loaded graph: violations, cautions, and obligation verdicts. Requires the server to be started with --policy.",
+			"inputSchema": obj(map[string]any{}),
+		},
+		{
+			"name":        "reload",
+			"description": "Reload the graph from disk after a redeploy changed it (the server flags staleness on every response; it never reloads silently). Optionally re-verify identity with expect.",
+			"inputSchema": obj(map[string]any{"expect": str("stamp the reloaded graph must carry (e.g. the new deployed SHA)")}),
+		},
+		{
 			"name":        "exceptions",
 			"description": "Audit every policy allow-list entry against the graph; DEAD entries suppress nothing and should be deleted. Requires the server to be started with --policy.",
 			"inputSchema": obj(map[string]any{}),
@@ -150,35 +219,85 @@ func toolDefs() []map[string]any {
 
 // callTool dispatches one tools/call. Failures are tool results (isError),
 // never protocol errors: the agent reads the reason and corrects its call.
-func callTool(params json.RawMessage, ix *graph.Index, p *policy.Policy) map[string]any {
+func (s *mcpServer) callTool(params json.RawMessage) map[string]any {
+	ix, p := s.ix, s.p
+	stale := s.staleNote()
 	var call struct {
 		Name      string `json:"name"`
 		Arguments struct {
-			FQN   string `json:"fqn"`
-			Frame string `json:"frame"`
-			Route string `json:"route"`
-			Table string `json:"table"`
-			Event string `json:"event"`
-			Peer  string `json:"peer"`
-			Fail  bool   `json:"fail"`
+			FQN    string `json:"fqn"`
+			Frame  string `json:"frame"`
+			Route  string `json:"route"`
+			Table  string `json:"table"`
+			Event  string `json:"event"`
+			Peer   string `json:"peer"`
+			Fail   bool   `json:"fail"`
+			Expect string `json:"expect"`
 		} `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
 		return toolError("malformed tools/call params: " + err.Error())
 	}
 	a := call.Arguments
+	withStale := func(r map[string]any) map[string]any {
+		if stale == "" {
+			return r
+		}
+		if content, ok := r["content"].([]map[string]any); ok && len(content) > 0 {
+			content[0]["text"] = stale + content[0]["text"].(string)
+		}
+		return r
+	}
+	_ = withStale
 	switch call.Name {
+	case "entrypoints":
+		eps := ix.Entrypoints()
+		if len(eps) == 0 {
+			return withStale(toolText("no named entrypoints in this graph (routes behind uncovered routers are absent — see the docs)"))
+		}
+		var b strings.Builder
+		for _, ep := range eps {
+			fmt.Fprintf(&b, "%-9s %-40s → %s\n", ep.Kind, ep.Name, ep.Fn)
+		}
+		return withStale(toolText(b.String()))
+	case "fitness":
+		if p == nil {
+			return toolError("the server was started without --policy; fitness needs one")
+		}
+		res := fitness.Check(p, ix)
+		var b strings.Builder
+		for _, f := range res.Violations() {
+			fmt.Fprintf(&b, "⛔ [%s] %s\n", f.Rule, f.Summary)
+		}
+		for _, f := range res.Cautions() {
+			fmt.Fprintf(&b, "⚠️ [%s] %s\n", f.Rule, f.Summary)
+		}
+		if len(res.Findings) == 0 {
+			b.WriteString("all invariants hold; no cautions\n")
+		}
+		return withStale(toolText(b.String()))
+	case "reload":
+		old := s.expect
+		oldHas := s.hasExpect
+		if a.Expect != "" {
+			s.expect, s.hasExpect = a.Expect, true
+		}
+		if err := s.load(); err != nil {
+			s.expect, s.hasExpect = old, oldHas
+			return toolError("reload failed (previous graph still served): " + err.Error())
+		}
+		return toolText("graph reloaded from " + s.path)
 	case "ground":
 		card, err := ground.For(ix, p, a.FQN)
 		if err != nil {
 			return toolError(err.Error())
 		}
-		return toolText(card.Render())
+		return withStale(toolText(card.Render()))
 	case "reach":
 		if !ix.Has(a.FQN) {
 			return toolError(fmt.Sprintf("no function %q in graph", a.FQN))
 		}
-		return toolText(impact.ForNodes(ix, []string{a.FQN}).Render())
+		return withStale(toolText(impact.ForNodes(ix, []string{a.FQN}).Render()))
 	case "triage":
 		var res impact.Resolution
 		set := 0
@@ -217,7 +336,7 @@ func callTool(params json.RawMessage, ix *graph.Index, p *policy.Policy) map[str
 			fmt.Fprintf(&b, "%d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
 		}
 		b.WriteString(card.Render())
-		return toolText(b.String())
+		return withStale(toolText(b.String()))
 	case "exceptions":
 		if p == nil {
 			return toolError("the server was started without --policy; exceptions needs one")
