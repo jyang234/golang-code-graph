@@ -297,6 +297,9 @@ VIOLATED is existential modulo path feasibility — tune toward soundness and ad
 an allow-list (mirroring layering's) only when a real infeasible-path false
 positive appears, not preemptively. No interprocedural, no concurrency, no
 value semantics: the check proves the *shape* of a function's effect discipline
-over all paths, nothing more. The ROI gate from the idea doc stands: if these
+over all paths, nothing more. *The interprocedural limit is amended by D-CX2
+([`correctness-expansion-plan.md`](correctness-expansion-plan.md)): callees
+with* proven *summaries earn credit; the rule vocabulary remains the mechanism
+everywhere a summary is UNKNOWN.* The ROI gate from the idea doc stands: if these
 rules sit unconfigured on real services, the feature was speculative — the
 fixture proves the machinery, adoption proves the value.
