@@ -13,7 +13,8 @@ import (
 
 // One scripted MCP session against the obligsvc golden: handshake, discovery,
 // a ground call, a fault triage, and the failure modes (unknown tool,
-// exceptions without a policy) — all as tool results, never protocol errors.
+// exceptions without a policy, an over-specified triage) — all as tool
+// results, never protocol errors.
 func TestServeMCPSession(t *testing.T) {
 	g, err := graph.LoadFile("../../testdata/groundwork/goldens/obligsvc.graph.json")
 	if err != nil {
@@ -31,6 +32,7 @@ func TestServeMCPSession(t *testing.T) {
 		`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"entrypoints","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"fitness","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"reload","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"triage","arguments":{"frame":"Charge","event":"loan.approved"}}}`,
 	}, "\n") + "\n"
 
 	var out strings.Builder
@@ -55,8 +57,8 @@ func TestServeMCPSession(t *testing.T) {
 		}
 		got = append(got, r)
 	}
-	if len(got) != 10 {
-		t.Fatalf("want 10 responses (the notification is silent), got %d", len(got))
+	if len(got) != 11 {
+		t.Fatalf("want 11 responses (the notification is silent), got %d", len(got))
 	}
 
 	text := func(r resp) string {
@@ -97,6 +99,11 @@ func TestServeMCPSession(t *testing.T) {
 	}
 	if !strings.Contains(text(got[9]), "reloaded") {
 		t.Errorf("reload result: %q", text(got[9]))
+	}
+	// Two symptoms must be rejected, mirroring the CLI: a silently-ignored
+	// second symptom would mis-scope an incident hunt.
+	if isErr, _ := got[10].Result["isError"].(bool); !isErr || !strings.Contains(text(got[10]), "exactly one") {
+		t.Errorf("two-symptom triage must be an isError tool result naming the rule: %q", text(got[10]))
 	}
 }
 

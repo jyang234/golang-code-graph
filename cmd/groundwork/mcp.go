@@ -671,8 +671,7 @@ func (s *mcpServer) call(name string, a toolArgs) map[string]any {
 	case "triage":
 		var res impact.Resolution
 		set := 0
-		switch {
-		case a.Frame != "":
+		if a.Frame != "" {
 			res, set = impact.ResolveFrame(ix, a.Frame), set+1
 		}
 		if a.Route != "" {
