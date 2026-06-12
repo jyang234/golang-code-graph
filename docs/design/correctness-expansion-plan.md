@@ -7,6 +7,11 @@
 extension recipe governs every check here). Grounded in the actual code (file
 references verified), not in aspiration.
 
+**Revised 2026-06-12** against the first field measurement run (a three-service
+deployment, CI-equivalent graphs @ `9ae5b15`, numbers measured not estimated).
+The evidence reshaped the build order (D-CX8) and CX-2's shape (D-CX7); field
+figures are tagged **[field]** below, and §2b carries the run's findings.
+
 This plan widens the one claim the framework already makes — *universal,
 all-paths structural proof* — across call boundaries and, eventually, service
 boundaries. It deliberately does **not** cross into value/logic correctness;
@@ -63,6 +68,24 @@ Scope decisions made when this plan was cut:
   `detail` text move. CX-3 extends the existing `effect_order` section with
   derived sites — additive, lockstep-regenerated. CX-5 is a groundwork-side
   rendering over artifacts that already exist.
+- **D-CX7 — must-precede lifts in BOTH directions, both monotone.** The
+  bottom-up derived-A lift (a callee that ALWAYS calls Require counts as an A
+  site) covers the wrapped-audit case; the field run exposed its inverse as
+  the *real-world* false positive — the A in the **caller**, the B in the
+  **callee** (`validate-before-publish` VIOLATED at both publish sites though
+  validation provably runs one frame up). That case needs a top-down **entry
+  domination** summary (§5). Both lifts obey D-CX2: upgrade-or-abstain, never
+  a new VIOLATED.
+- **D-CX8 — build order follows the field evidence (supersedes this plan's
+  first-draft order, the D-GX1 precedent).** CX-0 → CX-2 → CX-3 → CX-1 →
+  CX-5; CX-4 in parallel, **on clean graphs only** (§7). Rationale, all
+  measured: zero demand for CX-1's handoff credit (the field tx idiom proves
+  intraprocedurally — 2 SATISFIED / 0 CANT-PROVE, because acquire and release
+  are co-located in `RunInTx`); a live false-VIOLATED demanding CX-2's
+  top-down lift; every distinct effect_order fact in the field sitting in a
+  helper below its handler (CX-3's same-function miss, by construction); and
+  the field's outbox invariant needing CX-3's ALWAYS-effect summaries —
+  making CX-5 *dependent*, not parallel.
 
 ---
 
@@ -122,6 +145,46 @@ and tests matter" (`internal/groundwork/review/artifact.go:40`), and
   adversarial review in v1) — so CX-0/1/2 budget the same adversarial review
   pass before merge, and every reviewed idiom lands as a locked unit table.
 
+## 2b. Field evidence (measurement run, 2026-06-12)
+
+A real deployment (three services; the dense one at 891 nodes / 4227 edges /
+107 blind spots, the clean ones at ~100–140 nodes / 0 blind spots) answered
+the plan's empirical questions from CI-equivalent graphs before any CX code
+exists. What the numbers established:
+
+- **The abstention fear was wrong; the false-positive fear was wrong-shaped.**
+  A trial obligation run returned 2 SATISFIED / 2 VIOLATED / **0 CANT-PROVE**.
+  Interface density does not bite an intraprocedural obligation when acquire
+  and release are co-located (the `RunInTx` runner idiom: the interface and
+  the closure sit *below* the release, never between acquire and exit). The
+  measured cost is a **must-precede false-VIOLATED across a one-frame split**:
+  the require (`ValidatePayload`) in the caller, the publish in the callee.
+  That single finding re-anchors CX-2 (D-CX7) and demotes CX-1 (D-CX8).
+- **CX-3's limit binds by construction, not occasionally.** The field's 29
+  effect_order facts are 5 distinct facts path-multiplied, and **every one
+  lives in a helper below its handler** — a fault card on the handler sees
+  none of them today. The field-drafted incident scenario (a non-transactional
+  dual fan-out: first topic published, fault before the second — "what
+  already happened?") becomes a locked fixture shape (§9).
+- **CX-4 splits by graph, not by rule.** The dense service is the *wrong*
+  taint home (no PII, 84 log sinks, 107 HighFanOut — constant noise); the
+  clean service is the *right* one (PII concentrated in ~3 files on a
+  0-blind-spot graph, with one file holding both PII and sinks). And no
+  scrubber/sanitizer functions exist anywhere — there are no waypoints to
+  require. §7 turns both facts into shipping preconditions.
+- **The outbox invariant is a forcing function.** Its ordering half is
+  expressible today; its atomicity half (both DELETEs in one committed
+  transaction, both-or-neither) decomposes onto CX-3's ALWAYS-effect
+  summaries plus an existing rule family (§8) — which is what reordered the
+  build (D-CX8).
+- **The broker declaration has a real signature target:** at-least-once,
+  unordered, idempotent consumers (inbox dedup) — exactly the D-CX5 policy
+  shape, asserting only what the system guarantees.
+- **The O-CX2 commitment is live:** the deployment will run the
+  summaries-disabled vs. -enabled verdict diff on its CI graphs once CX has a
+  prototype and return the deltas — trust monotonicity and the abstention
+  budget measured where it counts.
+
 ## 3. CX-0 — the summary engine (`internal/static/obligations/summaries.go`)
 
 For each rule and each first-party function with a body, a three-valued
@@ -143,6 +206,15 @@ summary answering "does this function discharge the obligation itself?":
   (any SCC member), `recover`, an unresolved dynamic frontier in the cone, or
   a body the unit cannot see. UNKNOWN is never silently treated as either
   pole.
+
+One **top-down** summary joins the family (D-CX7): **ENTRY-DOMINATED(fn,
+rule)** — "has the Require already executed on every entry into fn?" It holds
+iff fn is not itself a graph source, no unresolved (blind-spot) edge targets
+it, and *every* call edge into fn is either dominated in its caller by an A
+site (derived-A included) or originates in a caller that is itself
+ENTRY-DOMINATED. Computed over the same SCC condensation in topological order
+(SCC membership ⇒ UNKNOWN), memoized, byte-stable like its bottom-up
+siblings.
 
 **Determinism.** Summaries are computed in reverse topological order over the
 condensation (SCC-collapsed) graph, which is itself derived from the
@@ -180,20 +252,46 @@ callee whose cone *can* reach a release converts a crisp VIOLATED into a
 CANT-PROVE. That trade is deliberate (claiming "a path exists where it fails"
 is no longer a claim we can back), and E-CX2 measures whether it stays cheap.
 
-## 5. CX-2 — interprocedural must-precede (the Require side only)
+**[field] Demand check:** the measured deployment has *zero* need for this
+credit — its sole production tx idiom (`RunInTx`) co-locates acquire and
+release, proving SATISFIED intraprocedurally with no abstention. CX-1 is
+retained because the bug class is general (and it lifts the documented
+`deferReleases` named-helper ceiling), but it builds *after* CX-2/CX-3, which
+have measured demand (D-CX8). If the first adopters' idioms keep proving
+intraprocedurally, E-CX1's kill clause applies to this phase specifically.
 
-A plain call to a callee whose summary is ALWAYS-calls-Require counts as a
-**derived A site**: if it dominates a B site, every path genuinely executed
-the require before the B — sound, and it flips exactly the false-VIOLATED
-class (audit write wrapped in a named helper).
+## 5. CX-2 — interprocedural must-precede (both directions, D-CX7)
 
-The **B side stays intraprocedural** in this slice, disclosed in the kind's
-doc comment: deriving B sites from callees that *may* reach a B would mint
-new VIOLATED findings from over-approximated cones — exactly what D-CX2
-forbids. A publish hidden inside a helper therefore still escapes this rule
-in v1; the honest statement of that limit ships with the feature, and lifting
-it (ALWAYS-calls-B derivation, which is sound but partial) is a named
-follow-on, not a silent gap.
+The field run handed this slice its worked example: `validate-before-publish`
+(`ValidatePayload` must precede `Publish`) reports VIOLATED at both publish
+sites in `publishWithFanout` — yet validation provably occurs, one frame up
+in `doPublish`. The B sites are real; the A lives in the caller; the
+intraprocedural scope turns a *satisfied* invariant into a standing false
+positive a reviewer would learn to ignore. Two lifts, each sound, each unable
+to mint a new VIOLATED:
+
+- **Derived A (bottom-up).** A plain call to a callee whose summary is
+  ALWAYS-calls-Require counts as an A site: if it dominates a B, every path
+  genuinely executed the require first. Flips the wrapped-audit
+  false-VIOLATED.
+- **Entry domination (top-down).** For a B site with no dominating A in its
+  own function, consult ENTRY-DOMINATED(fn) (§3): every entry into fn has the
+  require behind it ⇒ SATISFIED, with a witness entry chain in `detail`
+  (`"every entry dominated; e.g. via doPublish (event.go:141)"`). UNKNOWN
+  (SCC, blind-spot edge into fn, fn is a graph source) ⇒ CANT-PROVE with the
+  reason. A *proven* A-less entry keeps today's VIOLATED — now with the
+  entering caller named in the witness, a strictly better finding. Verdict
+  mapping is monotone by construction (D-CX2): the lift can only confirm,
+  abstain legibly, or sharpen the existing violation's witness.
+
+The **B-side detection stays intraprocedural** in this slice, disclosed in
+the kind's doc comment: deriving B sites from callees that *may* reach a B
+would mint new VIOLATED findings from over-approximated cones — exactly what
+D-CX2 forbids. A publish hidden inside a helper escapes a rule *anchored in
+the caller* in v1 (anchoring the rule on the helper's own function — where
+the field rule naturally binds — does not have this gap); lifting it
+(ALWAYS-calls-B derivation, sound but partial) is a named follow-on, not a
+silent gap.
 
 ## 6. CX-3 — effect_order through calls
 
@@ -213,6 +311,14 @@ This phase is what makes CX-5 possible: cross-service chains compose
 *proven* per-service ordering facts, and same-function-only facts are too
 sparse to compose.
 
+**[field] The limit binds universally, not occasionally:** all five distinct
+effect_order facts in the measured deployment live in helpers below their
+handlers — a fault card on the publish handler sees *neither* of its two
+topic publishes today. The field-drafted scenario ("the version-topic publish
+succeeded, the fault hit before the template-topic publish — what already
+happened?") is precisely the partial-fan-out answer responders need and
+currently cannot get; it ships as the `FanOutDual` fixture (§9).
+
 ## 7. CX-4 — sensitive-flow vocabulary (no new engine)
 
 The taint lane, scoped to what the acceptance criterion admits:
@@ -231,6 +337,18 @@ The taint lane, scoped to what the acceptance criterion admits:
   distilled-learnings trigger fires in the field. If CX-4's rules prove noisy
   on real services (E-CX4), the answer is rule-shape redesign or removal —
   not a heuristics layer.
+
+**[field] Shipping preconditions, measured rather than guessed.** The rule
+pack documents *where this rule may live*, as checkable graph properties, not
+advice: a low-blind-spot graph (the clean field service: 0 blind spots, PII
+concentrated in ~3 files — a rule there is precise) and a bounded sink count.
+On a dense graph with no PII and 84 log sinks behind 107 HighFanOut sites,
+the same rule is pure noise and **must not ship** — the pack says so
+explicitly, because a noisy rule on one service erodes trust in the family
+everywhere. Second measured fact: no scrubber/sanitizer functions exist in
+the field at all, so v1 is the waypoint-less `must_not_reach` form;
+introducing named scrubbers is an adopter refactor that *upgrades* the rule
+to `must_pass_through` later — never a heuristic stand-in.
 
 ## 8. CX-5 — cross-service effect chains (observational)
 
@@ -255,6 +373,32 @@ structure runs out. Non-gating in v1; a `chain` rule kind that gates ("the
 trivial policy check *after* the cards earn field trust — and only if a real
 multi-service adopter exists (E-CX5 is an ROI gate, same shape as OB-plan E4).
 
+**[field] The first chain card is already written, and it decomposes onto
+this plan's pieces.** The deployment's signed-sentence invariant — *"when a
+subscription or event-type version is deleted, its domain row and its outbox
+rows are removed in a single committed transaction; never one without the
+other"* — splits exactly along the framework's seams:
+
+- *Ordering* — expressible **today**: the two DELETEs share a `RunInTx`
+  closure, so existing same-function `effect_order` / `must-precede` cover
+  their sequence.
+- *Bracketing* ("the outbox DELETE only ever happens inside a transaction") —
+  expressible **today** as `must_pass_through` with the tx runner as the
+  waypoint: every call chain from an entrypoint to the DELETE passes through
+  `RunInTx`, and a chain through `RunInTx` is an in-extent call (the closure
+  is invoked *by* the runner). The executor-escapes-the-closure case is the
+  disclosed abstention, caught by the existing escape analysis.
+- *Pairing* ("both-or-neither") — **blocked on CX-3**: both DELETEs must be
+  ALWAYS-effects of the closure (every path through it performs both), which
+  together with bracketing and tx semantics yields both-or-neither. The field
+  report filed this as "blocked on CX-1"; the precise dependency is the
+  summary engine and its ALWAYS-effect application (CX-0 + CX-3) — same
+  machinery, earlier phase.
+
+This is why D-CX8 makes CX-5 *dependent* rather than parallel, and the broker
+declaration the card prints is the one the field would actually sign:
+at-least-once, unordered, idempotent consumers — nothing the code can't back.
+
 ## 9. Fixtures
 
 `testdata/groundwork/obligsvc` grows one shape per new verdict path; the
@@ -271,7 +415,12 @@ the proof):
 | `TransferDynamic` | handoff through an unresolved interface value | CANT-PROVE (blind frontier) |
 | `DisburseWrapped` | `auditAndLog()` (ALWAYS-Require) dominates the publish | must-precede SATISFIED |
 | `DisburseWrappedRacy` | the wrapper requires on one arm only | must-precede VIOLATED — unchanged (B undominated by any proven A) |
+| `PublishSplit` | A in the caller, B in the callee; every entry into the callee dominated — the field's `doPublish`→`publishWithFanout` shape | must-precede SATISFIED via entry domination |
+| `PublishSplitOpen` | same, plus one additional caller with no A | must-precede VIOLATED — unchanged, witness names the A-less entering caller |
+| `PublishSplitDynamic` | the B-holding helper is also the target of an unresolved edge | CANT-PROVE (entry set unprovable) |
 | `ApproveViaHelper` | publish inside an ALWAYS-effect helper, charge call after | CX-3: derived effect_order row with `via` |
+| `FanOutDual` | two publishes in one helper, a fallible call between them — the field's partial-fan-out incident shape | CX-3: two derived rows; the fault card answers "first topic published, second not" |
+| `OutboxPair` | two DELETEs in a `RunInTx` closure, on every path | ALWAYS-effect facts for both + bracketing `must_pass_through` SATISFIED (§8's decomposition, end-to-end) |
 
 CX-4 adds a `must_not_reach` PII rule to the layeredsvc policy fixture (one
 clean route, one violating route, one blind-frontier Caution). CX-5's fixture
@@ -284,33 +433,39 @@ condensation order.
 
 ## 10. Build order
 
-- **CX-0 — summaries.** Engine + unit tables. *Exit: every summary row in the
-  table verdicts correctly; summary tables byte-stable across checkout
-  paths.*
-- **CX-1 — must-release credit.** Handoff consultation in `leakPath` +
-  deferred-named-helper credit; obligsvc shapes; goldens regenerated. *Exit:
-  the §9 must-release rows verdict correctly end-to-end; the monotonicity
-  check (O-CX2) passes over the whole fixture corpus.*
-- **CX-2 — must-precede derived A.** *Exit: wrapped-audit shapes verdict
-  correctly; no new VIOLATED anywhere in the corpus.*
+Per D-CX8 (the field evidence decided the order, the D-GX1 precedent):
+
+- **CX-0 — summaries.** Engine + unit tables, bottom-up (ALWAYS/NEVER) and
+  top-down (ENTRY-DOMINATED). *Exit: every summary row in the table verdicts
+  correctly; summary tables byte-stable across checkout paths.*
+- **CX-2 — must-precede, both lifts.** Derived A + entry domination; the
+  `PublishSplit*` and `DisburseWrapped*` shapes; goldens regenerated. *Exit:
+  the field's `validate-before-publish` shape flips VIOLATED → SATISFIED with
+  zero rule changes; no new VIOLATED anywhere in the corpus (O-CX2).*
 - **CX-3 — derived effect sites.** graphio effect-site collection consults
-  ALWAYS-effect summaries; `via` field lockstep. *Exit: the derived
-  effect_order row appears with correct Always; triage partial-effect answers
-  cite it.*
+  ALWAYS-effect summaries; `via` field lockstep. *Exit: `FanOutDual`'s two
+  derived rows appear with correct Always; the triage partial-effect answer
+  cites them; `OutboxPair`'s pairing facts hold.*
+- **CX-1 — must-release credit.** Handoff consultation in `leakPath` +
+  deferred-named-helper credit. *Exit: the §9 must-release rows verdict
+  correctly end-to-end; monotonicity holds over the whole corpus.*
 - **CX-4 — sensitive-flow rule pack.** Pure docs + policy fixtures, zero
-  engine code, **zero dependencies — may ship any time, in parallel.**
+  engine code, **zero dependencies — ships any time, scoped by the §7
+  preconditions.**
 - **CX-5 — chain cards.** After CX-3, and only alongside a real
-  multi-service adopter conversation; non-gating.
+  multi-service adopter; non-gating; the §8 outbox card is the acceptance
+  artifact.
 
 ```
-CX-0 → CX-1 → CX-2 → CX-3 → CX-5(observational, adopter-gated)
-CX-4 (parallel, anytime)
+CX-0 → CX-2 → CX-3 → CX-1
+              CX-3 → CX-5(observational, adopter-gated)
+CX-4 (parallel, anytime, clean graphs only)
 ```
 
-Before CX-1 merges: one adversarial review pass on the summary engine,
-mirroring the v1 obligations review that found six semantic bugs — each
-finding lands as a locked reproduction test, per the scorecard's bus-factor
-residual.
+Before the first summary-consuming phase (CX-2) merges: one adversarial
+review pass on the summary engine, mirroring the v1 obligations review that
+found six semantic bugs — each finding lands as a locked reproduction test,
+per the scorecard's bus-factor residual.
 
 ## 11. Verifiable outcomes and validation
 
@@ -338,17 +493,25 @@ residual.
 **Effective — empirical, time-boxed after each phase lands, keep/kill named
 now:**
 
-- **E-CX1 — vocabulary shrink.** Re-express loansvc's rules; count the
-  release/require refs that existed only to name helpers. *Keep signal: the
-  count drops materially (the false-flag class is really gone). Kill: if
-  proven-ALWAYS helpers are rare in real code, the credit is hollow — the
-  vocabulary mechanism stays primary and CX-2/3 are re-scoped.*
+- **E-CX1 — the named field cases.** The first-draft measure here was
+  "vocabulary shrink" (count release/require refs that exist only to name
+  helpers); the field measured that baseline at **zero** — no obligations
+  adopted yet, nothing to shrink — so the keep signal is now concrete cases,
+  not a delta: (i) the `validate-before-publish` false-VIOLATED flips to
+  SATISFIED via entry domination with zero rule changes; (ii) the
+  partial-fan-out fault card cites both publishes through derived sites;
+  (iii) the outbox invariant proves end-to-end per §8. *Kill: a lift that
+  cannot clear its named case on the field graphs without rule rewrites
+  missed the real idiom — rescope that phase before promoting it.*
 - **E-CX2 — abstention budget.** Measure new CANT-PROVE findings from UNKNOWN
-  handoffs on a real rule set. *Kill threshold: if interprocedural abstentions
-  outnumber the false VIOLATED they replaced, the UNKNOWN row is too eager —
-  tighten (e.g., consult summaries only for callees that can reach a release)
-  or revert to intraprocedural for that rule, never paper over with a
-  default.*
+  handoffs and UNKNOWN entry sets on a real rule set. The field prior is
+  encouraging — 0 CANT-PROVE on the trial run, because co-located
+  acquire/release keeps interfaces out of the acquire-to-exit window — but
+  that measured one idiom, not the class. *Kill threshold: if interprocedural
+  abstentions outnumber the false VIOLATED they replaced, the UNKNOWN row is
+  too eager — tighten (e.g., consult summaries only for callees that can
+  reach a release) or revert to intraprocedural for that rule, never paper
+  over with a default.*
 - **E-CX3 — soundness audit.** Zero tolerated false SATISFIED: any
   upgraded-by-summary verdict that a human review finds actually leaky is a
   soundness defect (fix-and-lock), never a tuning matter — same posture as
@@ -361,7 +524,13 @@ now:**
 - **E-CX5 — the ROI gate.** Chain cards park unless a multi-service adopter
   configures a broker declaration within a quarter of CX-5 landing. Cards
   that exist only on the fixture fleet mean the surface was speculative —
-  documented outcome, not a silent shelf.
+  documented outcome, not a silent shelf. The field's outbox card (§8) is the
+  standing first candidate.
+- **E-CX6 — the field diff.** The measured deployment has committed to
+  running the summaries-disabled vs. -enabled verdict diff on its CI graphs
+  against each phase's prototype and returning the deltas. That artifact is
+  O-CX2's monotonicity and E-CX1/E-CX2's budgets on a real codebase; **phase
+  promotion waits for it** — fixture green alone does not promote.
 
 ## 12. Honest limits — and explicit non-goals
 
@@ -370,7 +539,11 @@ existential modulo path feasibility; summaries stop at the analyzed unit's
 edge (a release in another module is UNKNOWN, vocabulary is the mechanism
 there); must-precede's B side and effect_order's MAY-effects stay
 single-function in this plan; chain cards prove code-side links only —
-broker behavior is an assumption with a name on it.
+broker behavior is an assumption with a name on it. One forward collision
+recorded so it isn't rediscovered: the field's planned auth middleware
+(wrapping-closure pattern) will meet `must_pass_through`'s documented
+middleware-closure wall when it lands — the waypoint selector needs a design
+answer there before that rule can bind.
 
 Non-goals, permanent for this framework rather than deferred: value and logic
 correctness (the right amount, the right predicate, the right envelope — the
