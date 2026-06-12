@@ -440,26 +440,12 @@ func cmdReview(args []string) error {
 // any newly-introduced violation, on a touched package outside the declared
 // --scope, or on a breaking contract change. Exits non-zero on BLOCK.
 func cmdVerify(args []string) error {
-	var rest, scope []string
-	asJSON := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json":
-			asJSON = true
-		case a == "--scope":
-			if i++; i < len(args) {
-				scope = splitComma(args[i])
-			}
-		case strings.HasPrefix(a, "--scope="):
-			scope = splitComma(strings.TrimPrefix(a, "--scope="))
-		default:
-			rest = append(rest, a)
-		}
-	}
+	scopeArg, _, rest := takeValueFlag(args, "--scope", "-scope")
+	asJSON, rest := takeFlag(rest, "--json", "-json")
 	if len(rest) != 3 {
 		return fmt.Errorf("usage: groundwork verify <policy.json> <base-graph.json> <branch-graph.json> [--scope pkg,pkg] [--json]")
 	}
+	scope := splitComma(scopeArg)
 	p, base, branch, err := loadReviewInputs(rest[0], rest[1], rest[2])
 	if err != nil {
 		return err

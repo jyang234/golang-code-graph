@@ -74,6 +74,12 @@ func TestRunErrors(t *testing.T) {
 		{"verify", "../../testdata/groundwork/policies/layeredsvc.json",
 			"../../testdata/groundwork/goldens/layeredsvc.graph.json",
 			"../../testdata/groundwork/goldens/layeredsvc.branch-skip.graph.json"},
+		// a trailing --scope with no value is a usage error: silently dropping
+		// it would run the gate wider than the caller asked for.
+		{"verify", "../../testdata/groundwork/policies/layeredsvc.json",
+			"../../testdata/groundwork/goldens/layeredsvc.graph.json",
+			"../../testdata/groundwork/goldens/layeredsvc.branch-good.graph.json",
+			"--scope"},
 		// diff reports a breaking contract change → non-zero.
 		{"diff", "../../testdata/groundwork/goldens/layeredsvc.contract.json",
 			"../../testdata/groundwork/goldens/layeredsvc.branch.contract.json"},
