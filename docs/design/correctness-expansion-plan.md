@@ -1,6 +1,8 @@
 # correctness expansion: implementation plan
 
-**Status:** proposed — CX-0 through CX-5 not started. Companion to
+**Status:** in progress — CX-0 (the summary engine, both directions,
+unit-tabled) shipped; CX-1 through CX-5 not started. The §10 adversarial
+review pass on the engine is owed before CX-2 merges. Companion to
 [`path-obligations-plan.md`](path-obligations-plan.md) (whose §4/§10
 "no interprocedural" limit D-CX2 supersedes, for *proven* summaries only) and
 [`guardrail-extensions-plan.md`](guardrail-extensions-plan.md) (whose §1
