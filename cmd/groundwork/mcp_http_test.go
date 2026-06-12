@@ -81,6 +81,20 @@ func TestServeMCPHTTPSession(t *testing.T) {
 		t.Errorf("log missing session attribution for %q:\n%s", sid, got)
 	}
 
+	// A pretty-printed request is spec-legal JSON-RPC, and the HTTP transport
+	// hands its params to the transcript verbatim: without compaction the
+	// newlines smear one record across several physical lines and poison the
+	// whole JSONL file for `groundwork transcript`.
+	pretty := "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 9,\n  \"method\": \"tools/call\",\n  \"params\": {\n    \"name\": \"entrypoints\",\n    \"arguments\": {\n      \"service\": \"obligsvc\"\n    }\n  }\n}"
+	if resp, _ = post(pretty, "s3cret", "", sid); resp.StatusCode != 200 {
+		t.Fatalf("pretty-printed call status = %d", resp.StatusCode)
+	}
+	for i, line := range strings.Split(strings.TrimSpace(log.String()), "\n") {
+		if !json.Valid([]byte(line)) {
+			t.Errorf("transcript line %d is not a standalone JSON object (torn record?): %q", i+1, line)
+		}
+	}
+
 	if resp, _ = post(`{"jsonrpc":"2.0","id":3,"method":"ping"}`, "", "", ""); resp.StatusCode != 401 {
 		t.Errorf("missing token must be 401, got %d", resp.StatusCode)
 	}

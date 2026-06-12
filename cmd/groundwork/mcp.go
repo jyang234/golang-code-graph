@@ -353,7 +353,15 @@ func (f *mcpFleet) logCall(params json.RawMessage, service, session string, resu
 	if len(params) == 0 {
 		params = json.RawMessage("null")
 	}
-	line := append([]byte(`{"call":`), params...)
+	// Compact before splicing: stdio input is line-delimited, but the HTTP
+	// transport hands over the client's params verbatim — a pretty-printed
+	// (spec-legal) request would smear this record across multiple physical
+	// lines and poison the whole JSONL file for the transcript reader.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, params); err != nil {
+		return // not valid JSON; dispatch already rejected the request
+	}
+	line := append([]byte(`{"call":`), compact.Bytes()...)
 	if service != "" {
 		q, _ := json.Marshal(service)
 		line = append(append(line, []byte(`,"service":`)...), q...)
@@ -705,14 +713,14 @@ func (s *mcpServer) call(name string, a toolArgs) map[string]any {
 		}
 		xs := fitness.Exceptions(p, ix)
 		if len(xs) == 0 {
-			return toolText("no allow-list entries configured")
+			return withStale(toolText("no allow-list entries configured"))
 		}
 		var b strings.Builder
 		for _, x := range xs {
 			fmt.Fprintln(&b, x)
 		}
 		fmt.Fprintf(&b, "\n%d dead exception(s)\n", fitness.DeadCount(xs))
-		return toolText(b.String())
+		return withStale(toolText(b.String()))
 	default:
 		return toolError("unknown tool: " + name)
 	}
