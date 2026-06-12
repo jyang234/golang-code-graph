@@ -80,6 +80,27 @@ func TestDetectsBehaviorChange(t *testing.T) {
 	}
 }
 
+// An edit the structural differ does not model — here a span's owning-service
+// label — still changes the canonical bytes, so the assertion must fall back
+// to the line diff: the reviewer sees what diverged, never a failed gate with
+// an empty change set.
+func TestUnmodeledEditFallsBackToLineDiff(t *testing.T) {
+	dir := t.TempDir()
+	tr := sample()
+	if err := Compare(tr, dir, tr.Flow, true); err != nil {
+		t.Fatal(err)
+	}
+	moved := sample()
+	moved.Root.Children[0].Members[0].Service = "other-svc"
+	err := Compare(moved, dir, tr.Flow, false)
+	if err == nil {
+		t.Fatal("expected a mismatch error for the owning-service change")
+	}
+	if !contains(err.Error(), "+ ") || !contains(err.Error(), "other-svc") {
+		t.Errorf("line-diff fallback should show the diverging line, got: %v", err)
+	}
+}
+
 func TestMissingGolden(t *testing.T) {
 	dir := t.TempDir()
 	tr := sample()
