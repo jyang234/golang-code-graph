@@ -6,11 +6,14 @@ fitness functions, blast-radius/reach, fail-closed pre-merge gates, and unfakeab
 MR review artifacts. No AI sits in any verdict; every output is a pure function of
 `(policy, graph, delta)`, inheriting flowmap's human-as-oracle model.
 
-**Status:** the engine is built and tested (Phases 0–3) — surfaces `reach`,
-`fitness`, `review`, `verify`, `diff`, `verify-artifact`, `policy-check`. The
-zero-touch CI trust anchor (Phase 4) is intentionally deferred; until it exists
-groundwork is a sound *local/advisory* tool, not yet an adversary-resistant gate
-(see the trust boundary in the usage guide).
+**Status:** the engine and the full surface are built and tested — the verdict
+surfaces `fitness`, `review`, `verify`, `diff`, `verify-artifact`,
+`policy-check`; the lenses `reach`, `triage`, `ground`, `exceptions`,
+`transcript`; the adoption shell `init` (+ SARIF, setup action); and the `mcp`
+server through all three tiers (stdio, `--service` fleet serving, `--http`
+team transport). The zero-touch CI trust anchor (Phase 4) is intentionally
+deferred; until it exists groundwork is a sound *local/advisory* tool, not yet
+an adversary-resistant gate (see the trust boundary in the usage guide).
 
 ## Start here
 

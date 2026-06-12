@@ -1,6 +1,7 @@
 # incident triage: implementation plan
 
-**Status:** plan-of-record, refined from
+**Status:** implemented — IT-0 through IT-4 all shipped. Kept as the design
+record (D-IT1..5 and the graph-per-deploy prerequisite). Refined from
 [`ideas/incident-triage.md`](ideas/incident-triage.md). Grounded in the actual
 code (file references verified).
 

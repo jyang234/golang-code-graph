@@ -1,6 +1,8 @@
 # deterministic guardrail extensions: implementation plan
 
-**Status:** plan-of-record. Companion to
+**Status:** implemented — GX-1 through GX-5 all shipped. Kept as the design
+record: the extension recipe (§1) is the standing framework policy for every
+future check, and D-GX1 records the execution order. Companion to
 [`path-obligations-plan.md`](path-obligations-plan.md) and
 [`incident-triage-plan.md`](incident-triage-plan.md); this document carries the
 extensions that are **pure groundwork** (call-graph level, no SSA) plus the

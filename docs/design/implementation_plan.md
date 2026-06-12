@@ -1,5 +1,13 @@
 # flowmap (golang-code-graph) — Phased Implementation Plan
 
+**Status:** historical — the original flowmap design record. Phases 0–8 (the
+v1 core) are fully shipped. Of the deferred surface, Phase 10 (post-hoc
+capture) shipped via [`post-hoc-behavioral-ingestion.md`](post-hoc-behavioral-ingestion.md);
+Phases 9, 11–13 remain unbuilt. Kept for the architecture rationale and
+decisions D1–D8; for the consumer layer built on top of flowmap's graph, see
+[`../groundwork/implementation-plan.md`](../groundwork/implementation-plan.md)
+and [`../groundwork/usage.md`](../groundwork/usage.md).
+
 ## Context
 
 `/Users/johnyang/code/golang-code-graph` is a **greenfield** repo: seven specs in `docs/` and zero code. They describe **flowmap**, a **dual-pipeline PR-verification system for Go microservices**, with a human (via CODEOWNERS) as the oracle — **no AI in the verdict path**.
@@ -162,11 +170,13 @@ Each phase ends green on `go build ./... && go vet ./... && golangci-lint run &&
 
 ---
 
-### Deferred surface — now in scope (Phases 9–13)
+### Deferred surface (Phases 9–13) — only Phase 10 shipped
 
 **Phase 9 — Error-path flows + fault injection.** A fault seam (boundary-mock/test-seam returning errors; harness §6) + per-flow error declarations. *Verify:* a downstream error yields a **separate** golden (`status: error`, normalized `ErrorType`); diff shows `[T1] … ok→error`; coverage now counts the decline/error-branch publish as exercised.
 
-**Phase 10 — Post-hoc / out-of-process capture.** `harness.NewPostHoc` + `Mode=post-hoc`: OTel Collector (`AlwaysSample`) → pluggable trace-store adapter (Jaeger/Tempo/OTLP) → fetch-by-trace-id + filter `test.run.id`; reuse `await`; canon unchanged. *Verify:* fixture as a separate process → fetched IR equals the in-process IR's structure for the same flow; truncation still refused.
+**Phase 10 — Post-hoc / out-of-process capture.** **Shipped** — in the
+observe-don't-gate shape of [`post-hoc-behavioral-ingestion.md`](post-hoc-behavioral-ingestion.md),
+which supersedes the sketch here. Original sketch: `harness.NewPostHoc` + `Mode=post-hoc`: OTel Collector (`AlwaysSample`) → pluggable trace-store adapter (Jaeger/Tempo/OTLP) → fetch-by-trace-id + filter `test.run.id`; reuse `await`; canon unchanged. *Verify:* fixture as a separate process → fetched IR equals the in-process IR's structure for the same flow; truncation still refused.
 
 **Phase 11 — Inter-service E2E (cross-clock-domain).** A second toy service the fixture calls; multi-service assembly; the caller-clock rule under genuinely separate, **skewed** clocks. *Verify:* a two-service flow with injected clock skew → ordering derives only from caller client-span intervals; IR stable across skew; distinct golden from the single-service snapshot (don't conflate artifacts).
 

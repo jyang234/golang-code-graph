@@ -1,6 +1,6 @@
 # MCP expansion: tiers 2–3 — plan-of-record
 
-**Status:** Tiers 1 and 2 are built. Tier 1: entrypoints, fitness, reload +
+**Status:** all three tiers are built. Tier 1: entrypoints, fitness, reload +
 staleness flagging, --log transcript. Tier 2: `--service` fleet serving with
 the optional `service` arg on every tool, the fleet-wide prefixed
 `entrypoints` listing, and the `fleet-events` lens — implemented in the

@@ -197,8 +197,8 @@ groundwork reach <graph> <fqn>                          explore one function's b
 groundwork triage (--frame|--route|--table|--event|--peer) <v> [--fail] <graph>   incident triage card
 groundwork ground <graph> <fqn> [--policy …]            pre-edit grounding card: what binds this function
 groundwork exceptions <policy> <graph>                  audit allow-lists; flag dead entries
-groundwork init <graph> [--guide …]                     propose a baseline policy from measured facts
-groundwork mcp <graph> [--policy …]                     serve the lenses as MCP tools over stdio
+groundwork init <graph> [--name …] [--out …] [--guide …]   propose a baseline policy from measured facts
+groundwork mcp <graph> [--policy …] [--expect …] [--log …]  serve the lenses as MCP tools over stdio
 groundwork mcp --service <name>=<graph> …               one server, several services' maps (+ fleet-events)
 groundwork mcp … --http <addr> [--token <secret>]       team-shared streamable-HTTP transport
 groundwork transcript <calls.jsonl> [--json]            summarize an mcp --log transcript (the E4 reader)

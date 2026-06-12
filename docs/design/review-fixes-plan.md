@@ -1,6 +1,8 @@
 # review-fixes: implementation plan
 
-**Status:** plan-of-record for fixing the 16 confirmed findings from the
+**Status:** implemented — RF-1 through RF-7 all shipped. Kept as the quality
+record (the root-cause taxonomy and the disclosed residuals in §4). The plan
+was for fixing the 16 confirmed findings from the
 branch-wide code review (10 ranked + 6 cut by the output cap). Organized by
 **root cause**, not by finding: several findings that look unrelated are one
 defect surfacing in multiple places, and fixing the cause retires them

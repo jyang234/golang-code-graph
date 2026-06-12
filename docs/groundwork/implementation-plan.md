@@ -99,7 +99,9 @@ breadth.
   that regenerates *both* base and branch graphs from checked-out source and
   feeds them to `review`/`verify`. This is the trust anchor (§5), not polish.
 - **Phase 5 — `impact` + `ground` (agent-facing).** Blast-radius and grounding
-  cards. Useful but partly displaced by the agent's own loop, so last.
+  cards. Planned last as partly displaced by the agent's own loop; since
+  shipped — `impact` as the triage substrate (IT-0) and `ground` as the
+  pre-edit grounding card (GX-5).
 - **Deferred — mode-2 value-flow** (`<dynamic>` topic resolution via
   `awsnaming.*` provenance). Shelved unless routing bugs slip past e2e.
 
@@ -264,5 +266,7 @@ on every reachability walk; a shared `setutil` package replaces the duplicated
 set helpers; `pkgDeltas` gained the empty-package guard; and `policy.Load` decodes
 bytes directly.
 
-Next: Phase 3 (`verify` + `diff`) — pre-flight delta gate and boundary-contract
-diff; then Phase 4 (zero-touch CI: the trusted base+branch graph generation).
+Phase 3 (`verify` + `diff`) and Phase 5 (`impact` + `ground`) have since
+shipped. The one remaining phase is Phase 4 — zero-touch CI: the trusted
+base+branch graph generation that turns the local/advisory tool into an
+adversary-resistant gate.
