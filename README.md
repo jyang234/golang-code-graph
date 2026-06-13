@@ -89,6 +89,7 @@ prevention is cheaper than deterministic rejection.
 ```console
 # Produce the facts (flowmap, the trusted side):
 $ flowmap graph svc/ > graph.json          # call graph + boundary effects + obligations
+$ flowmap graph svc/ --algo vta            # refine interface-dense dispatch (default rta)
 $ flowmap boundary svc/                    # gated inter-service contract
 
 # Explore and gate (groundwork, the judge):
@@ -107,6 +108,9 @@ $ groundwork ground graph.json '<fqn>' --policy policy.json      # what binds th
 $ groundwork mcp graph.json --policy policy.json                 # the same lenses, as MCP tools
 $ groundwork mcp --service pay=pay.json --service ledger=ledger.json  # one session, the neighborhood's maps
 $ groundwork mcp pay.json --http 127.0.0.1:8137 --token "$T"      # team-shared server over streamable HTTP
+
+# Across services (CX-5, observational):
+$ groundwork chains --service pay=pay.json --service ledger=ledger.json --policy bus.json  # cross-service effect-chain cards
 ```
 
 Every command is read-only over CI-generated artifacts, byte-deterministic,

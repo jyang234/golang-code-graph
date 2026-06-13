@@ -183,6 +183,28 @@ It declares seven invariant families:
   dynamic dispatch leans on `blind_spot_ratchet` catching the new dispatch
   site — gate them together.
 
+Beyond the invariant families, a policy may carry a **`brokers`** declaration —
+not a gate but a *printed guarantee*. Keyed by bus name, it states the broker
+semantics no static analysis can establish (`transport`, `delivery`, `ordered`,
+`consumers`, `dedup`), which the CX-5 `chains` surface prints verbatim as the
+**assumed** link of a cross-service chain (D-CX5: declared, never inferred). The
+closed-vocabulary fields are validated on load, so a typo'd value cannot read as
+a real guarantee. `signed_by` is the human warrant — an unsigned block prints
+its values flagged UNSIGNED. See `docs/design/cx5-chains-surface.md`.
+
+```json
+"brokers": {
+  "bus": {
+    "transport": "sns->sqs (standard queue)",
+    "delivery":  "at-least-once",
+    "ordered":   "false",
+    "consumers": "idempotent",
+    "dedup":     "inbox UNIQUE(source_id, topic)",
+    "signed_by": "John, 2026-06-13"
+  }
+}
+```
+
 #### The sensitive-flow rule pack (correctness plan, CX-4)
 
 The data-safety bug classes — PII reaching a log sink, untrusted input
@@ -285,8 +307,9 @@ groundwork ground <graph> <fqn> [--policy …]            pre-edit grounding car
 groundwork exceptions <policy> <graph>                  audit allow-lists; flag dead entries
 groundwork init <graph> [--name …] [--out …] [--guide …]   propose a baseline policy from measured facts
 groundwork mcp <graph> [--policy …] [--expect …] [--log …]  serve the lenses as MCP tools over stdio
-groundwork mcp --service <name>=<graph> …               one server, several services' maps (+ fleet-events)
+groundwork mcp --service <name>=<graph> …               one server, several services' maps (+ fleet-events, chains)
 groundwork mcp … --http <addr> [--token <secret>]       team-shared streamable-HTTP transport
+groundwork chains <graph>… [--service <name>=<graph>]… [--policy <p>]…   cross-service effect chains (CX-5, observational)
 groundwork transcript <calls.jsonl> [--json]            summarize an mcp --log transcript (the E4 reader)
 groundwork fitness <policy> <graph>                     evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--json]     computed MR review artifact
@@ -632,12 +655,13 @@ derived with the exact matchers the checks use, so the card never promises a
 guardrail that does not bind.
 
 `groundwork mcp <graph.json> [--policy …] [--expect …] [--log calls.jsonl]`
-serves eight tools over
+serves nine tools over
 MCP stdio (newline-delimited JSON-RPC, protocol 2024-11-05, no third-party
 dependencies): `ground`, `reach`, `triage` (with the `fail` what-if framing,
 including effects possibly committed before the fault), `exceptions`,
 `entrypoints` (what the route/event symptoms can address), `fleet-events`,
-`fitness`, and
+`chains` (the cross-service effect-chain cards — fleet-wide, like
+`fleet-events`), `fitness`, and
 `reload`. A graph file that changes on disk is flagged on every response —
 the server never reloads silently; `reload` re-verifies the stamp. `--log`
 writes a deterministic transcript (the E4 measurement apparatus): one JSON
@@ -677,6 +701,17 @@ vocabulary is the boundary contracts' (published/consumed names match across
 services); answers stay per-service and honest. This is **not** a merged
 cross-service graph: a side with no loaded match says so rather than
 guessing, and dynamically-named publishes are disclosed per service.
+
+`chains` is the second cross-service lens (and a CLI, `groundwork chains`):
+for each event it renders a happens-before **chain card** whose links are
+labeled **proven** (a per-service graph fact — the producer's in-frame publish
+commit ordering and must-precede verdicts, the consumer handler's downstream
+effects and obligations) or **assumed** (the broker guarantee, declared in a
+`brokers` policy block and printed verbatim, never inferred). It is
+observational, never a gate, and honest about the fleet it was handed: a
+half-open chain (a publish no loaded service consumes, or vice versa) prints
+as open, and an unsigned broker block prints its values flagged UNSIGNED. See
+`docs/design/cx5-chains-surface.md`.
 
 `--http <addr> [--token <secret>]` swaps stdio for the **streamable-HTTP
 transport** (protocol revision 2025-03-26), turning either form into a

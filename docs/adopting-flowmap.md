@@ -33,7 +33,8 @@ flowmap boundary --check .  # CI runs this: fails if the committed copy is stale
 
 Commit `.flowmap/boundary-contract.json` alongside the code. A new
 published/consumed event or external dependency changes it and routes to review.
-The non-gated full call graph is available via `flowmap graph .`.
+The non-gated full call graph is available via `flowmap graph .` (add
+`--algo vta` to refine interface-dense dispatch; the default is `rta`).
 
 ## 3. Write a flow test
 
