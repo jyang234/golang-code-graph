@@ -71,3 +71,206 @@ func TestProposeRatchetsBlindSpots(t *testing.T) {
 		t.Errorf("ratchet = %+v, want observe-first with %d baseline allows", p.BlindSpotRatchet, len(g.BlindSpots))
 	}
 }
+
+// R5: on a db-call substrate (production CRUD built from non-constant SQL, so the
+// writes label "db call" and IsWrite cannot read them), init must NOT sweep the
+// opaque write routes into `read-routes-stay-read-only`. The classified-only
+// predicate used to call them read-only and propose a must_not_reach rule over
+// the genuine write paths — silent-green. The fixture mirrors cgate: a consumer
+// whose only DB effect is an opaque "db call" write, a health probe (db
+// PingContext, provably non-mutating), and a route reaching no DB at all.
+func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
+	const (
+		writeRoute  = "(*example.com/svc/internal/inbound.Handler).Handle"
+		writeStore  = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+		healthRoute = "(*example.com/svc/internal/server.Server).Healthcheck"
+		readRoute   = "(*example.com/svc/internal/server.Server).Livez"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: writeRoute, Sig: "func()", Tier: 1},
+			{FQN: writeStore, Sig: "func() error", Tier: 1},
+			{FQN: healthRoute, Sig: "func()", Tier: 1},
+			{FQN: readRoute, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: writeRoute, To: writeStore, Tier: 2},
+			// The consumer's whole write path is an opaque db call — zero classified writes.
+			{From: writeStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+			// A readiness probe cannot mutate; it stays provably read-only.
+			{From: healthRoute, To: "boundary:db PingContext", Tier: 1, Boundary: "outbound-sync"},
+			// readRoute reaches no DB at all — the clean read-only baseline.
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+
+	// The opaque write route must NOT be ratcheted as read-only...
+	from := map[string]bool{}
+	if len(p.MustNotReach) > 0 {
+		for _, f := range p.MustNotReach[0].From {
+			from[f] = true
+		}
+	}
+	if from[writeRoute] {
+		t.Errorf("the opaque db-call write route was swept into read-routes-stay-read-only: %v", p.MustNotReach[0].From)
+	}
+	// ...while the provably read-only routes (no DB, and a non-mutating probe) are.
+	if !from[readRoute] || !from[healthRoute] {
+		t.Errorf("provably read-only routes must still be ratcheted; From = %v", p.MustNotReach[0].From)
+	}
+
+	// ...and it must be DISCLOSED in the guide, in the R2 caution's voice.
+	for _, want := range []string{"Read-only status unproven", "db call", ShortName(writeRoute)} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("guide missing unproven-route disclosure %q", want)
+		}
+	}
+	// The budget section discloses its count is classified-only.
+	if !strings.Contains(guide, "classified-only") {
+		t.Errorf("guide budget section must disclose the count is classified-only")
+	}
+	// The "what init cannot derive" section names the opaque-write limit.
+	if !strings.Contains(guide, "Opaque DB writes") {
+		t.Errorf("guide closing must list opaque DB writes under what init cannot derive")
+	}
+
+	// The proposal must still be a clean ratchet of its own graph (no must_not_reach
+	// rule fires, because the excluded opaque write never reaches a classified target).
+	res := Check(p, graph.NewIndex(g))
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed rule violates its own source graph: %v", f)
+		}
+	}
+}
+
+// guideSection returns the body of the first "## ..." section whose header
+// contains titleSubstr, up to the next section header (or end of guide).
+func guideSection(guide, titleSubstr string) string {
+	for _, chunk := range strings.Split(guide, "\n## ") {
+		if strings.Contains(chunk, titleSubstr) {
+			return chunk
+		}
+	}
+	return ""
+}
+
+// Regression: the unproven-routes disclosure must attribute only the opaque
+// labels the UNPROVEN routes actually reach — not labels that belong to a
+// classified-writer route's cone. Pre-fix, unclassLabels was collected from
+// every non-main route, so a writer's `db ExecContext` inflated the count and
+// label list of the read-only caution that names only the unproven routes.
+func TestProposeUnprovenDisclosureScopedToNamedRoutes(t *testing.T) {
+	const (
+		writerRoute   = "(*example.com/svc/internal/handler.Server).Mixed"
+		writerStore   = "(*example.com/svc/internal/store.Store).Both"
+		unprovenRoute = "(*example.com/svc/internal/handler.Server).Sync"
+		unprovenStore = "(*example.com/svc/internal/store.Store).Opaque"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: writerRoute, Sig: "func()", Tier: 1},
+			{FQN: writerStore, Sig: "func() error", Tier: 1},
+			{FQN: unprovenRoute, Sig: "func()", Tier: 1},
+			{FQN: unprovenStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// A classified writer that ALSO touches an opaque label (db ExecContext).
+			{From: writerRoute, To: writerStore, Tier: 2},
+			{From: writerStore, To: "boundary:db INSERT things", Tier: 1, Boundary: "outbound-sync"},
+			{From: writerStore, To: "boundary:db ExecContext", Tier: 1, Boundary: "outbound-sync"},
+			// The genuinely unproven route reaches a single opaque label (db call).
+			{From: unprovenRoute, To: unprovenStore, Tier: 2},
+			{From: unprovenStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	_, guide := Propose(graph.NewIndex(g), "svc")
+
+	sec := guideSection(guide, "Read-only status unproven")
+	if sec == "" {
+		t.Fatalf("expected an unproven-routes disclosure section; guide:\n%s", guide)
+	}
+	// The named unproven route reaches exactly ONE opaque label; the writer's
+	// db ExecContext must not be counted into or listed by this section.
+	if !strings.Contains(sec, "1 DB effect label(s)") {
+		t.Errorf("unproven disclosure must count only the unproven route's labels (1); section:\n%s", sec)
+	}
+	if strings.Contains(sec, "ExecContext") {
+		t.Errorf("unproven disclosure must not list a classified-writer route's opaque label; section:\n%s", sec)
+	}
+	if !strings.Contains(sec, ShortName(unprovenRoute)) {
+		t.Errorf("unproven disclosure must name the unproven route; section:\n%s", sec)
+	}
+}
+
+// On a MIXED substrate (one classified write a seam guards, plus an opaque
+// db-call write that bypasses it), the proposed waypoint must disclose that its
+// "every path passes X" guarantee is classified-only — guardsAll cannot see the
+// opaque write, so an absolute claim would be silent-green (R5, waypoint case).
+func TestProposeWaypointDisclosesOpaqueBypass(t *testing.T) {
+	const (
+		guardedRoute = "(*example.com/svc/internal/handler.Server).Create"
+		seam         = "(*example.com/svc/internal/app.Service)"
+		seamMethod   = "(*example.com/svc/internal/app.Service).Do"
+		store        = "(*example.com/svc/internal/store.Store).Insert"
+		bypassRoute  = "(*example.com/svc/internal/handler.Server).Sync"
+		bypassStore  = "(*example.com/svc/internal/store.Store).Upsert"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: guardedRoute, Sig: "func()", Tier: 1},
+			{FQN: seamMethod, Sig: "func() error", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: bypassRoute, Sig: "func()", Tier: 1},
+			{FQN: bypassStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// Classified write path: route → seam → store → db INSERT (seam guards it).
+			{From: guardedRoute, To: seamMethod, Tier: 2},
+			{From: seamMethod, To: store, Tier: 2},
+			{From: store, To: "boundary:db INSERT things", Tier: 1, Boundary: "outbound-sync"},
+			// Opaque write path bypassing the seam entirely.
+			{From: bypassRoute, To: bypassStore, Tier: 2},
+			{From: bypassStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+
+	if len(p.MustPassThrough) != 1 || p.MustPassThrough[0].Through[0] != seam {
+		t.Fatalf("want a waypoint at the app.Service seam, got %+v", p.MustPassThrough)
+	}
+	if !strings.Contains(guide, "guarantee is classified-only") || !strings.Contains(guide, "db call") {
+		t.Errorf("proposed waypoint must disclose the opaque-write bypass; guide:\n%s", guide)
+	}
+}
+
+// When the ENTIRE write surface is opaque and no route is provably read-only,
+// init proposes no read-only rule at all and says so — rather than asserting
+// "every entrypoint writes" (false) or ratcheting an unsupported claim.
+func TestProposeNoProvablyReadOnlyRoute(t *testing.T) {
+	const (
+		route = "(*example.com/svc/internal/inbound.Handler).Handle"
+		store = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: store, Tier: 2},
+			{From: store, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.MustNotReach != nil {
+		t.Errorf("no route is provably read-only; want no must_not_reach, got %+v", p.MustNotReach)
+	}
+	if !strings.Contains(guide, "No entrypoint is PROVABLY read-only") {
+		t.Errorf("guide must explain why no read-only rule was proposed")
+	}
+	// The waypoint section must not claim "No DB write effects exist".
+	if strings.Contains(guide, "No DB write effects exist") {
+		t.Errorf("waypoint section falsely claims no DB writes exist on a db-call substrate")
+	}
+}

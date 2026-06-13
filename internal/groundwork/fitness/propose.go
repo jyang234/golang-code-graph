@@ -161,8 +161,22 @@ func proposeWaypoint(ix *graph.Index, p *policy.Policy, g *guide) {
 			writers[e.From] = true
 		}
 	}
+	// Opaque DB effects scoped to routes (non-main entrypoints) — the same scope
+	// proposeReadOnly/proposeBudget/closing use, so every section that discloses
+	// the db-call frontier agrees on its count and labels.
+	unclassified := routeUnclassifiedDB(ix)
 	if len(writers) == 0 {
-		g.section("Waypoint (must_pass_through): not proposed", "No DB write effects exist — nothing to guard yet. Revisit when the service writes.")
+		// "No DB write effects exist" is a MEASUREMENT claim, and it is wrong on a
+		// db-call substrate: a write whose SQL is non-constant labels "db call"
+		// (or a bare method name), which IsWrite cannot read. Disclose those opaque
+		// writes instead of asserting the service writes nothing (R5).
+		if len(unclassified) > 0 {
+			g.section("Waypoint (must_pass_through): not proposed",
+				fmt.Sprintf("No CLASSIFIED DB write exists, but %d DB effect label(s) built from non-constant SQL the labeler cannot read as a write DO exist (%s) — opaque writes may flow through them. A waypoint cannot be derived over writes the graph cannot see; if these routes mutate, name the intended seam by hand (or make the SQL constant so the verb becomes readable).",
+					len(unclassified), strings.Join(unclassified, ", ")))
+		} else {
+			g.section("Waypoint (must_pass_through): not proposed", "No DB write effects exist — nothing to guard yet. Revisit when the service writes.")
+		}
 		return
 	}
 	sources := ix.Sources()
@@ -222,44 +236,116 @@ func proposeWaypoint(ix *graph.Index, p *policy.Policy, g *guide) {
 		To:      []string{"boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE"},
 		Through: []string{waypoint},
 	}}
-	g.section("Waypoint (must_pass_through): proposed",
-		fmt.Sprintf("Every entrypoint-to-DB-write path already passes **`%s`** — ratcheted, so a future route that skips it fails the gate (the `entrypoint:*` selector binds brand-new handler packages automatically).\n\n"+
-			"**Tighten by**: setting `\"require_proof\": true` if this seam is security-relevant (auth/tenancy) — unprovability then fails closed.\n"+
-			"**Question for the team**: is this seam guarding by DESIGN or by accident? If by accident, decide whether to bless it or name the intended seam instead.", waypoint))
+	body := fmt.Sprintf("Every entrypoint-to-DB-write path already passes **`%s`** — ratcheted, so a future route that skips it fails the gate (the `entrypoint:*` selector binds brand-new handler packages automatically).\n\n"+
+		"**Tighten by**: setting `\"require_proof\": true` if this seam is security-relevant (auth/tenancy) — unprovability then fails closed.\n"+
+		"**Question for the team**: is this seam guarding by DESIGN or by accident? If by accident, decide whether to bless it or name the intended seam instead.", waypoint)
+	// The seam guards every CLASSIFIED write path, but guardsAll cannot see opaque
+	// writes (non-constant SQL labels "db call", which IsWrite skips). On a mixed
+	// substrate the "every path" claim is classified-only — disclose so an opaque
+	// write bypassing the seam does not read as guarded (R5, same class as above).
+	if len(unclassified) > 0 {
+		body += fmt.Sprintf("\n\n**Caution — guarantee is classified-only**: %d DB effect label(s) built from non-constant SQL the labeler cannot read as a write (%s) are NOT proven to pass this seam — an opaque write reaching the DB outside `%s` would not be caught. Make the SQL constant, or confirm the seam covers these paths by hand.",
+			len(unclassified), strings.Join(unclassified, ", "), waypoint)
+	}
+	g.section("Waypoint (must_pass_through): proposed", body)
+}
+
+// routeUnclassifiedDB returns the sorted distinct unclassified DB effect labels
+// (non-constant SQL the labeler cannot read as a write — "db call" and friends)
+// reachable from any ROUTE: a non-main entrypoint. Scoping to routes — not the
+// whole graph (ix.Edges()) — keeps every section that discloses the db-call
+// frontier in agreement, and makes the route-level "treated as possible writers,
+// excluded from the read-only ratchet, uncounted in the write budget" framing
+// accurate: a migration reachable only from main is not a route and is not what
+// those sections exclude or count.
+func routeUnclassifiedDB(ix *graph.Index) []string {
+	set := map[string]bool{}
+	for _, s := range ix.Sources() {
+		if strings.HasSuffix(s, ".main") {
+			continue
+		}
+		cone := append([]string{s}, ix.Reachable(s)...)
+		for _, e := range ix.Effects(cone...) {
+			if label, ok := UnclassifiedDBLabel(e); ok {
+				set[label] = true
+			}
+		}
+	}
+	return setutil.SortedKeys(set)
 }
 
 // proposeReadOnly ratchets every entrypoint that currently writes nothing:
 // the read-route-stays-read-only invariant, derived rather than declared.
+//
+// "Writes nothing" is a PROVABLE claim only when the classifier can read every
+// DB verb the route reaches. A route whose only DB effects are unclassified
+// ("db call" and friends — non-constant SQL IsWrite cannot read) MIGHT mutate:
+// it is not provably read-only, so it is neither ratcheted nor counted as a
+// read route. Ratcheting it would (a) assert a read-only claim the substrate
+// can't support and (b) build an anti-protective rule — its `must_not_reach`
+// target set is the CLASSIFIED writes, which an opaque write never reaches, so
+// the rule guards nothing and instead fires the day someone makes the SQL
+// constant (a strict analyzability improvement). Such routes are EXCLUDED and
+// DISCLOSED, the same escape hatch the verify/fitness surfaces already give the
+// db-call substrate (R5).
 func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 	var readOnly []string
+	var unproven []string
+	unclassLabels := map[string]bool{}
 	for _, s := range ix.Sources() {
 		if strings.HasSuffix(s, ".main") {
 			continue
 		}
 		cone := append([]string{s}, ix.Reachable(s)...)
 		writes := false
+		routeUnclass := map[string]bool{}
 		for _, e := range ix.Effects(cone...) {
 			if IsWrite(e) {
 				writes = true
 			}
+			if label, ok := UnclassifiedDBLabel(e); ok {
+				routeUnclass[label] = true
+			}
 		}
-		if !writes {
+		switch {
+		case writes:
+			// a classified writer — not a read route
+		case len(routeUnclass) > 0:
+			// Reaches a possible opaque write — record the labels THIS route
+			// reaches so the disclosure attributes them to the routes it names.
+			unproven = append(unproven, s)
+			for l := range routeUnclass {
+				unclassLabels[l] = true
+			}
+		default:
 			readOnly = append(readOnly, s)
 		}
 	}
-	if len(readOnly) == 0 {
+
+	switch {
+	case len(readOnly) > 0:
+		p.MustNotReach = []policy.ReachRule{{
+			Name: "read-routes-stay-read-only",
+			From: readOnly,
+			To:   []string{"boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE", "boundary:bus PUBLISH"},
+		}}
+		g.section("Read-only routes (must_not_reach): proposed",
+			fmt.Sprintf("%d entrypoint(s) currently reach no external write: %s. Ratcheted — a future change that makes a read route write fails the gate instead of shipping silently.\n\n"+
+				"**Tighten by**: `\"require_proof\": true` on any of these that are unauthenticated.\n"+
+				"**Delete entries** that are EXPECTED to start writing soon.", len(readOnly), shortList(readOnly)))
+	case len(unproven) > 0:
+		g.section("Read-only routes (must_not_reach): not proposed",
+			"No entrypoint is PROVABLY read-only: every route that reaches no classified write also reaches a DB effect built from non-constant SQL the labeler cannot read as a write (see the caution below). Ratcheting any of them would assert a read-only claim the substrate cannot support.")
+	default:
 		g.section("Read-only routes (must_not_reach): not proposed", "Every entrypoint currently performs at least one external write — there are no read-only routes to ratchet.")
-		return
 	}
-	p.MustNotReach = []policy.ReachRule{{
-		Name: "read-routes-stay-read-only",
-		From: readOnly,
-		To:   []string{"boundary:db INSERT", "boundary:db UPDATE", "boundary:db DELETE", "boundary:bus PUBLISH"},
-	}}
-	g.section("Read-only routes (must_not_reach): proposed",
-		fmt.Sprintf("%d entrypoint(s) currently reach no external write: %s. Ratcheted — a future change that makes a read route write fails the gate instead of shipping silently.\n\n"+
-			"**Tighten by**: `\"require_proof\": true` on any of these that are unauthenticated.\n"+
-			"**Delete entries** that are EXPECTED to start writing soon.", len(readOnly), shortList(readOnly)))
+
+	if len(unproven) > 0 {
+		g.section("⚠️ Read-only status unproven — db-call routes excluded from the ratchet",
+			fmt.Sprintf("%d route(s) reach no CLASSIFIED write but DO reach %d DB effect label(s) built from non-constant SQL the labeler cannot read as a write (%s): %s.\n\n"+
+				"Their read-only status is UNPROVEN, so they were left OUT of `read-routes-stay-read-only` rather than ratcheted on a claim the graph cannot support — these routes MIGHT mutate. Review before trusting; making the SQL constant exposes the verb and lets init classify it.",
+				len(unproven), len(unclassLabels), strings.Join(setutil.SortedKeys(unclassLabels), ", "), shortList(unproven)))
+	}
 }
 
 // proposeConcurrent ratchets the current truth about concurrency: if no
@@ -299,6 +385,7 @@ func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 // proposeBudget sets the per-route write budget at today's measured maximum.
 func proposeBudget(ix *graph.Index, p *policy.Policy, g *guide) {
 	maxWrites := 0
+	unclassified := map[string]bool{}
 	for _, s := range ix.Sources() {
 		if strings.HasSuffix(s, ".main") {
 			continue
@@ -309,15 +396,25 @@ func proposeBudget(ix *graph.Index, p *policy.Policy, g *guide) {
 			if IsWrite(e) {
 				n++
 			}
+			if label, ok := UnclassifiedDBLabel(e); ok {
+				unclassified[label] = true
+			}
 		}
 		if n > maxWrites {
 			maxWrites = n
 		}
 	}
 	p.IOBudget = &policy.IOBudget{MaxWritesPerRoute: maxWrites}
-	g.section("Write budget (io_budget): proposed",
-		fmt.Sprintf("The busiest route currently reaches **%d** external write(s); the budget is set there — a side-effect blowout beyond today's maximum fails the gate.\n\n"+
-			"**Tighten by**: lowering it after splitting the busiest route. Raising it later is a reviewed policy change, which is the point.", maxWrites))
+	body := fmt.Sprintf("The busiest route currently reaches **%d** external write(s); the budget is set there — a side-effect blowout beyond today's maximum fails the gate.\n\n"+
+		"**Tighten by**: lowering it after splitting the busiest route. Raising it later is a reviewed policy change, which is the point.", maxWrites)
+	// The count is classified-only; an opaque "db call" mutation contributes zero.
+	// Disclose so the budget number does not read as "writes are bounded" where the
+	// labeler went blind on the verb — the same caution fitness raises at gate time.
+	if len(unclassified) > 0 {
+		body += fmt.Sprintf("\n\n**Caution — this count is classified-only**: %d DB effect label(s) are built from non-constant SQL the labeler cannot read as a write (%s); they are NOT charged here, so a within-budget pass does not prove the write surface is bounded. `groundwork fitness` discloses the same on every run.",
+			len(unclassified), strings.Join(setutil.SortedKeys(unclassified), ", "))
+	}
+	g.section("Write budget (io_budget): proposed", body)
 }
 
 // proposeRatchet allow-lists the blind spots that exist today, observe-first.
@@ -438,9 +535,18 @@ for the team" as its working checklist.
 }
 
 func (g *guide) closing(ix *graph.Index) {
+	cannot := "- **Path obligations** (`.flowmap.yaml`): lifecycle and ordering rules need intent — which acquire/release pairs and audit-before-publish orderings are REQUIRED, not just current. Review the graph's `effect_order` facts for committed effects that precede fallible calls, and decide which orderings are contracts.\n" +
+		"- **Security-critical seams**: which `must_not_reach` / `must_pass_through` rules deserve `require_proof: true` (unprovability fails closed).\n" +
+		"- **Intent vs accident**: every proposed rule encodes what the code DOES; only the team knows what it SHOULD do.\n"
+	// db-call blindness is a MEASUREMENT limit, not an intent question, but it sits
+	// here so the team sees it next to everything else init could not prove: the
+	// write surface above is classified-only, and opaque writes are invisible to it.
+	// Route-scoped (routeUnclassifiedDB) so this matches what the read-only and
+	// budget sections actually excluded/uncounted.
+	unclassified := routeUnclassifiedDB(ix)
+	if len(unclassified) > 0 {
+		cannot += fmt.Sprintf("- **Opaque DB writes**: %d DB effect label(s) (%s) are built from non-constant SQL the labeler cannot read as a write. init treats the routes reaching them as POSSIBLE writers — excluded from the read-only ratchet, uncounted in the write budget — but cannot tell whether they mutate. Make the SQL constant to expose the verb, or confirm the write surface by hand.\n", len(unclassified), strings.Join(unclassified, ", "))
+	}
 	g.section("What init CANNOT derive — the questions only the team can answer",
-		"- **Path obligations** (`.flowmap.yaml`): lifecycle and ordering rules need intent — which acquire/release pairs and audit-before-publish orderings are REQUIRED, not just current. Review the graph's `effect_order` facts for committed effects that precede fallible calls, and decide which orderings are contracts.\n"+
-			"- **Security-critical seams**: which `must_not_reach` / `must_pass_through` rules deserve `require_proof: true` (unprovability fails closed).\n"+
-			"- **Intent vs accident**: every proposed rule encodes what the code DOES; only the team knows what it SHOULD do.\n\n"+
-			"Next steps: `groundwork policy-check` the file, run `groundwork fitness` (it passes clean today by construction), put the policy under CODEOWNERS, wire `groundwork verify` into CI, and after a quiet week tighten the observe-first postures.")
+		cannot+"\nNext steps: `groundwork policy-check` the file, run `groundwork fitness` (it passes clean today by construction), put the policy under CODEOWNERS, wire `groundwork verify` into CI, and after a quiet week tighten the observe-first postures.")
 }
