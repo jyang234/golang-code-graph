@@ -23,5 +23,9 @@
       "name": "handler.Server.GetUserFast"
     }
   ],
-  "digest": "ee405bceee1a1949c552d3618b0f28e36f5448411d66b3715fd1ae3373c87dc7"
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
+  "digest": "4678af36712e5cf4d01e11439141bad5d63670616c5da341cafbac216f0b15e5"
 }

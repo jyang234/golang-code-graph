@@ -61,6 +61,7 @@ in a 600-line diff). The MR description reads benign; the artifact reads:
 ```text
 # MR structural review — BLOCK
 digest 0d40d53f84f2ba46 · recompute to verify (deterministic; not author-editable)
+substrate: vta — vta refined over rta from 6 discovered root(s)
 
 Shape: cross-package
 Touches: app(+3), handler(+3), storage(+2)

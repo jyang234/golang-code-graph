@@ -23,21 +23,24 @@ func Review(p *policy.Policy, base, branch *graph.Graph) Artifact {
 	baseIx, branchIx := graph.NewIndex(base), graph.NewIndex(branch)
 	d := diffGraphs(base, branch)
 
-	newViolations, newCautions, baseRW, branchRW := newFindings(p, baseIx, branchIx)
+	newViolations, newCautions, standingCautions, baseRW, branchRW := newFindings(p, baseIx, branchIx)
 
 	a := Artifact{
-		Service:         p.Service,
-		Shape:           d.shape(),
-		Touches:         d.pkgDeltas(),
-		NewViolations:   newViolations,
-		Contract:        contractChanges(d, baseIx, branchIx),
-		Effects:         ioEffects(d),
-		RouteIO:         routeIODeltas(p, baseIx, branchIx, baseRW, branchRW),
-		NewWriteTargets: newWriteTargets(p, base, branch),
-		Reach:           reachExisting(d, baseIx, branchIx),
-		NewCautions:     newCautions,
-		NewBlindSpots:   newBlindSpots(p, base, branch),
-		DBLabelDrift:    dbLabelDrift(base, branch),
+		Service:          p.Service,
+		Shape:            d.shape(),
+		Touches:          d.pkgDeltas(),
+		NewViolations:    newViolations,
+		Contract:         contractChanges(d, baseIx, branchIx),
+		Effects:          ioEffects(d),
+		RouteIO:          routeIODeltas(p, baseIx, branchIx, baseRW, branchRW),
+		NewWriteTargets:  newWriteTargets(p, base, branch),
+		Reach:            reachExisting(d, baseIx, branchIx),
+		NewCautions:      newCautions,
+		StandingCautions: standingCautions,
+		NewBlindSpots:    newBlindSpots(p, base, branch),
+		DBLabelDrift:     dbLabelDrift(base, branch),
+		Algo:             branch.Algo,
+		Caveats:          provenanceCaveats(base, branch),
 	}
 	a.Verdict = verdict(p, d, &a)
 	a.Digest = digestOf(a)
@@ -63,6 +66,12 @@ func verdict(p *policy.Policy, d graphDelta, a *Artifact) Verdict {
 	if p.GatesEffects() && len(a.NewWriteTargets) > 0 {
 		return Block
 	}
+	// StandingCautions is deliberately NOT a signal here: it holds identically on
+	// base and branch, so it says nothing about THIS change — a body-only change
+	// with only a standing caution must still abstain (NO-STRUCTURAL-SIGNAL), and
+	// the abstain render surfaces the caution anyway (R1). Adding it to hasSignal
+	// would misreport such a change as STRUCTURALLY-CLEAR — "the graph says it's
+	// fine" — exactly where logic review matters most. Leave it out.
 	hasSignal := !d.empty() || len(a.NewCautions) > 0 || len(a.NewBlindSpots) > 0 || len(a.NewWriteTargets) > 0 || a.DBLabelDrift != nil
 	if !hasSignal {
 		return NoStructuralSignal
@@ -123,9 +132,17 @@ func dbLabelDrift(base, branch *graph.Graph) *DBLabelDrift {
 
 // newFindings runs fitness on both graphs and returns the findings present on
 // the branch but not the base — the "report only newly-introduced" property —
-// plus each side's computed route-write map (nil when the policy has no
-// io_budget), so the route-delta section reuses Check's per-route BFS.
-func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, cautions []Violation, baseRW, branchRW map[string]fitness.RouteIO) {
+// plus the branch's STANDING cautions (present on both sides) and each side's
+// computed route-write map (nil when the policy has no io_budget), so the
+// route-delta section reuses Check's per-route BFS.
+//
+// standingCautions is the absolute escape hatch for R1: a caution that holds
+// identically on base and branch (the steady-state io_budget-unenforceable case
+// is the load-bearing one) is suppressed by the new-findings diff forever — the
+// same born-inert-is-invisible trap rule_liveness exists to defeat. The review
+// surface lists it absolutely so a green gate never hides a standing "the graph
+// cannot prove this" disclosure.
+func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, cautions, standingCautions []Violation, baseRW, branchRW map[string]fitness.RouteIO) {
 	baseRes := fitness.Check(p, baseIx)
 	branchRes := fitness.Check(p, branchIx)
 
@@ -134,17 +151,18 @@ func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, c
 		baseKeys[f.Key()] = true
 	}
 	for _, f := range branchRes.Findings {
-		if baseKeys[f.Key()] {
-			continue
-		}
 		v := Violation{Rule: f.Rule, Summary: f.Summary, From: f.From, To: f.To, Detail: f.Detail}
-		if f.Severity == fitness.Violation {
+		switch {
+		case !baseKeys[f.Key()] && f.Severity == fitness.Violation:
 			violations = append(violations, v)
-		} else {
+		case !baseKeys[f.Key()]:
 			cautions = append(cautions, v)
+		case f.Severity == fitness.Caution:
+			// Present on both sides: a standing caution the delta would suppress.
+			standingCautions = append(standingCautions, v)
 		}
 	}
-	return violations, cautions, baseRes.RouteWrites, branchRes.RouteWrites
+	return violations, cautions, standingCautions, baseRes.RouteWrites, branchRes.RouteWrites
 }
 
 // contractChanges reports inter-service surface movement: entrypoints (Sources)

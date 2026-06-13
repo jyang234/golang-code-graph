@@ -135,13 +135,25 @@ func RouteWrites(p *policy.Policy, ix *graph.Index) map[string]RouteIO {
 }
 
 // UnclassifiedDBLabel returns the label (sans "boundary:") of a DB effect whose
-// SQL verb the labeler could not read, and whether e is one. The verb is
-// "<system> <op> <target>"; a DB op outside the known read/write SQL verbs
-// (INSERT/UPDATE/DELETE/UPSERT/MERGE/REPLACE/SELECT) is a fallback label —
-// graphio emits "db call" or a bare method name when the statement is not a
-// compile-time-constant string. Such an effect MIGHT mutate, but IsWrite cannot
-// tell, so it is neither charged to the budget nor trusted as a read; it is the
-// frontier the budget caution discloses.
+// SQL verb the labeler could not read AND which might therefore be an unproven
+// write, plus whether e is one. The verb is "<system> <op> <target>".
+//
+// Two kinds of label are NOT unclassified-write frontiers and are excluded:
+//
+//   - A read/write SQL verb the labeler read (INSERT/UPDATE/DELETE/UPSERT/MERGE/
+//     REPLACE/SELECT): IsWrite classifies it directly.
+//   - A provably-non-mutating driver/transaction control method (Ping*, Begin*,
+//     Commit, Rollback) or a connection-pool/session setter (Set*): these reach
+//     the DB but cannot mutate a row, so a route reaching only these is not a
+//     write surface the budget "silently passes" — flagging it is a false caution
+//     that inflates the count and breeds caution-fatigue (R2).
+//
+// Everything else — "db call", a bare method name like ExecContext, and the
+// read/exec methods Query*/QueryRow* (Postgres `INSERT … RETURNING` legitimately
+// rides QueryContext, so a Query* MIGHT mutate) — is built from non-constant SQL
+// the labeler cannot read as a write. Such an effect MIGHT mutate, but IsWrite
+// cannot tell, so it is neither charged to the budget nor trusted as a read; it
+// is the frontier the budget caution discloses.
 func UnclassifiedDBLabel(e graph.Edge) (string, bool) {
 	if !e.IsBoundary() {
 		return "", false
@@ -153,9 +165,38 @@ func UnclassifiedDBLabel(e graph.Edge) (string, bool) {
 	switch strings.ToUpper(f[1]) {
 	case "INSERT", "UPDATE", "DELETE", "UPSERT", "MERGE", "REPLACE", "SELECT":
 		return "", false // a verb the labeler read and IsWrite can classify
-	default:
-		return strings.TrimPrefix(e.To, "boundary:"), true
 	}
+	if nonMutatingDBControl(f[1]) {
+		return "", false // driver/transaction control or pool config — cannot mutate a row
+	}
+	return strings.TrimPrefix(e.To, "boundary:"), true
+}
+
+// nonMutatingDBControl reports whether a DB effect op is a driver/transaction
+// control method or a connection-pool/session setter — a sql.DB/sql.Tx call that
+// reaches the database but provably cannot write a row, so it must not count as
+// an unclassified-write frontier. The op is the method name graphio fell back to
+// when the statement was not a compile-time constant.
+//
+// The set mirrors the DB boundaries graphio actually emits: the labeler treats
+// every database/sql method EXCEPT the result-cursor surface (Scan/Next/Close/…)
+// as a boundary, "leaving the actual Query*/Exec* round-trips (and Ping/Begin/
+// Prepare) as the only DB boundaries" (static/features/hints.go). Of those, only
+// Query*/Exec* can execute a statement — Ping*, Begin*/Commit/Rollback, Conn,
+// Stats, and Prepare*/Stmt-creation send no row-mutating SQL, and Set* is
+// pool/session config. A constant transaction-control statement ("COMMIT", "SET
+// search_path") lands here too. Matched case-insensitively to cover both the
+// method-name and constant-SQL labels.
+func nonMutatingDBControl(op string) bool {
+	switch strings.ToUpper(op) {
+	case "PING", "PINGCONTEXT",
+		"BEGIN", "BEGINTX",
+		"COMMIT", "ROLLBACK",
+		"CONN", "STATS",
+		"PREPARE", "PREPARECONTEXT":
+		return true
+	}
+	return strings.HasPrefix(strings.ToUpper(op), "SET")
 }
 
 // WriteLabel returns the effect label (sans "boundary:") of an external write,

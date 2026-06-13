@@ -36,8 +36,20 @@ type Graph struct {
 	// commit SHA). Consumers pass --expect to verify they hold the graph for
 	// the code they think they do — a stale map mis-triages. Opt-in at both
 	// ends: an absent stamp is only an error when verification was asked for.
-	Stamp       string            `json:"stamp,omitempty"`
-	Entrypoint  string            `json:"entrypoint,omitempty"`
+	Stamp      string `json:"stamp,omitempty"`
+	Entrypoint string `json:"entrypoint,omitempty"`
+
+	// Algo is the call-graph construction algorithm flowmap built this graph on
+	// (rta|vta|cha) and Caveats are its recorded soundness/precision notes —
+	// provenance, not gate inputs. fitness/review/verify echo them so a verdict
+	// self-certifies its substrate. All three algorithms are sound over-
+	// approximations modulo the reflection/unsafe frontier already carried in
+	// BlindSpots, so a proof (must_not_reach PROVEN-ABSENT) is valid on any of
+	// them; recording which one ran is for auditability. Absent on graphs from a
+	// pre-provenance flowmap — an empty Algo means "unrecorded", never "unsound".
+	Algo    string   `json:"algo,omitempty"`
+	Caveats []string `json:"caveats,omitempty"`
+
 	Nodes       []Node            `json:"nodes"`
 	Edges       []Edge            `json:"edges"`
 	BlindSpots  []BlindSpot       `json:"blind_spots"`
@@ -122,6 +134,22 @@ type BlindSpot struct {
 	Kind   string `json:"kind"`
 	Site   string `json:"site"`
 	Detail string `json:"detail"`
+}
+
+// ProvenanceLine renders the one-line call-graph substrate disclosure shared by
+// every groundwork surface that echoes provenance (fitness, review, verify), so
+// they word it identically. An empty algo means the graph predates provenance
+// recording — stated as "unrecorded", never implying a substrate. caveats are
+// the recorded soundness/precision notes, joined.
+func ProvenanceLine(algo string, caveats []string) string {
+	if algo == "" {
+		return "substrate: unrecorded (graph predates provenance; regenerate with current flowmap)\n"
+	}
+	line := "substrate: " + algo
+	if len(caveats) > 0 {
+		line += " — " + strings.Join(caveats, "; ")
+	}
+	return line + "\n"
 }
 
 // IsBoundary reports whether the edge targets an external sink rather than a
