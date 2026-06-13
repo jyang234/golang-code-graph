@@ -5,30 +5,34 @@ lifts, `fromCallers`-gated per D-CX9), CX-3 (derived effect sites with
 `via` provenance), CX-1 (the must-release handoff credit), and CX-4 (the
 sensitive-flow rule pack in usage.md, with its locking test) shipped. Only
 CX-5 remains, parked on the adopter gate (E-CX5) and the field measurement
-run (E-CX6). The §10
-adversarial review ran before CX-2 merged and found four issues — F1 (a
-conditionally-releasing deferred closure earned ALWAYS through
+run (E-CX6).
+
+The §10 adversarial review ran before CX-2 merged and found four issues — F1
+(a conditionally-releasing deferred closure earned ALWAYS through
 `deferReleases`' any-instruction scan), F2 (entry domination ignored
 unresolved invoke dispatch), F3 (the entry NEVER pole was not a proof; ED is
 now two-valued and per-edge dominance became a coverage walk), F4 (the
 `Unit.Callees` contract permitted unsound pre-filtering) — all fixed with
-locked reproductions, mirroring the v1 obligations review. CX-4 and CX-5 remain, in the D-CX8 order. A post-batch /code-review pass
-found one confirmed regression — CX-3's derived sites removed their carrier
-calls from OrderFacts' fault-site list, silently deleting loansvc's two
-pre-existing facts, and the wholesale golden regen ratified the loss — fixed
-(direct-site-only exclusion + self-pair skip) and locked with a semantic
-fact assertion that regen cannot launder (TestEffectOrderKeepsCarrierFaultSites).
-The review's efficiency findings are recorded follow-ons, deliberately
-deferred to the E-CX6 wall-clock measurement: per-label cone rescans in
-never(), the eager whole-program condensation on first rule (lazy/scoped
-condensation is the prepared fix), merging the three full-universe sweeps
-(computeSCC / entries / addressTaken), a typed summary key replacing the
-"\x00effect:" namespace packing, an engine-owned program-adapter constructor
-enforcing the F4 preconditions, and unifying the three CFG coverage walks. CX-1's walk splits in two — a leak
-hunt (an unknown handoff blocks the witness) and a proof hunt (an unknown
-handoff is transparent, so a later unconditional release still proves) — so
-the VIOLATED witness is never weaker than the intraprocedural one and an
-early maybe-release cannot force a false abstention. Companion to
+locked reproductions, mirroring the v1 obligations review. CX-1's walk
+splits in two — a leak hunt (an unknown handoff blocks the witness) and a
+proof hunt (an unknown handoff is transparent, so a later unconditional
+release still proves) — so the VIOLATED witness is never weaker than the
+intraprocedural one and an early maybe-release cannot force a false
+abstention.
+
+A post-batch /code-review pass found one confirmed regression — CX-3's
+derived sites removed their carrier calls from OrderFacts' fault-site list,
+silently deleting loansvc's two pre-existing facts, and the wholesale golden
+regen ratified the loss — fixed (direct-site-only exclusion + self-pair
+skip) and locked with a semantic fact assertion regen cannot launder
+(TestEffectOrderKeepsCarrierFaultSites). The review's efficiency findings
+are recorded follow-ons, deliberately deferred to the E-CX6 wall-clock
+measurement: per-label cone rescans in never(), the eager whole-program
+condensation on first rule (lazy/scoped condensation is the prepared fix),
+merging the three full-universe sweeps (computeSCC / entries /
+addressTaken), a typed summary key replacing the "\x00effect:" namespace
+packing, an engine-owned program-adapter constructor enforcing the F4
+preconditions, and unifying the three CFG coverage walks. Companion to
 [`path-obligations-plan.md`](path-obligations-plan.md) (whose §4/§10
 "no interprocedural" limit D-CX2 supersedes, for *proven* summaries only) and
 [`guardrail-extensions-plan.md`](guardrail-extensions-plan.md) (whose §1
