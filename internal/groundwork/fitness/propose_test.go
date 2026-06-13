@@ -144,6 +144,283 @@ func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
 	}
 }
 
+// R6: the R5 db-call disclosure reached proposeReadOnly/proposeBudget/
+// proposeWaypoint but not proposeConcurrent. On a substrate where a concurrent
+// (goroutine/defer-spawned) path reaches only an opaque "db call" write, bare
+// IsWrite is blind to it, so init used to (a) print "No concurrent path reaches
+// a DB write today" — false — and (b) ratchet `no-concurrent-db-writes` over
+// the CLASSIFIED targets, a rule that guards nothing and fires the day the SQL
+// becomes constant. The fixture extends the R5 storage service with one
+// goroutine path performing the opaque write.
+func TestProposeConcurrentExcludesAndDisclosesDBCallWrites(t *testing.T) {
+	const (
+		writeRoute = "(*example.com/svc/internal/inbound.Handler).Handle"
+		spawned    = "(*example.com/svc/internal/worker.Worker).Persist"
+		writeStore = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: writeRoute, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: writeStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// The route spawns a goroutine that performs the write concurrently.
+			{From: writeRoute, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: writeStore, Tier: 2},
+			// The whole write path is an opaque db call — IsWrite reads nothing.
+			{From: writeStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+
+	// The vacuous-but-tripwiring rule must NOT be ratcheted over the opaque write.
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a concurrent opaque write is unproven; want no no_concurrent_reach rule, got %+v", p.NoConcurrentReach)
+	}
+	// The false affirmative must be gone, replaced by the unproven disclosure.
+	if strings.Contains(guide, "No concurrent path reaches a DB write today") {
+		t.Errorf("guide falsely claims no concurrent DB write on a db-call substrate")
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if sec == "" {
+		t.Fatalf("expected the concurrency not-proposed disclosure; guide:\n%s", guide)
+	}
+	for _, want := range []string{"UNPROVEN", "db call", "concurrent"} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("concurrency disclosure missing %q; section:\n%s", want, sec)
+		}
+	}
+
+	// Still a clean ratchet of its own graph (the rule was withdrawn, not violated).
+	res := Check(p, graph.NewIndex(g))
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed rule violates its own source graph: %v", f)
+		}
+	}
+}
+
+// The control: when the concurrent write is CLASSIFIED (literal SQL → db
+// INSERT), proposeConcurrent sees it and reports the existing concurrent write
+// — it must not be diverted into the unproven-disclosure path.
+func TestProposeConcurrentClassifiedWriteStillDetected(t *testing.T) {
+	const (
+		route   = "(*example.com/svc/internal/inbound.Handler).Handle"
+		spawned = "(*example.com/svc/internal/worker.Worker).Persist"
+		store   = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: store, Tier: 2},
+			{From: store, To: "boundary:db INSERT messages", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a classified concurrent write exists; want no rule, got %+v", p.NoConcurrentReach)
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if !strings.Contains(sec, "already reaches a DB write") {
+		t.Errorf("classified concurrent write must report the existing write, not the unproven disclosure; section:\n%s", sec)
+	}
+	if strings.Contains(sec, "UNPROVEN") {
+		t.Errorf("a classified write is proven, not unproven; section:\n%s", sec)
+	}
+}
+
+// R6, direct-edge branch: a DIRECTLY concurrent opaque boundary edge
+// (`go store.ExecRaw()` whose non-constant SQL labels boundary:db call). Its
+// From is never added as a concurrent seed, so only the direct-edge scan can
+// see it — distinct from the cone path the other R6 test exercises. Must be
+// disclosed, not asserted away.
+func TestProposeConcurrentDirectOpaqueBoundaryDisclosed(t *testing.T) {
+	const route = "(*example.com/svc/internal/handler.Server).Fire"
+	g := &graph.Graph{
+		Nodes: []graph.Node{{FQN: route, Sig: "func()", Tier: 1}},
+		Edges: []graph.Edge{
+			{From: route, To: "boundary:db call", Tier: 1, Boundary: "outbound-async", Concurrent: true},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a directly concurrent opaque write is unproven; want no rule, got %+v", p.NoConcurrentReach)
+	}
+	if strings.Contains(guide, "No concurrent path reaches a DB write today") {
+		t.Errorf("guide falsely claims no concurrent DB write on a directly concurrent db-call edge")
+	}
+	if sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed"); !strings.Contains(sec, "UNPROVEN") {
+		t.Errorf("direct concurrent opaque write must be disclosed; section:\n%s", sec)
+	}
+}
+
+// R6, false-positive guard: a concurrent path reaching only db CONTROL ops
+// (PingContext/BeginTx — provably non-mutating, UnclassifiedDBLabel returns
+// false) must still propose the rule clean, NOT divert into the unproven
+// disclosure. The opacity escape hatch must not swallow analyzable non-writes.
+func TestProposeConcurrentControlOpsStillProposed(t *testing.T) {
+	const (
+		route   = "(*example.com/svc/internal/handler.Server).Do"
+		spawned = "(*example.com/svc/internal/worker.Worker).Run"
+	)
+	for _, op := range []string{"PingContext", "BeginTx"} {
+		g := &graph.Graph{
+			Nodes: []graph.Node{
+				{FQN: route, Sig: "func()", Tier: 1},
+				{FQN: spawned, Sig: "func()", Tier: 1},
+			},
+			Edges: []graph.Edge{
+				{From: route, To: spawned, Tier: 2, Concurrent: true},
+				{From: spawned, To: "boundary:db " + op, Tier: 1, Boundary: "outbound-sync"},
+			},
+		}
+		p, guide := Propose(graph.NewIndex(g), "svc")
+		if p.NoConcurrentReach == nil {
+			t.Errorf("%s is non-mutating; the rule must still be proposed", op)
+		}
+		if !strings.Contains(guide, "No concurrent path reaches a DB write today") {
+			t.Errorf("%s: expected the clean proposed claim", op)
+		}
+		// worker.Run IS a concurrent first-party seed, so the note must NOT be the
+		// vacuous variant — guards against a seed-miscount silently flipping it.
+		if strings.Contains(guide, "Currently vacuous") {
+			t.Errorf("%s: a concurrent seed exists; the proposed note must not be vacuous", op)
+		}
+	}
+}
+
+// R6 coverage: a concurrent path reaching only a classified READ (db SELECT) is
+// provable — IsWrite=false and UnclassifiedDBLabel=false (SELECT is an excluded
+// verb) — so the rule must be proposed clean, NOT diverted into the UNPROVEN
+// disclosure. A regression dropping SELECT from the exclusion would surface here.
+func TestProposeConcurrentSelectStillProposed(t *testing.T) {
+	const (
+		route   = "(*example.com/svc/internal/handler.Server).Do"
+		spawned = "(*example.com/svc/internal/worker.Worker).Run"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: "boundary:db SELECT users", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach == nil {
+		t.Errorf("a concurrent classified read must propose the rule clean; got nil")
+	}
+	if !strings.Contains(guide, "No concurrent path reaches a DB write today") {
+		t.Errorf("expected the clean proposed claim for a concurrent SELECT")
+	}
+	if strings.Contains(guideSection(guide, "Concurrency (no_concurrent_reach)"), "UNPROVEN") {
+		t.Errorf("a concurrent SELECT is provable, not UNPROVEN")
+	}
+}
+
+// R6 coverage (direct-edge classified branch): a concurrent boundary edge that
+// IS a classified write (`go store.Insert()`). Its From is never a seed, so only
+// the first loop catches it, with a message ("A concurrent DB write already
+// exists") distinct from the cone path — previously exercised by no test.
+func TestProposeConcurrentDirectClassifiedWriteDetected(t *testing.T) {
+	const route = "(*example.com/svc/internal/handler.Server).Fire"
+	g := &graph.Graph{
+		Nodes: []graph.Node{{FQN: route, Sig: "func()", Tier: 1}},
+		Edges: []graph.Edge{
+			{From: route, To: "boundary:db INSERT messages", Tier: 1, Boundary: "outbound-async", Concurrent: true},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a directly concurrent classified write exists; want no rule, got %+v", p.NoConcurrentReach)
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if !strings.Contains(sec, "A concurrent DB write already exists") {
+		t.Errorf("direct classified concurrent write must report the existing-write message; section:\n%s", sec)
+	}
+	if strings.Contains(sec, "UNPROVEN") {
+		t.Errorf("a classified write is proven, not unproven; section:\n%s", sec)
+	}
+}
+
+// R6 coverage (mixed cone precedence): a concurrent cone reaching BOTH a
+// classified write and an opaque label — the classified write must win (rule
+// withheld via the existing-write message), regardless of effect iteration
+// order. Pins the precedence the early-return at the write check provides, so a
+// refactor that collected opaque labels ahead of that return cannot regress
+// into surfacing UNPROVEN on a substrate that has a provable concurrent write.
+func TestProposeConcurrentMixedConeClassifiedWins(t *testing.T) {
+	const (
+		route   = "(*example.com/svc/internal/handler.Server).Do"
+		spawned = "(*example.com/svc/internal/worker.Worker).Run"
+		store   = "(*example.com/svc/internal/storage.Store).Save"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: store, Tier: 2},
+			{From: store, To: "boundary:db INSERT things", Tier: 1, Boundary: "outbound-sync"},
+			{From: store, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a classified concurrent write exists; want no rule, got %+v", p.NoConcurrentReach)
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if !strings.Contains(sec, "already reaches a DB write") || strings.Contains(sec, "UNPROVEN") {
+		t.Errorf("classified write must win over opaque on a mixed cone; section:\n%s", sec)
+	}
+}
+
+// R6 follow-up (closing union): a goroutine spawned off a NON-route path (here,
+// in main, which routeUnclassifiedDB skips) that performs an opaque write is
+// flagged by the concurrency section but invisible to a route-scoped walk. The
+// closing "Opaque DB writes" summary must union the concurrent cone so it does
+// not under-report relative to the concurrency disclosure.
+func TestProposeClosingUnionsConcurrentOpaqueWrites(t *testing.T) {
+	const (
+		mainFn = "example.com/svc/cmd/svc.main"
+		reaper = "(*example.com/svc/internal/worker.Reaper).Run"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: mainFn, Sig: "func()", Tier: 1},
+			{FQN: reaper, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// main spawns a background goroutine that does an opaque write.
+			{From: mainFn, To: reaper, Tier: 2, Concurrent: true},
+			{From: reaper, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	_, guide := Propose(graph.NewIndex(g), "svc")
+
+	// The concurrency section discloses the main-spawned opaque write...
+	if csec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed"); !strings.Contains(csec, "UNPROVEN") {
+		t.Errorf("concurrency section must disclose the main-spawned opaque write; section:\n%s", csec)
+	}
+	// ...and the closing summary must NOT omit it (the union fix). Pre-fix the
+	// route-scoped walk skips main, so this label never reached the closing bullet.
+	closing := guideSection(guide, "What init CANNOT derive")
+	if !strings.Contains(closing, "Opaque DB writes") || !strings.Contains(closing, "db call") {
+		t.Errorf("closing 'Opaque DB writes' must include the concurrent-cone opaque label; section:\n%s", closing)
+	}
+}
+
 // guideSection returns the body of the first "## ..." section whose header
 // contains titleSubstr, up to the next section header (or end of guide).
 func guideSection(guide, titleSubstr string) string {
