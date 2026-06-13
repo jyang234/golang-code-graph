@@ -350,16 +350,34 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 
 // proposeConcurrent ratchets the current truth about concurrency: if no
 // concurrent path reaches a DB write today, lock that in.
+//
+// "No concurrent path reaches a DB write" is a PROVABLE claim only when the
+// classifier can read every DB verb the concurrent cone reaches. A concurrent
+// path whose DB effect is unclassified ("db call" and friends — non-constant
+// SQL IsWrite cannot read) MIGHT be an unsupervised write: its absence is not
+// proven, so asserting "no concurrent DB write" would be silent-green, and
+// ratcheting `no-concurrent-db-writes` over the CLASSIFIED targets would build
+// an anti-protective rule — the opaque write never reaches those targets, so
+// the rule guards nothing and instead fires the day someone makes the SQL
+// constant (a strict analyzability improvement → a new baseline violation).
+// Such a substrate is left UNRATCHETED and DISCLOSED, mirroring the
+// proposeReadOnly/proposeBudget treatment of the same db-call frontier (R6).
 func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 	seeds := map[string]bool{}
+	unclass := map[string]bool{}
 	for _, e := range ix.Edges() {
 		if e.Concurrent && !e.IsBoundary() && ix.Has(e.To) {
 			seeds[e.To] = true
 		}
-		if e.Concurrent && e.IsBoundary() && strings.HasPrefix(e.To, "boundary:db ") && IsWrite(e) {
-			g.section("Concurrency (no_concurrent_reach): not proposed",
-				"A concurrent DB write already exists — the rule would fire today. Decide whether that write is intended; if not, fix it and re-run init.")
-			return
+		if e.Concurrent && e.IsBoundary() && strings.HasPrefix(e.To, "boundary:db ") {
+			if IsWrite(e) {
+				g.section("Concurrency (no_concurrent_reach): not proposed",
+					"A concurrent DB write already exists — the rule would fire today. Decide whether that write is intended; if not, fix it and re-run init.")
+				return
+			}
+			if label, ok := UnclassifiedDBLabel(e); ok {
+				unclass[label] = true
+			}
 		}
 	}
 	cone := setutil.SortedKeys(seeds)
@@ -370,6 +388,20 @@ func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 				"A goroutine/defer-spawned path already reaches a DB write. Decide whether it is intended; if not, fix it and re-run init.")
 			return
 		}
+		if label, ok := UnclassifiedDBLabel(e); ok {
+			unclass[label] = true
+		}
+	}
+	// A concurrent path reaches an opaque DB label but no classified write: "no
+	// concurrent DB write" is UNPROVEN here. Don't assert it, and don't ratchet a
+	// rule that guards nothing today and fires the day the SQL becomes constant —
+	// disclose instead, in the same voice as the read-only/io_budget cautions (R6).
+	if len(unclass) > 0 {
+		labels := setutil.SortedKeys(unclass)
+		g.section("Concurrency (no_concurrent_reach): not proposed",
+			fmt.Sprintf("A concurrent (goroutine/defer-spawned) path reaches %d DB effect label(s) built from non-constant SQL the labeler cannot read as a write (%s) — it MIGHT be an unsupervised concurrent write. \"No concurrent path reaches a DB write\" is therefore UNPROVEN on this substrate, so no `no-concurrent-db-writes` rule was ratcheted: it would assert a claim the graph cannot support and would fire the day the SQL is made constant (a strict analyzability improvement). Make the SQL constant to expose the verb, or confirm by hand that no goroutine/defer path mutates.",
+				len(labels), strings.Join(labels, ", ")))
+		return
 	}
 	p.NoConcurrentReach = []policy.ConcurrentRule{{
 		Name: "no-concurrent-db-writes",

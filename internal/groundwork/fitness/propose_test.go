@@ -144,6 +144,97 @@ func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
 	}
 }
 
+// R6: the R5 db-call disclosure reached proposeReadOnly/proposeBudget/
+// proposeWaypoint but not proposeConcurrent. On a substrate where a concurrent
+// (goroutine/defer-spawned) path reaches only an opaque "db call" write, bare
+// IsWrite is blind to it, so init used to (a) print "No concurrent path reaches
+// a DB write today" — false — and (b) ratchet `no-concurrent-db-writes` over
+// the CLASSIFIED targets, a rule that guards nothing and fires the day the SQL
+// becomes constant. The fixture extends the R5 storage service with one
+// goroutine path performing the opaque write.
+func TestProposeConcurrentExcludesAndDisclosesDBCallWrites(t *testing.T) {
+	const (
+		writeRoute = "(*example.com/svc/internal/inbound.Handler).Handle"
+		spawned    = "(*example.com/svc/internal/worker.Worker).Persist"
+		writeStore = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: writeRoute, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: writeStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// The route spawns a goroutine that performs the write concurrently.
+			{From: writeRoute, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: writeStore, Tier: 2},
+			// The whole write path is an opaque db call — IsWrite reads nothing.
+			{From: writeStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+
+	// The vacuous-but-tripwiring rule must NOT be ratcheted over the opaque write.
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a concurrent opaque write is unproven; want no no_concurrent_reach rule, got %+v", p.NoConcurrentReach)
+	}
+	// The false affirmative must be gone, replaced by the unproven disclosure.
+	if strings.Contains(guide, "No concurrent path reaches a DB write today") {
+		t.Errorf("guide falsely claims no concurrent DB write on a db-call substrate")
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if sec == "" {
+		t.Fatalf("expected the concurrency not-proposed disclosure; guide:\n%s", guide)
+	}
+	for _, want := range []string{"UNPROVEN", "db call", "concurrent"} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("concurrency disclosure missing %q; section:\n%s", want, sec)
+		}
+	}
+
+	// Still a clean ratchet of its own graph (the rule was withdrawn, not violated).
+	res := Check(p, graph.NewIndex(g))
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed rule violates its own source graph: %v", f)
+		}
+	}
+}
+
+// The control: when the concurrent write is CLASSIFIED (literal SQL → db
+// INSERT), proposeConcurrent sees it and reports the existing concurrent write
+// — it must not be diverted into the unproven-disclosure path.
+func TestProposeConcurrentClassifiedWriteStillDetected(t *testing.T) {
+	const (
+		route   = "(*example.com/svc/internal/inbound.Handler).Handle"
+		spawned = "(*example.com/svc/internal/worker.Worker).Persist"
+		store   = "(*example.com/svc/internal/storage.PostgresStore).CreateMessage"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: store, Tier: 2},
+			{From: store, To: "boundary:db INSERT messages", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p, guide := Propose(graph.NewIndex(g), "svc")
+	if p.NoConcurrentReach != nil {
+		t.Errorf("a classified concurrent write exists; want no rule, got %+v", p.NoConcurrentReach)
+	}
+	sec := guideSection(guide, "Concurrency (no_concurrent_reach): not proposed")
+	if !strings.Contains(sec, "already reaches a DB write") {
+		t.Errorf("classified concurrent write must report the existing write, not the unproven disclosure; section:\n%s", sec)
+	}
+	if strings.Contains(sec, "UNPROVEN") {
+		t.Errorf("a classified write is proven, not unproven; section:\n%s", sec)
+	}
+}
+
 // guideSection returns the body of the first "## ..." section whose header
 // contains titleSubstr, up to the next section header (or end of guide).
 func guideSection(guide, titleSubstr string) string {
