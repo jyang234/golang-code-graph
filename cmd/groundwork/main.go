@@ -392,8 +392,12 @@ func cmdChains(args []string) error {
 			return err
 		}
 		for name, b := range pol.Brokers {
-			if _, dup := brokers[name]; dup {
-				return fmt.Errorf("broker %q declared by more than one --policy; the bus guarantee must have a single source", name)
+			// A broker named by two policies is only a problem if they DISAGREE:
+			// the bus is one thing, so two different guarantees for it have no
+			// single source. An identical re-declaration is harmless (mirrors the
+			// mcp chains lens, which conflicts only on differing values).
+			if existing, dup := brokers[name]; dup && existing != b {
+				return fmt.Errorf("broker %q declared differently by more than one --policy; the bus guarantee must have a single source", name)
 			}
 			brokers[name] = b
 		}

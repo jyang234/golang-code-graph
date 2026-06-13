@@ -125,6 +125,36 @@ func TestBuildOpenChains(t *testing.T) {
 	}
 }
 
+func TestBuildBrokerSelection(t *testing.T) {
+	g := []Service{{Name: "orders", Index: graph.NewIndex(producerGraph())}}
+
+	// A single non-"bus" broker is still printed (the sole guarantee).
+	r := Build(g, map[string]policy.Broker{"kafka": {Delivery: "at-least-once"}})
+	if l := r.Cards[0].Broker; l.Undeclared || l.Name != "kafka" {
+		t.Errorf("a lone broker should be selected by name: %+v", l)
+	}
+
+	// Several brokers and none named "bus": decline, but disclose the names
+	// rather than read as if nothing were configured.
+	r = Build(g, map[string]policy.Broker{
+		"kafka": {Delivery: "at-least-once"},
+		"sqs":   {Delivery: "at-most-once"},
+	})
+	l := r.Cards[0].Broker
+	if !l.Undeclared {
+		t.Fatalf("ambiguous broker set should not be silently selected: %+v", l)
+	}
+	out := r.Cards[0].Render()
+	for _, want := range []string{"kafka", "sqs", `none named "bus"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unselected brokers must be disclosed (%q):\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "undeclared:") {
+		t.Errorf("declared-but-unselected must not read as undeclared:\n%s", out)
+	}
+}
+
 func TestBuildNoEvents(t *testing.T) {
 	r := Build([]Service{{Name: "empty", Index: graph.NewIndex(&graph.Graph{Nodes: []graph.Node{}})}}, nil)
 	if len(r.Cards) != 0 {

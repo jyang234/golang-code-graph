@@ -55,7 +55,8 @@ type BrokerLink struct {
 	Name       string
 	Decl       policy.Broker
 	Signed     bool
-	Undeclared bool // no broker block was supplied at all
+	Undeclared bool     // no printable "bus" guarantee was selected
+	Unselected []string // brokers that were declared but not named "bus" (so not printed)
 }
 
 // Card is one event's cross-service chain.
@@ -139,12 +140,12 @@ func Build(fleet []Service, brokers map[string]policy.Broker) *Report {
 	for _, ev := range setutil.SortedKeys(events) {
 		card := Card{Event: ev, Broker: link}
 		if s := pub[ev]; s != nil {
-			for _, name := range setutil.SortedKeys(toSet(s.services)) {
+			for _, name := range setutil.SortedKeys(s.services) {
 				card.Producers = append(card.Producers, producerEnd(name, ev, byName[name], s.services[name]))
 			}
 		}
 		if s := con[ev]; s != nil {
-			for _, name := range setutil.SortedKeys(toSet(s.services)) {
+			for _, name := range setutil.SortedKeys(s.services) {
 				card.Consumers = append(card.Consumers, consumerEnd(name, ev, byName[name], s.services[name]))
 			}
 		}
@@ -160,7 +161,9 @@ func Build(fleet []Service, brokers map[string]policy.Broker) *Report {
 }
 
 // selectBroker picks the one bus guarantee to print: prefer the key "bus", else
-// the sole entry; with several and no "bus" it declines rather than guess.
+// the sole entry; with several and no "bus" it declines rather than guess —
+// disclosing the declared-but-unselected names rather than reading as if no
+// broker were configured at all.
 func selectBroker(brokers map[string]policy.Broker) BrokerLink {
 	if len(brokers) == 0 {
 		return BrokerLink{Undeclared: true}
@@ -173,7 +176,7 @@ func selectBroker(brokers map[string]policy.Broker) BrokerLink {
 			return BrokerLink{Name: name, Decl: b, Signed: b.Signed()}
 		}
 	}
-	return BrokerLink{Undeclared: true}
+	return BrokerLink{Undeclared: true, Unselected: setutil.SortedKeys(brokers)}
 }
 
 // producerEnd gathers the proven producer-side facts for an event: the publish's
@@ -217,6 +220,8 @@ func producerEnd(service, event string, ix *graph.Index, fns []string) End {
 // over the handler and its cone.
 func consumerEnd(service, event string, ix *graph.Index, fns []string) End {
 	e := End{Service: service, Fns: dedupe(fns)}
+	// cone is the handler(s) plus everything reachable from them — seeded with
+	// the handlers themselves, so iterating it covers both without re-visiting.
 	cone := setutil.StringSet(e.Fns)
 	for _, fn := range e.Fns {
 		for _, r := range ix.Reachable(fn) {
@@ -224,7 +229,7 @@ func consumerEnd(service, event string, ix *graph.Index, fns []string) End {
 		}
 	}
 	seen := map[string]bool{}
-	for _, fn := range append(append([]string{}, e.Fns...), setutil.SortedKeys(cone)...) {
+	for _, fn := range setutil.SortedKeys(cone) {
 		for _, eff := range ix.Effects(fn) {
 			// Downstream-committed effects only: skip the inbound consume itself
 			// (it is the chain's join, not something the handler commits) and any
@@ -264,14 +269,6 @@ func short(fqn string) string {
 		s = s[i+1:]
 	}
 	return strings.ReplaceAll(s, ")", "")
-}
-
-func toSet(m map[string][]string) map[string]bool {
-	s := make(map[string]bool, len(m))
-	for k := range m {
-		s[k] = true
-	}
-	return s
 }
 
 func dedupe(in []string) []string {

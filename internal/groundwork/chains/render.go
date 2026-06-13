@@ -65,6 +65,12 @@ func (c Card) Render() string {
 // is not assumed — an unsigned block is flagged, never passed off as warranted.
 func (l BrokerLink) render() string {
 	if l.Undeclared {
+		if len(l.Unselected) > 0 {
+			// Brokers were declared, but none is named "bus": disclose which, so
+			// this does not read as "no broker configured" when one nearly was.
+			return fmt.Sprintf("  [%s] broker — %d declared (%s) but none named \"bus\": name one \"bus\" to print it as this link\n",
+				Assumed, len(l.Unselected), strings.Join(l.Unselected, ", "))
+		}
 		return fmt.Sprintf("  [%s] broker — undeclared: this cross-service link is unprovable by static analysis; declare a `brokers` block in policy to print it\n", Assumed)
 	}
 	warrant := "⚠️  UNSIGNED (values declared, pending human sign-off)"
