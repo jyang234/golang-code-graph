@@ -1,4 +1,8 @@
 {
+  "algo": "rta",
+  "caveats": [
+    "rta from 3 discovered root(s)"
+  ],
   "nodes": [
     {
       "fqn": "(*example.com/blindsvc/internal/bus.Bus).Publish",

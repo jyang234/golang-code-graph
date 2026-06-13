@@ -101,6 +101,41 @@ groundwork consumes three things:
 | `boundary-contract.json` | `flowmap boundary` | the inter-service surface, for `diff` |
 | `policy.json` | a human (CODEOWNERS-gated) | the declared architecture to enforce |
 
+### The call-graph substrate (`--algo`) and the proof stance
+
+`flowmap graph` builds the call graph with one of three algorithms, chosen with
+`--algo`:
+
+| `--algo` | What it is | When |
+|---|---|---|
+| `rta` (default) | Rapid Type Analysis from the discovered roots | the sweet spot for services — precise enough, cheap in CI |
+| `vta` | Variable Type Analysis, **RTA-seeded** | refines interface-dense dispatch by type-flow — far fewer spurious callers/callees |
+| `cha` | Class Hierarchy Analysis, rootless | fallback for a library with no resolvable entry points |
+
+**All three are sound over-approximations** — modulo the same reflection/unsafe
+frontier, which is already disclosed in the `blind_spots` manifest, not silently
+dropped. VTA is seeded from RTA and *refines* dynamic-dispatch edges by type
+flow; it does not drop real edges. So a `must_not_reach` `PROVEN-ABSENT` (or a
+`must_pass_through` `SATISFIED`) is **valid on any of the three** — VTA is a
+*blessed* proof substrate, not exploration-only, and it is strictly tighter than
+RTA (it removes the spurious `HighFanOut` paths that inflate RTA's reach,
+yielding fewer spurious `REACHABLE` violations and fewer cautions). RTA stays the
+default for cost; reach for `--algo vta` when interface-DI dispatch makes RTA's
+fan-out noisy, including for absence proofs.
+
+The one caveat to keep stating is unchanged by algorithm: soundness is **modulo
+reflection/unsafe** for all three. Adopting VTA does not widen that hole; it only
+changes precision.
+
+**Provenance.** The graph records which algorithm built it (`algo`) and its notes
+(`caveats`), and `fitness`, `review`, and `verify` echo them on a `substrate:`
+line — so a gated verdict self-certifies the substrate it was computed on
+("`substrate: vta — vta refined over rta from N discovered root(s)`") rather than
+leaving a reviewer to guess. When a `review`/`verify` base and branch were built
+on *different* algorithms, the mismatch is disclosed as a caveat (a delta across
+substrates can move for the analyzer's reasons, not the code's). A graph from a
+pre-provenance flowmap reads `substrate: unrecorded`.
+
 ---
 
 ## The policy
@@ -357,8 +392,13 @@ graph abstaining where it cannot prove a negative.
 
 ```console
 $ groundwork fitness policy.json graph.json
+substrate: rta — rta from 3 discovered root(s)
 fitness OK — 3 invariant(s) hold, 0 caution(s)
 ```
+
+The `substrate:` line is provenance: a green pass is only as strong as the
+call-graph algorithm it was computed on, so the verdict states which one ran (see
+[the call-graph substrate](#the-call-graph-substrate---algo-and-the-proof-stance)).
 
 `must_not_reach` is three-valued: `PROVEN-ABSENT` (silent pass), `NO-PATH-FOUND`
 (a caution naming where the graph went blind, e.g. `reflect at encode.Marshal`),
@@ -374,7 +414,8 @@ three-valued, so green never means more than it should:
 ```console
 $ groundwork review policy.json base.json branch.json
 # MR structural review — BLOCK
-digest ee405bceee1a1949… · recompute to verify (deterministic; not author-editable)
+digest 4678af36712e5cf4… · recompute to verify (deterministic; not author-editable)
+substrate: rta — rta from 3 discovered root(s)
 
 Shape: cross-package
 Touches: handler(+1)
@@ -414,6 +455,21 @@ Two sections attribute write-surface movement beyond the global effect diff:
   the whole graph and not allow-listed. Reported always; blocking under
   `effect_ratchet.gate: true`.
 
+Two caution sections keep a green verdict from over-claiming — both non-blocking,
+surfaced at the gate, exit 0:
+
+- **`new_cautions`** — a "the graph cannot prove this" disclosure *introduced by
+  this MR* (e.g. a new route whose write budget the labeler can't read).
+- **`standing_cautions`** — the same kind of disclosure that holds **identically
+  on base and branch**, which the base→branch delta would otherwise suppress
+  forever. The load-bearing case is an `io_budget` that is *unenforceable in
+  steady state*: when storage builds SQL from non-constant strings (labeled `db
+  call`), a within-budget pass is not a proof the write surface is bounded, and
+  that caution stands unchanged across the edit. It is surfaced absolutely — like
+  the `rule_liveness` audit — so the gate the agent actually converges against is
+  never silent about a standing enforceability gap, not only the interactive
+  `fitness` lens.
+
 ### `verify` — the fail-closed pre-flight gate
 
 The gate form of `review`. It blocks a merge on a new violation, on a **breaking
@@ -424,7 +480,8 @@ contract change**, or on **scope creep** — a touched package outside the decla
 $ groundwork verify policy.json base.json branch.json \
       --scope example.com/layeredsvc/internal/handler
 # Pre-flight gate — BLOCK
-digest b0e5045282859c4b… · recompute to verify (deterministic; not author-editable)
+digest 09af7826d3687a66… · recompute to verify (deterministic; not author-editable)
+substrate: rta — rta from 3 discovered root(s)
 
 🚧 1 package(s) outside the declared scope
 - example.com/layeredsvc/internal/app

@@ -463,6 +463,10 @@ func cmdFitness(args []string) error {
 		}
 		return nil
 	}
+	// Provenance first: a green fitness pass is only as strong as the substrate it
+	// was computed on, so the verdict states which call-graph algorithm produced
+	// the graph it judged (R3).
+	fmt.Print(graph.ProvenanceLine(g.Algo, g.Caveats))
 	violations, cautions := res.Violations(), res.Cautions()
 	for _, f := range violations {
 		printFinding("⛔", f)

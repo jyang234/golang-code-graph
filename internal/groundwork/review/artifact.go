@@ -63,13 +63,29 @@ type Artifact struct {
 	Effects       []EffectChange   `json:"io_effects,omitempty"`
 	// RouteIO attributes write-surface movement to routes; NewWriteTargets is
 	// the effect ratchet's drift (write labels new to the whole graph).
-	RouteIO         []RouteIODelta   `json:"route_io_deltas,omitempty"`
-	NewWriteTargets []string         `json:"new_write_targets,omitempty"`
-	Reach           []string         `json:"reachable_from,omitempty"`
-	NewCautions     []Violation      `json:"new_cautions,omitempty"`
-	NewBlindSpots   []BlindSpotDelta `json:"new_blind_spots,omitempty"`
-	DBLabelDrift    *DBLabelDrift    `json:"db_label_drift,omitempty"`
-	Digest          string           `json:"digest"`
+	RouteIO         []RouteIODelta `json:"route_io_deltas,omitempty"`
+	NewWriteTargets []string       `json:"new_write_targets,omitempty"`
+	Reach           []string       `json:"reachable_from,omitempty"`
+	NewCautions     []Violation    `json:"new_cautions,omitempty"`
+	// StandingCautions are the branch's cautions that hold identically on base
+	// and branch — the steady-state "the graph cannot prove this" disclosures the
+	// base→branch delta suppresses (R1). The load-bearing case is an io_budget
+	// that is unenforceable on both sides (storage is "db call"): NewCautions
+	// never lists it, so without this absolute section a green gate hides it. It
+	// is non-blocking, exactly like NewCautions — visibility at the gate, not a
+	// new failure.
+	StandingCautions []Violation      `json:"standing_cautions,omitempty"`
+	NewBlindSpots    []BlindSpotDelta `json:"new_blind_spots,omitempty"`
+	DBLabelDrift     *DBLabelDrift    `json:"db_label_drift,omitempty"`
+	// Algo and Caveats record the call-graph substrate the judged BRANCH graph
+	// was built on (rta|vta|cha) and its soundness/precision notes — baked into
+	// the digest so the artifact SELF-CERTIFIES "this verdict was computed on
+	// vta-refined-over-rta", rather than leaving a reviewer to guess. A
+	// base/branch substrate mismatch is disclosed as a synthesized caveat. Empty
+	// when the graphs predate provenance recording (R3).
+	Algo    string   `json:"algo,omitempty"`
+	Caveats []string `json:"caveats,omitempty"`
+	Digest  string   `json:"digest"`
 }
 
 // DBLabelDrift reports DB write-label fidelity eroding base→branch: the count of
@@ -173,12 +189,22 @@ func LoadArtifact(path string) (Artifact, error) {
 func (a Artifact) Render() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# MR structural review — %s\n", a.Verdict)
-	fmt.Fprintf(&b, "digest %s · recompute to verify (deterministic; not author-editable)\n\n", short(a.Digest))
+	fmt.Fprintf(&b, "digest %s · recompute to verify (deterministic; not author-editable)\n", short(a.Digest))
+	b.WriteString(renderProvenance(a.Algo, a.Caveats))
+	b.WriteString("\n")
 
 	if a.Verdict == NoStructuralSignal {
 		b.WriteString("The call graph is identical base-to-branch: this is a body-only change.\n")
 		b.WriteString("The graph abstains — it has no structural signal here. This is NOT a\n")
 		b.WriteString("logic or test sign-off; it is exactly where logic review matters most.\n")
+		// A standing caution is an absolute fact about the (identical) graph, not
+		// a statement about this change — so it must survive the abstain path. This
+		// is the artifact-level half of R1: a body-only change against an
+		// unenforceable budget still discloses it.
+		if s := renderStandingCautions(a.StandingCautions); s != "" {
+			b.WriteString("\n")
+			b.WriteString(s)
+		}
 		return b.String()
 	}
 
@@ -267,6 +293,11 @@ func (a Artifact) Render() string {
 		b.WriteString("\n")
 	}
 
+	if s := renderStandingCautions(a.StandingCautions); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+
 	if len(a.NewBlindSpots) > 0 {
 		fmt.Fprintf(&b, "🕳️  %d new blind spot(s) — the graph's knowledge of this code shrank\n", len(a.NewBlindSpots))
 		for _, s := range a.NewBlindSpots {
@@ -276,6 +307,23 @@ func (a Artifact) Render() string {
 			}
 			b.WriteString("\n")
 		}
+	}
+	return b.String()
+}
+
+// renderStandingCautions renders the absolute standing-caution section, or ""
+// when there are none. It is the shared form for the review artifact and the
+// pre-flight gate so the two surfaces word the disclosure identically. Standing
+// cautions are non-blocking; the framing says so, so a reviewer never reads this
+// as a failure reason.
+func renderStandingCautions(cs []Violation) string {
+	if len(cs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️  %d standing caution(s) — unchanged by this MR, still unproven (non-blocking)\n", len(cs))
+	for _, c := range cs {
+		fmt.Fprintf(&b, "- %s — %s\n", c.Rule, c.Summary)
 	}
 	return b.String()
 }

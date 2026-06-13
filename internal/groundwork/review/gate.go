@@ -23,7 +23,19 @@ type GateResult struct {
 	BreakingContract []ContractChange `json:"breaking_contract,omitempty"`
 	NewBlindSpots    []BlindSpotDelta `json:"new_blind_spots,omitempty"`
 	NewWriteTargets  []string         `json:"new_write_targets,omitempty"`
-	Digest           string           `json:"digest"`
+	// StandingCautions are the steady-state "the graph cannot prove this"
+	// disclosures that hold identically on base and branch — the io_budget-
+	// unenforceable case being the load-bearing one. They are NON-BLOCKING (they
+	// never set Pass=false); they exist so the gate the agent actually converges
+	// against stops being silent about a standing budget the diff suppresses
+	// (R1). This is the only GateResult field that is not a reason the gate failed.
+	StandingCautions []Violation `json:"standing_cautions,omitempty"`
+	// Algo and Caveats record the call-graph substrate the judged branch graph
+	// was built on — provenance baked into the gate digest so the verdict
+	// self-certifies which algorithm produced it (R3).
+	Algo    string   `json:"algo,omitempty"`
+	Caveats []string `json:"caveats,omitempty"`
+	Digest  string   `json:"digest"`
 }
 
 // Gate runs the pre-flight checks. scope is the set of package-path prefixes the
@@ -33,7 +45,7 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string) GateResul
 	baseIx, branchIx := graph.NewIndex(base), graph.NewIndex(branch)
 	d := diffGraphs(base, branch)
 
-	newViolations, _, _, _ := newFindings(p, baseIx, branchIx)
+	newViolations, _, standingCautions, _, _ := newFindings(p, baseIx, branchIx)
 
 	var breaking []ContractChange
 	for _, c := range contractChanges(d, baseIx, branchIx) {
@@ -46,7 +58,8 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string) GateResul
 
 	// New blind spots gate only when the policy says so (blind_spot_ratchet.gate);
 	// otherwise they are review-artifact information, not a merge blocker — so
-	// everything a GateResult lists is a reason it failed.
+	// every BLOCKING field a GateResult lists is a reason it failed (StandingCautions
+	// is the one disclosure-only exception).
 	var blindSpots []BlindSpotDelta
 	if p.GatesBlindSpots() {
 		blindSpots = newBlindSpots(p, base, branch)
@@ -66,7 +79,12 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string) GateResul
 		BreakingContract: breaking,
 		NewBlindSpots:    blindSpots,
 		NewWriteTargets:  writeTargets,
+		StandingCautions: standingCautions,
+		Algo:             branch.Algo,
+		Caveats:          provenanceCaveats(base, branch),
 	}
+	// StandingCautions are deliberately absent from this conjunction: they
+	// disclose, they do not gate.
 	g.Pass = len(newViolations) == 0 && len(escapes) == 0 && len(breaking) == 0 && len(blindSpots) == 0 && len(writeTargets) == 0
 	g.Digest = gateDigest(g)
 	return g
@@ -112,9 +130,17 @@ func (g GateResult) Render() string {
 	}
 	fmt.Fprintf(&b, "# Pre-flight gate — %s\n", verdict)
 	fmt.Fprintf(&b, "digest %s · recompute to verify (deterministic; not author-editable)\n", short(g.Digest))
+	b.WriteString(renderProvenance(g.Algo, g.Caveats))
 
 	if g.Pass {
 		b.WriteString("\nNo new violations, no scope escapes, no breaking contract changes.\n")
+		// A passing gate still surfaces standing cautions: this is the gate path
+		// R1 found silent — a steady-state unenforceable budget must be visible
+		// where the agent actually converges, not only in the fitness lens.
+		if s := renderStandingCautions(g.StandingCautions); s != "" {
+			b.WriteString("\n")
+			b.WriteString(s)
+		}
 		return b.String()
 	}
 	b.WriteString("\n")
@@ -150,6 +176,9 @@ func (g GateResult) Render() string {
 		for _, t := range g.NewWriteTargets {
 			fmt.Fprintf(&b, "- %s\n", t)
 		}
+	}
+	if s := renderStandingCautions(g.StandingCautions); s != "" {
+		b.WriteString(s)
 	}
 	return b.String()
 }

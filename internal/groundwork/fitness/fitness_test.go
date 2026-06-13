@@ -302,6 +302,74 @@ func TestIOBudgetNoCautionWhenClassified(t *testing.T) {
 	}
 }
 
+// UnclassifiedDBLabel buckets only labels that MIGHT be an unproven write.
+// Driver/transaction control (Ping*, Begin*, Commit, Rollback) and pool/session
+// setters (Set*) reach the DB but cannot mutate a row, so they are excluded;
+// "db call", ExecContext, and Query* stay in (a Postgres INSERT…RETURNING rides
+// QueryContext, so a Query* might mutate). This is the R2 bucket narrowing.
+func TestUnclassifiedDBLabelExcludesNonMutating(t *testing.T) {
+	cases := map[string]bool{
+		"boundary:db call":              true,  // opaque write path — kept
+		"boundary:db ExecContext":       true,  // exec of non-constant SQL — kept
+		"boundary:db QueryContext":      true,  // may be INSERT … RETURNING — kept
+		"boundary:db QueryRowContext":   true,  // may be INSERT … RETURNING — kept
+		"boundary:db PingContext":       false, // readiness probe — excluded
+		"boundary:db BeginTx":           false, // transaction control — excluded
+		"boundary:db Commit":            false, // transaction control — excluded
+		"boundary:db Rollback":          false, // transaction control — excluded
+		"boundary:db SetMaxOpenConns":   false, // pool config — excluded
+		"boundary:db INSERT ledger":     false, // classified write, not unclassified
+		"boundary:db SELECT applicants": false, // classified read, not unclassified
+		"boundary:bus PUBLISH topic":    false, // not a DB effect
+	}
+	for to, want := range cases {
+		if _, got := UnclassifiedDBLabel(graph.Edge{To: to, Boundary: "outbound-sync"}); got != want {
+			t.Errorf("UnclassifiedDBLabel(%q) = %v, want %v", to, got, want)
+		}
+	}
+}
+
+// A service with a genuine opaque "db call" write route plus a health probe
+// (db PingContext) and a read (db QueryRowContext) raises the unenforceable
+// caution for exactly ONE route — the opaque write — not the probe or the read.
+// Pre-R2 the probe and read were bucketed too, over-firing the caution 3×.
+func TestIOBudgetUnenforceableExcludesProbesAndReads(t *testing.T) {
+	const (
+		writeRoute  = "(*example.com/svc/internal/inbound.Handler).Handle"
+		writeStore  = "(*example.com/svc/internal/store.Store).Save"
+		healthRoute = "(*example.com/svc/internal/server.Server).Healthcheck"
+		readRoute   = "(*example.com/svc/internal/store.Store).GetEntity"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: writeRoute, Sig: "func()", Tier: 1},
+			{FQN: writeStore, Sig: "func() error", Tier: 1},
+			{FQN: healthRoute, Sig: "func()", Tier: 1},
+			{FQN: readRoute, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: writeRoute, To: writeStore, Tier: 2},
+			{From: writeStore, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+			{From: healthRoute, To: "boundary:db PingContext", Tier: 1, Boundary: "outbound-sync"},
+			{From: readRoute, To: "boundary:db QueryRowContext", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	p := &policy.Policy{Service: "svc", Version: 1, IOBudget: &policy.IOBudget{MaxWritesPerRoute: 1}}
+	routes := RouteWrites(p, graph.NewIndex(g))
+
+	hasUnclassified := func(route string) bool { return len(routes[route].Unclassified) > 0 }
+	if !hasUnclassified(writeRoute) {
+		t.Errorf("the opaque `db call` write route must remain unenforceable")
+	}
+	if hasUnclassified(healthRoute) {
+		t.Errorf("a db PingContext health probe must not be flagged unenforceable: %v", routes[healthRoute].Unclassified)
+	}
+	// QueryRowContext stays in the bucket on purpose (INSERT … RETURNING rides it).
+	if !hasUnclassified(readRoute) {
+		t.Errorf("a db QueryRowContext route must stay in the bucket (may be INSERT … RETURNING)")
+	}
+}
+
 // The composition root (main) is an entrypoint but not a route; its startup
 // writes must not be charged against the per-route I/O budget.
 func TestIOBudgetExcludesCompositionRoot(t *testing.T) {

@@ -32,8 +32,20 @@ type Graph struct {
 	// CI built from). It is an argument, never derived, so determinism holds:
 	// the graph stays a pure function of its inputs, and goldens are generated
 	// unstamped. groundwork's triage/mcp verify it via --expect.
-	Stamp      string                 `json:"stamp,omitempty"`
-	Entrypoint string                 `json:"entrypoint,omitempty"`
+	Stamp      string `json:"stamp,omitempty"`
+	Entrypoint string `json:"entrypoint,omitempty"`
+
+	// Algo is the call-graph construction algorithm this graph was built on
+	// (rta|vta|cha) and Caveats are its recorded soundness/precision notes. All
+	// three are sound over-approximations modulo the reflection/unsafe frontier
+	// already disclosed as blind spots — VTA is RTA-seeded and refines dynamic
+	// dispatch by type-flow without dropping real edges, so it is a blessed proof
+	// substrate, not exploration-only. These travel in the graph JSON as
+	// PROVENANCE: groundwork's fitness/review/verify echo them so a gated verdict
+	// self-certifies which substrate it was computed on. The callgraph package
+	// computes both; this is where they cross into the emitted interface.
+	Algo       string                 `json:"algo,omitempty"`
+	Caveats    []string               `json:"caveats,omitempty"`
 	Nodes      []Node                 `json:"nodes"`
 	Edges      []Edge                 `json:"edges"`
 	BlindSpots []blindspots.BlindSpot `json:"blind_spots"`
@@ -105,7 +117,12 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 		scope = reachableFirstParty(res, root)
 	}
 
-	g := &Graph{Entrypoint: entry, Nodes: []Node{}, Edges: []Edge{}, BlindSpots: []blindspots.BlindSpot{}}
+	g := &Graph{
+		Entrypoint: entry,
+		Algo:       string(res.Graph.Algo),
+		Caveats:    res.Graph.Caveats,
+		Nodes:      []Node{}, Edges: []Edge{}, BlindSpots: []blindspots.BlindSpot{},
+	}
 	if gs := blindspots.Graph(blindspots.Detect(res, hints)); len(gs) > 0 {
 		g.BlindSpots = gs
 	}

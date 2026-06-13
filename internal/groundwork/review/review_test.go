@@ -2,6 +2,7 @@ package review
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -80,6 +81,72 @@ func TestReviewNoStructuralSignal(t *testing.T) {
 	}
 	if a.Shape != BodyOnly {
 		t.Errorf("shape = %s, want body-only", a.Shape)
+	}
+}
+
+// A standing io_budget caution (unenforceable on both base and branch) is
+// absent from NewCautions — the delta suppresses it — but must still appear in
+// StandingCautions AND survive the NO-STRUCTURAL-SIGNAL abstain render, where a
+// body-only change against an unenforceable budget would otherwise hide it (R1).
+func TestReviewStandingCautionSurvivesAbstain(t *testing.T) {
+	p, g := dbCallPair()
+	a := Review(p, g, g) // identical graphs → NO-STRUCTURAL-SIGNAL
+
+	if a.Verdict != NoStructuralSignal {
+		t.Fatalf("identical graphs should abstain; got %s", a.Verdict)
+	}
+	if len(a.NewCautions) != 0 {
+		t.Fatalf("a standing caution must not be reported as new; got %v", a.NewCautions)
+	}
+	if len(a.StandingCautions) == 0 {
+		t.Fatal("the artifact must carry the standing io_budget caution")
+	}
+	if !strings.Contains(a.Render(), "standing caution") {
+		t.Errorf("the abstain render must still disclose the standing caution; got:\n%s", a.Render())
+	}
+}
+
+// The artifact self-certifies the substrate the judged branch was built on, and
+// a base/branch substrate mismatch is disclosed as a synthesized caveat — a
+// delta computed across substrates can move for the analyzer's reasons, not the
+// code's (R3).
+func TestReviewRecordsSubstrateAndMismatch(t *testing.T) {
+	mk := func(algo string) *graph.Graph {
+		return &graph.Graph{
+			Algo:    algo,
+			Caveats: []string{algo + " note"},
+			Nodes:   []graph.Node{{FQN: "(*svc.S).Do", Sig: "func()", Tier: 1}},
+		}
+	}
+	p := &policy.Policy{Service: "svc", Version: 1}
+
+	// Matched substrate: branch algo recorded, no mismatch caveat.
+	a := Review(p, mk("rta"), mk("rta"))
+	if a.Algo != "rta" {
+		t.Fatalf("artifact must record the branch substrate; got %q", a.Algo)
+	}
+	for _, c := range a.Caveats {
+		if strings.Contains(c, "substrate differs") {
+			t.Errorf("matched substrate must not synthesize a mismatch caveat; got %q", c)
+		}
+	}
+	if !strings.Contains(a.Render(), "substrate: rta") {
+		t.Errorf("render must echo the substrate; got:\n%s", a.Render())
+	}
+
+	// Mismatched substrate: branch algo recorded AND a disclosure caveat.
+	m := Review(p, mk("rta"), mk("vta"))
+	if m.Algo != "vta" {
+		t.Fatalf("artifact must record the BRANCH substrate (vta); got %q", m.Algo)
+	}
+	var disclosed bool
+	for _, c := range m.Caveats {
+		if strings.Contains(c, "substrate differs") {
+			disclosed = true
+		}
+	}
+	if !disclosed {
+		t.Errorf("a base/branch substrate mismatch must be disclosed as a caveat; got %v", m.Caveats)
 	}
 }
 
