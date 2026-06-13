@@ -366,7 +366,7 @@ func cmdChains(args []string) error {
 		}
 	}
 	if len(specs) == 0 {
-		return fmt.Errorf("usage: groundwork chains <graph.json>... [--service name=graph.json]... [--policy p.json]...")
+		return fmt.Errorf("groundwork chains needs at least one graph: pass <graph.json> positionally or with --service name=graph.json")
 	}
 
 	var fleet []chains.Service

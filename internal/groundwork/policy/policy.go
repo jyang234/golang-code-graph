@@ -402,7 +402,7 @@ func (p *Policy) Validate() error {
 		if b.Delivery != "" && !oneOf(b.Delivery, "at-least-once", "at-most-once", "exactly-once") {
 			return fmt.Errorf("brokers[%q].delivery %q: want at-least-once | at-most-once | exactly-once", name, b.Delivery)
 		}
-		if b.Ordered != "" && !(b.Ordered == "false" || b.Ordered == "total" || strings.HasPrefix(b.Ordered, "per-key:")) {
+		if b.Ordered != "" && b.Ordered != "false" && b.Ordered != "total" && !strings.HasPrefix(b.Ordered, "per-key:") {
 			return fmt.Errorf("brokers[%q].ordered %q: want false | total | per-key:<key>", name, b.Ordered)
 		}
 		if b.Consumers != "" && !oneOf(b.Consumers, "idempotent", "not-idempotent") {
