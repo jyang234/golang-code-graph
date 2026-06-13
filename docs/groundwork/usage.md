@@ -245,13 +245,21 @@ No sanitizer functions yet? Ship the waypoint-less `must_not_reach` form
 first; introducing named scrubbers later *upgrades* the rule to
 `must_pass_through` — an adopter refactor, never a heuristic stand-in.
 
-Rules whose `from` binds nothing in the graph (a typo'd FQN, or a package
-renamed out from under the pattern) are disclosed as a **caution** — "from
-binds nothing — inert rule" — instead of passing silently as proven-absent;
-`require_proof` escalates that to a violation, since a rule that cannot be
-evaluated guards nothing. A `to` that matches nothing is deliberately *not*
-inert (for a negative invariant, "the forbidden thing does not exist" is the
-success state); the `exceptions` audit lists it as INFO.
+Rules whose `from` *or* `to` binds nothing in the graph (a typo'd FQN, a
+package renamed out from under the pattern, or — the field's lesson — a
+third-party sink whose methods are not graph nodes) are disclosed as a
+**caution** — "from binds nothing — inert rule" / "to binds nothing — name a
+first-party sink it can bind, or this invariant is vacuous" — instead of
+passing silently; `require_proof` escalates either to a violation, since a
+rule that cannot be evaluated guards nothing. (An earlier design treated an
+empty `to` as the success state — "the forbidden thing does not exist." A
+real run disproved it: the graph cannot tell that from "the sink is
+unnameable", so a rule pointed at a third-party logger reported HOLDS while
+the unsafe call sat one line away. A `to` that *does* bind somewhere but is
+simply unreached stays a real proven-absent pass — only a wholly unbindable
+target cautions.) This is why the sensitive-flow pack insists on a
+**first-party** sink: `applog.Error` is a node a `to` can bind;
+`zap.Logger.Error` is not.
 
 Validate one with `policy-check`:
 

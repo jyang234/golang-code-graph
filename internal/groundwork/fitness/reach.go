@@ -30,6 +30,10 @@ func checkMustNotReach(p *policy.Policy, ix *graph.Index, r *Result) {
 		if froms == nil {
 			continue
 		}
+		if !bindsAnyTarget(ix, rule.To) {
+			r.add(unbindableTargetFinding("must_not_reach", rule.Name, "to", rule.RequireProof))
+			continue
+		}
 		v, ev := evalReach(ix, froms, rule.To)
 		switch v {
 		case reachable:
@@ -64,9 +68,7 @@ func checkMustNotReach(p *policy.Policy, ix *graph.Index, r *Result) {
 // from under the pattern), and the zero-seed walk would otherwise report it as
 // a clean provenAbsent pass forever. A Caution by default; require_proof
 // escalates to Violation — a rule that cannot even be evaluated is the
-// strongest form of unprovability. A To that binds nothing is deliberately NOT
-// inert here ("the forbidden thing does not exist" is the success state); the
-// liveness audit lists it as INFO instead.
+// strongest form of unprovability.
 func inertRuleFinding(kind, name string, requireProof bool) Finding {
 	sev, note := Caution, "inert rule"
 	if requireProof {
@@ -77,6 +79,47 @@ func inertRuleFinding(kind, name string, requireProof bool) Finding {
 		Severity: sev,
 		Summary:  fmt.Sprintf("%s: from binds nothing in this graph — %s", name, note),
 	}
+}
+
+// unbindableTargetFinding discloses a rule whose To/Through selector matches no
+// node and no boundary effect ANYWHERE in the graph. The original design
+// treated an empty To as the success state ("the forbidden thing does not
+// exist"), but a real field run showed that is unsound: the graph cannot tell
+// "the forbidden thing does not exist" from "the sink is unnameable" (a
+// third-party logger whose methods are not graph nodes). A rule guarding an
+// unnameable sink reports HOLDS forever while the unsafe call sits one line
+// away — the exact silent pass the framework exists to prevent. So an
+// unbindable target is disclosed like an inert From: a Caution by default,
+// escalated to Violation under require_proof. (A To that DOES bind somewhere
+// but is simply unreached stays a real proof — that is provenAbsent, untouched.)
+func unbindableTargetFinding(kind, name, field string, requireProof bool) Finding {
+	sev, note := Caution, "name a first-party sink it can bind, or this invariant is vacuous"
+	if requireProof {
+		sev, note = Violation, "require_proof is set and an unbindable target cannot be proven absent"
+	}
+	return Finding{
+		Rule:     kind,
+		Severity: sev,
+		Summary:  fmt.Sprintf("%s: %s binds nothing in this graph — %s", name, field, note),
+	}
+}
+
+// bindsAnyTarget reports whether any To/Through pattern matches at least one
+// node or one boundary effect label in the whole graph — the test that
+// separates an unbindable selector (a typo, a renamed-away or third-party
+// target) from a well-formed one that is merely unreached.
+func bindsAnyTarget(ix *graph.Index, patterns []string) bool {
+	for _, fqn := range ix.Nodes() {
+		if matchAny(fqn, patterns) {
+			return true
+		}
+	}
+	for _, e := range ix.Edges() {
+		if e.Boundary != "" && matchAny(e.To, patterns) {
+			return true
+		}
+	}
+	return false
 }
 
 // evidence carries the witness for a verdict: for reachable, the from function

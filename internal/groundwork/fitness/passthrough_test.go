@@ -104,14 +104,17 @@ func TestPassThroughSourceIsWaypoint(t *testing.T) {
 }
 
 func TestPassThroughBlindFrontierCaution(t *testing.T) {
-	// blindsvc: no DELETE effect exists, so no bypass — but the walked cone holds
-	// a reflect site and a <dynamic> publish, so "guarded" is unprovable.
+	// blindsvc, from Publish: the bound target user.created is unreached from
+	// Publish (only Create publishes it), but Publish's cone holds a reflect
+	// site (encode.Marshal), so a hidden edge could skirt the waypoint —
+	// "guarded" is unprovable. The To binds (Create publishes it), so this is
+	// the genuine blind-frontier caution, not the unbindable-target case.
 	g := loadGraph(t, "blindsvc.graph.json")
 	rule := policy.PassRule{
-		Name:    "nothing-deletes-unguarded",
-		From:    []string{policy.EntrypointSelector},
-		To:      []string{"boundary:db DELETE"},
-		Through: []string{"example.com/blindsvc/internal/audit.Check"},
+		Name:    "publish-guarded",
+		From:    []string{"(*example.com/blindsvc/internal/handler.Server).Publish"},
+		To:      []string{"boundary:bus PUBLISH user.created"},
+		Through: []string{"(*example.com/blindsvc/internal/notify.Notifier).Created"},
 	}
 	res := Check(passPolicy(rule), graph.NewIndex(g))
 	c := res.Cautions()
@@ -126,6 +129,30 @@ func TestPassThroughBlindFrontierCaution(t *testing.T) {
 	res = Check(passPolicy(rule), graph.NewIndex(g))
 	if v := res.Violations(); len(v) != 1 || !strings.Contains(v[0].Summary, "require_proof") {
 		t.Fatalf("require_proof must escalate the blind frontier to a violation; got %v", res.Findings)
+	}
+}
+
+// The unbindable-target fix on the must_pass_through side: a To matching no
+// node and no effect anywhere (blindsvc has no DELETE) is disclosed as
+// vacuous, not silently held — the field's cgate trust gap, mirrored.
+func TestPassThroughUnbindableTo(t *testing.T) {
+	g := loadGraph(t, "blindsvc.graph.json")
+	rule := policy.PassRule{
+		Name:    "nothing-deletes-unguarded",
+		From:    []string{policy.EntrypointSelector},
+		To:      []string{"boundary:db DELETE"},
+		Through: []string{"example.com/blindsvc/internal/audit.Check"},
+	}
+	res := Check(passPolicy(rule), graph.NewIndex(g))
+	c := res.Cautions()
+	if len(res.Violations()) != 0 || len(c) != 1 || !strings.Contains(c[0].Summary, "to binds nothing") {
+		t.Fatalf("an unbindable To must be a disclosed caution, got %v", res.Findings)
+	}
+
+	rule.RequireProof = true
+	res = Check(passPolicy(rule), graph.NewIndex(g))
+	if v := res.Violations(); len(v) != 1 || !strings.Contains(v[0].Summary, "require_proof") {
+		t.Fatalf("require_proof must escalate an unbindable To to a violation, got %v", res.Findings)
 	}
 }
 

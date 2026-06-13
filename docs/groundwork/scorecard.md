@@ -61,7 +61,7 @@ no committed lock would be ⚠️, not ✅.
 
 | Question | Status |
 |---|---|
-| **Behavior at scale** (10⁵-node graphs, interface-heavy monoliths) | ⚠️ Nothing measured beyond the fixture. Expect: larger cones, more HighFanOut blind spots, growing hunt fractions. The committed thresholds will detect erosion; they cannot prevent it. **The single highest-leverage next step is one real, large service.** |
+| **Behavior at scale** (10⁵-node graphs, interface-heavy monoliths) | 📐 First real data point (2026-06-13): an 891-node / 107-HighFanOut service ran the CX engine with **no measurable overhead (~2s, OFF ≈ ON)** and **trust monotonicity held** (only VIOLATED→CANT-PROVE, never a new VIOLATED). Two honest limits it exposed: the interprocedural lifts abstain at HighFanOut chokepoints (their value is gated by dispatch precision, not soundness — see correctness-expansion-plan D-CX10), and a `require_proof` rule with an unbindable third-party sink reported HOLDS vacuously (fixed). Still ⚠️ above ~10³ nodes; the 10⁵ monolith remains unmeasured. |
 | **E4: does an agent actually do better with these tools?** | 📋 Designed with criteria and a results slot in `drills.md`; needs live human-judged sessions. Until run, "net positive for the agent" is a structural argument, not a measurement. |
 | **External adoption / sustained use** | ⚠️ Zero adopters outside the dogfood fixture. The behavioral pipeline's authoring cost in particular has no field evidence. |
 | **Cross-service triage** | ⚠️ Per-service only; the contract diff and system rendering exist, but an incident walk across service boundaries does not. |

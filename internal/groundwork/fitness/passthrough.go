@@ -30,6 +30,10 @@ func checkMustPassThrough(p *policy.Policy, ix *graph.Index, r *Result) {
 		if froms == nil {
 			continue
 		}
+		if !bindsAnyTarget(ix, rule.To) {
+			r.add(unbindableTargetFinding("must_pass_through", rule.Name, "to", rule.RequireProof))
+			continue
+		}
 
 		bypassed := false
 		var blindEv evidence

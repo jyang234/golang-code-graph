@@ -59,13 +59,35 @@ func TestInertMustPassThroughFrom(t *testing.T) {
 
 // A To that matches nothing is deliberately NOT inert: "the forbidden thing
 // does not exist" is the success state for a negative invariant.
-func TestDeadToIsNotInert(t *testing.T) {
-	p := &policy.Policy{Service: "layeredsvc", Version: 1, MustNotReach: []policy.ReachRule{{
-		Name: "no-such-target", From: []string{hGetUser}, To: []string{"boundary:peer NOPE"},
-	}}}
-	res := Check(p, graph.NewIndex(loadGraph(t, "layeredsvc.graph.json")))
-	if len(res.Findings) != 0 {
-		t.Fatalf("a dead To is provenAbsent (success), got %v", res.Findings)
+// A To that binds nothing in the graph is disclosed, not silently passed
+// (corrected after a field run: an unbindable sink — e.g. a third-party
+// logger whose methods are not graph nodes — is indistinguishable from "the
+// forbidden thing does not exist", so reporting HOLDS would be the silent
+// pass the framework exists to prevent). Caution by default; require_proof
+// escalates to Violation, exactly like an inert From.
+func TestUnbindableToIsDisclosed(t *testing.T) {
+	ix := graph.NewIndex(loadGraph(t, "layeredsvc.graph.json"))
+	rule := policy.ReachRule{Name: "no-such-target", From: []string{hGetUser}, To: []string{"boundary:peer NOPE"}}
+
+	res := Check(&policy.Policy{Service: "layeredsvc", Version: 1, MustNotReach: []policy.ReachRule{rule}}, ix)
+	c := res.Cautions()
+	if len(res.Violations()) != 0 || len(c) != 1 || !strings.Contains(c[0].Summary, "to binds nothing") {
+		t.Fatalf("an unbindable To must be a disclosed caution, got %v", res.Findings)
+	}
+
+	rule.RequireProof = true
+	res = Check(&policy.Policy{Service: "layeredsvc", Version: 1, MustNotReach: []policy.ReachRule{rule}}, ix)
+	if v := res.Violations(); len(v) != 1 || !strings.Contains(v[0].Summary, "require_proof") {
+		t.Fatalf("require_proof must escalate an unbindable To to a violation, got %v", res.Findings)
+	}
+
+	// The regression guard: a To that DOES bind (UPDATE exists on UpdateUser)
+	// but is unreached from a read-only route stays a real proof — silent
+	// success, NOT a caution. The fix must only fire on truly unbindable
+	// targets, never on legitimately-unreached ones.
+	bound := policy.ReachRule{Name: "reads-no-writes", From: []string{hGetUser}, To: []string{"boundary:db UPDATE"}}
+	if r := Check(&policy.Policy{Service: "layeredsvc", Version: 1, MustNotReach: []policy.ReachRule{bound}}, ix); len(r.Findings) != 0 {
+		t.Fatalf("a bound-but-unreached To must stay provenAbsent (silent), got %v", r.Findings)
 	}
 }
 
