@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 )
 
 // The self-verification invariant: every proposed policy is a ratchet of
@@ -505,6 +506,136 @@ func TestProposeExcludesStrictServerWriterBehindSeam(t *testing.T) {
 			t.Errorf("proposed policy violates its own source graph (R7): %v", f)
 		}
 	}
+}
+
+// R7 invariant (generic): for EVERY route the proposer keeps in
+// `read-routes-stay-read-only`, the enforcer's own evalReach over that entry's
+// name-expanded family must NOT be `reachable`. This is the property that makes
+// init self-clean by construction — proven against the graph rather than asserted
+// on one fixture. A regression that let proposeReadOnly judge over a node set
+// narrower than expandFroms (the R7 bug) trips here on the strict-server topology.
+func TestProposeKeptReadOnlyRoutesAreEnforcerClean(t *testing.T) {
+	const (
+		wrapper  = "(*example.com/svc/internal/api.W).Create"
+		closure  = "(*example.com/svc/internal/api.W).Create$1"
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		store    = "(*example.com/svc/internal/store.S).Del"
+		health   = "(*example.com/svc/internal/api.W).Health"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: health, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: dispatch, To: closure, Tier: 2},
+			{From: closure, To: store, Tier: 2},
+			{From: store, To: "boundary:db DELETE x", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+	if len(p.MustNotReach) == 0 {
+		t.Fatal("expected a read-only rule for the Health route")
+	}
+	to := p.MustNotReach[0].To
+	for _, from := range p.MustNotReach[0].From {
+		if v, ev := evalReach(ix, expandFroms(ix, []string{from}), to); v == reachable {
+			t.Errorf("proposer KEPT %s read-only, but the enforcer finds its family reaches %s", from, ev.target)
+		}
+	}
+}
+
+// R7 soundness, prefix-sibling: a genuinely read-only route `GetUser` whose FQN
+// is a PREFIX of a writing route `GetUserAvatar`. The enforcer's matchAny binds
+// the longer name to a `From:[GetUser]` rule, so that rule cannot hold — init
+// must therefore NOT ship it. The fix excludes GetUser (it fails safe by
+// under-ratcheting), and the proposal stays self-clean. This pins that the
+// prefix-matched enforcement semantics do not let init emit a rule the gate
+// rejects, the same class of guarantee as the seam case.
+func TestProposePrefixSiblingWriterStaysSelfClean(t *testing.T) {
+	const (
+		getUser   = "(*example.com/svc/internal/api.W).GetUser"
+		getUserAv = "(*example.com/svc/internal/api.W).GetUserAvatar"
+		avStore   = "(*example.com/svc/internal/store.S).Put"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: getUser, Sig: "func()", Tier: 1},
+			{FQN: getUserAv, Sig: "func()", Tier: 1},
+			{FQN: avStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: getUserAv, To: avStore, Tier: 2},
+			{From: avStore, To: "boundary:db INSERT avatars", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+	for _, from := range proposedFrom(p) {
+		if from == getUser {
+			t.Errorf("GetUser shares a name-prefix with the writer GetUserAvatar; the enforcer would bind the writer, so it must not be ratcheted")
+		}
+	}
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy must be self-clean despite the prefix-sibling writer: %v", f)
+		}
+	}
+}
+
+// R7 coverage: the write behind the seam reaches a bus PUBLISH (a rule.To target
+// that is NOT a db verb) through a SECOND closure ($2). Exercises both the
+// multi-`$N`-closure family expansion and the bus-PUBLISH branch of the read-only
+// target set — the main R7 fixture only covers a single db-DELETE closure.
+func TestProposeExcludesBusPublisherAcrossMultiClosureSeam(t *testing.T) {
+	const (
+		wrapper  = "(*example.com/svc/internal/api.W).Emit"
+		c1       = "(*example.com/svc/internal/api.W).Emit$1"
+		c2       = "(*example.com/svc/internal/api.W).Emit$2"
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		pub      = "(*example.com/svc/internal/bus.B).Send"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: c1, Sig: "func()", Tier: 1},
+			{FQN: c2, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: pub, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: dispatch, To: c1, Tier: 2},
+			{From: dispatch, To: c2, Tier: 2},
+			{From: c2, To: pub, Tier: 2},
+			{From: pub, To: "boundary:bus PUBLISH orders", Tier: 1, Boundary: "outbound-async"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+	for _, from := range proposedFrom(p) {
+		if from == wrapper {
+			t.Errorf("the wrapper publishes through its $2 closure but was ratcheted read-only")
+		}
+	}
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy violates its own source graph: %v", f)
+		}
+	}
+}
+
+// proposedFrom returns the read-only rule's from-set, or nil if none was proposed.
+func proposedFrom(p *policy.Policy) []string {
+	if len(p.MustNotReach) == 0 {
+		return nil
+	}
+	return p.MustNotReach[0].From
 }
 
 // guideSection returns the body of the first "## ..." section whose header
