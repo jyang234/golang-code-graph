@@ -408,26 +408,29 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 	}
 }
 
-// readOnlyCone returns the reachability cone proposeReadOnly must judge a route
-// source over so its read-only verdict matches what fitness will ENFORCE.
+// readOnlyCone returns the reachability cone proposeReadOnly judges a route source
+// over, computed so the read-only verdict matches what fitness will ENFORCE.
 //
-// The enforcer binds a `must_not_reach` from-entry by NAME-EXPANSION —
-// checkMustNotReach → bindFroms → expandFroms → matchNodes — so the set it
-// actually walks from includes every node whose FQN the entry exact-or-prefix-
-// matches: the source AND its generated closure family (its `$N` closures), which
-// share the source's FQN as a prefix. The proposer used to judge read-only-ness
-// over `ix.Reachable(s)` alone, the source's bare forward cone. On an oapi-codegen
-// strict-server topology these two node sets diverge: the
-// `(*ServerInterfaceWrapper).Handler` method is a graph root whose static
-// out-edges stop at the chi router BEFORE its own per-handler `$1` closure (the
-// forward seam), so `Reachable(wrapper)` is starved and never sees the write the
-// `$1` closure reaches — yet `expandFroms(wrapper)` pulls that `$1` closure in by
-// name. Judging from the starved cone while the gate enforces over the expanded
-// family is what let init propose a from-entry fitness then violates: init shipped
-// a "read-only" route that reaches a classified write through its closure.
-// Expanding here, exactly as expandFroms will, makes the proposal and the
-// enforcement share one reachability — init cannot emit a read-only entry the gate
-// rejects.
+// checkMustNotReach binds a from-entry through expandFroms (matchNodes/matchAny),
+// which — beyond the source itself — binds the source's generated CLOSURE family,
+// its `$N` closures, joined to the source FQN at the `$` identifier boundary.
+// readOnlyCone reuses that SAME expandFroms primitive rather than re-deriving a
+// private match, so the proposer and the gate expand a from-entry identically. On
+// an oapi-codegen strict-server wrapper — a graph root whose static out-edges stop
+// at the chi router before its own per-handler `$1` closure (the forward seam) —
+// `Reachable(wrapper)` is starved and never sees the write the closure reaches,
+// but `expandFroms(wrapper)` pulls the closure in, so the proposer excludes the
+// wrapper instead of proposing a read-only entry the gate then violates (R7).
+//
+// reconcile re-runs the real Check on the assembled policy and prunes any entry
+// that still fails, so reconcile — not this helper — is the AUTHORITATIVE guarantee
+// that init's output passes its own gate; readOnlyCone is the cheaper up-front
+// exclusion that keeps a correctly-excluded writer out of the noisy latent-findings
+// list. This deliberately differs from proposeBudget / routeUnclassifiedDB, which
+// judge the same sources over the BARE `ix.Reachable(s)` cone: those feed the
+// io_budget rule, whose enforcer (RouteWrites) binds each route per-source WITHOUT
+// expansion — so matching that enforcer means not expanding the closure family.
+// Each proposer mirrors the binding of the enforcer it feeds.
 func readOnlyCone(ix *graph.Index, source string) []string {
 	family := expandFroms(ix, []string{source})
 	return append(family, ix.Reachable(family...)...)
@@ -581,16 +584,18 @@ func reconcile(ix *graph.Index, p *policy.Policy, g *guide) {
 				// Drop the from-entry that OWNS the violation. The finding names the
 				// node that actually reached the target (f.From), which the enforcer
 				// took from the NAME-EXPANDED from-set — for an oapi-codegen wrapper
-				// that is the entry's `$1` closure, not the entry itself, so a bare
-				// `from == f.From` test never matches and the relaxation is a silent
-				// no-op. Match through the same expandFroms the enforcer used: prune
-				// the entry whose closure family the violating node belongs to. (The
-				// root fix in readOnlyCone means init no longer proposes such an
-				// entry; this keeps the relaxation honest if one ever reaches here.)
-				var kept []string
+				// that is the entry's `$1` closure, not the entry itself, so the old
+				// bare `from == f.From` test never matched and the relaxation was a
+				// silent no-op. Identify the owning entry through the SAME expandFroms
+				// the enforcer used: its family contains the violating node iff it owns
+				// the violation (exact match is included by expansion, so no separate
+				// equality test is needed). The boundary-aware matchAny means this
+				// binds only the true closure family, never a prefix-sibling route, so
+				// the prune is precise. (readOnlyCone means init no longer proposes
+				// such an entry; this keeps the relaxation honest if one reaches here.)
+				kept := make([]string, 0, len(p.MustNotReach[0].From))
 				for _, from := range p.MustNotReach[0].From {
-					owns := from == f.From || setutil.StringSet(expandFroms(ix, []string{from}))[f.From]
-					if !owns {
+					if !setutil.StringSet(expandFroms(ix, []string{from}))[f.From] {
 						kept = append(kept, from)
 					}
 				}

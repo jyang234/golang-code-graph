@@ -93,6 +93,16 @@ func (ix *Index) Node(fqn string) (Node, bool) { n, ok := ix.nodes[fqn]; return 
 // Nodes returns every function FQN, sorted.
 func (ix *Index) Nodes() []string { return setutil.SortedKeys(ix.nodes) }
 
+// RangeNodes calls f for every function FQN in arbitrary (map) order. Callers
+// that filter into a set and re-sort the result themselves (matchNodes) use this
+// to skip the full sort Nodes() performs on every call — it is called once per
+// from-entry during proposal and enforcement.
+func (ix *Index) RangeNodes(f func(fqn string)) {
+	for fqn := range ix.nodes {
+		f(fqn)
+	}
+}
+
 // Callees returns the direct first-party callees of fqn, sorted and de-duplicated.
 // The returned slice is precomputed and must be treated as read-only.
 func (ix *Index) Callees(fqn string) []string { return ix.callees[fqn] }

@@ -549,14 +549,15 @@ func TestProposeKeptReadOnlyRoutesAreEnforcerClean(t *testing.T) {
 	}
 }
 
-// R7 soundness, prefix-sibling: a genuinely read-only route `GetUser` whose FQN
-// is a PREFIX of a writing route `GetUserAvatar`. The enforcer's matchAny binds
-// the longer name to a `From:[GetUser]` rule, so that rule cannot hold — init
-// must therefore NOT ship it. The fix excludes GetUser (it fails safe by
-// under-ratcheting), and the proposal stays self-clean. This pins that the
-// prefix-matched enforcement semantics do not let init emit a rule the gate
-// rejects, the same class of guarantee as the seam case.
-func TestProposePrefixSiblingWriterStaysSelfClean(t *testing.T) {
+// R7 review, prefix-sibling: a genuinely read-only route `GetUser` whose FQN is a
+// string PREFIX of a writing route `GetUserAvatar`. Because matchAny now binds a
+// from-entry only at an identifier boundary, `GetUser` does NOT bind the distinct
+// `GetUserAvatar` (the next byte is the identifier char 'A'), so the writer's
+// effects are no longer swept into GetUser's read-only verdict: GetUser is
+// correctly ratcheted, GetUserAvatar correctly excluded, and the policy is
+// self-clean. The bare-HasPrefix matcher used to drop GetUser entirely (silent
+// under-protection, with a false "every entrypoint writes" guide claim).
+func TestProposePrefixSiblingDoesNotSuppressReadOnly(t *testing.T) {
 	const (
 		getUser   = "(*example.com/svc/internal/api.W).GetUser"
 		getUserAv = "(*example.com/svc/internal/api.W).GetUserAvatar"
@@ -574,18 +575,71 @@ func TestProposePrefixSiblingWriterStaysSelfClean(t *testing.T) {
 		},
 	}
 	ix := graph.NewIndex(g)
-	p, _ := Propose(ix, "svc")
-	for _, from := range proposedFrom(p) {
-		if from == getUser {
-			t.Errorf("GetUser shares a name-prefix with the writer GetUserAvatar; the enforcer would bind the writer, so it must not be ratcheted")
-		}
+	p, guide := Propose(ix, "svc")
+	from := setOf(proposedFrom(p))
+	if !from[getUser] {
+		t.Errorf("GetUser reaches no write and must be ratcheted read-only; From = %v", proposedFrom(p))
+	}
+	if from[getUserAv] {
+		t.Errorf("GetUserAvatar writes (db INSERT) and must NOT be ratcheted; From = %v", proposedFrom(p))
+	}
+	if strings.Contains(guide, "Every entrypoint currently performs at least one external write") {
+		t.Errorf("guide falsely claims every entrypoint writes while GetUser is read-only")
 	}
 	res := Check(p, ix)
 	for _, f := range res.Violations() {
 		if f.Rule != "obligation" {
-			t.Errorf("proposed policy must be self-clean despite the prefix-sibling writer: %v", f)
+			t.Errorf("proposed policy must be self-clean: %v", f)
 		}
 	}
+}
+
+// R7 review, opaque mis-attribution: a read-only route `GetUser` (reaches nothing)
+// whose FQN prefixes a sibling `GetUserData` that reaches an OPAQUE db-call. The
+// boundary-aware matchAny must not fold GetUserData's opaque label into GetUser's
+// cone, so the "Read-only status unproven" disclosure names ONLY GetUserData, not
+// GetUser. The bare matcher used to list GetUser as reaching a `db call` it never
+// touches.
+func TestProposeUnprovenDisclosureNotPollutedByPrefixSibling(t *testing.T) {
+	const (
+		getUser     = "(*example.com/svc/internal/api.W).GetUser"
+		getUserData = "(*example.com/svc/internal/api.W).GetUserData"
+		st          = "(*example.com/svc/internal/store.S).Load"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: getUser, Sig: "func()", Tier: 1},
+			{FQN: getUserData, Sig: "func()", Tier: 1},
+			{FQN: st, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: getUserData, To: st, Tier: 2},
+			{From: st, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, guide := Propose(ix, "svc")
+	if !setOf(proposedFrom(p))[getUser] {
+		t.Errorf("GetUser reaches no DB effect and must be ratcheted read-only; From = %v", proposedFrom(p))
+	}
+	sec := guideSection(guide, "Read-only status unproven")
+	// Match the backtick-delimited form the disclosure emits, since ShortName of
+	// GetUser ("api.W.GetUser") is itself a substring of "api.W.GetUserData".
+	if !strings.Contains(sec, "`"+ShortName(getUserData)+"`") {
+		t.Errorf("the opaque-db sibling GetUserData must be disclosed as unproven; section:\n%s", sec)
+	}
+	if strings.Contains(sec, "`"+ShortName(getUser)+"`") {
+		t.Errorf("GetUser reaches no opaque label and must NOT be mis-attributed in the unproven disclosure; section:\n%s", sec)
+	}
+}
+
+// setOf is a small membership-set helper for the From-list assertions.
+func setOf(ss []string) map[string]bool {
+	m := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		m[s] = true
+	}
+	return m
 }
 
 // R7 coverage: the write behind the seam reaches a bus PUBLISH (a rule.To target

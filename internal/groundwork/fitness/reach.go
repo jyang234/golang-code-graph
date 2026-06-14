@@ -189,13 +189,15 @@ func frontierBlindSiteWith(ix *graph.Index, cone []string, effects []graph.Edge)
 	return "", false
 }
 
-// matchNodes returns the graph nodes whose FQN matches any pattern.
+// matchNodes returns the graph nodes whose FQN matches any pattern. The order is
+// unspecified — expandFroms, its only caller, collects the result into a set and
+// sorts it — so it ranges nodes unsorted to avoid a redundant per-call sort.
 func matchNodes(ix *graph.Index, patterns []string) []string {
 	var out []string
-	for _, fqn := range ix.Nodes() {
+	ix.RangeNodes(func(fqn string) {
 		if matchAny(fqn, patterns) {
 			out = append(out, fqn)
 		}
-	}
+	})
 	return out
 }
