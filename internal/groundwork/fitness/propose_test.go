@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 )
 
 // The self-verification invariant: every proposed policy is a ratchet of
@@ -419,6 +420,276 @@ func TestProposeClosingUnionsConcurrentOpaqueWrites(t *testing.T) {
 	if !strings.Contains(closing, "Opaque DB writes") || !strings.Contains(closing, "db call") {
 		t.Errorf("closing 'Opaque DB writes' must include the concurrent-cone opaque label; section:\n%s", closing)
 	}
+}
+
+// R7: an oapi-codegen STRICT-SERVER topology. The generated
+// `(*ServerInterfaceWrapper).Handler` method is a graph root whose static
+// out-edges stop at the chi router BEFORE its own per-handler `$1` closure (the
+// forward seam), so `Reachable(wrapper)` is starved and never sees the classified
+// `db DELETE` the `$1` closure reaches. fitness, however, binds the
+// `read-routes-stay-read-only` from-entry by NAME-EXPANSION (expandFroms/matchNodes),
+// which pulls the `$1` closure in by prefix — so init used to propose the wrapper
+// as read-only from the starved cone, then fail its own gate over the expanded
+// family. proposeReadOnly must now judge over the same expansion the enforcer
+// will, so the writing wrapper is excluded and the proposal stays self-clean.
+//
+// No existing fixture has this shape: loansvc/layeredsvc are direct-call (no `$1`
+// closure), and the db-call fixtures are opaque-write, not classified-write behind
+// a dispatch seam. This models the strict-server topology directly.
+func TestProposeExcludesStrictServerWriterBehindSeam(t *testing.T) {
+	const (
+		wrapper = "(*example.com/svc/internal/api.ServerInterfaceWrapper).CreateEventTypeTemplate"
+		// The generated handler closure: shares the wrapper's FQN as a prefix, so
+		// expandFroms(wrapper) binds it — but it is NOT reachable from the wrapper.
+		closure = "(*example.com/svc/internal/api.ServerInterfaceWrapper).CreateEventTypeTemplate$1"
+		// The chi dispatch site that wires the generated handler closure: the
+		// closure's single incoming edge comes from here, NOT from the wrapper.
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		paramErr = "(*example.com/svc/internal/handler.Server).ParamErrorHandler"
+		strictH  = "(*example.com/svc/internal/api.strictHandler).CreateEventTypeTemplate"
+		store    = "(*example.com/svc/internal/storage.PostgresStore).deleteOutboxBySourceIDs"
+		// A genuinely read-only route, to prove the rule is still proposed for the
+		// routes that earn it.
+		readRoute = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetHealth"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: paramErr, Sig: "func()", Tier: 1},
+			{FQN: strictH, Sig: "func() error", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: readRoute, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// The wrapper root's static reach stops at the param error handler — it
+			// never crosses chi's dynamic dispatch to its own `$1` closure (the seam),
+			// so `Reachable(wrapper)` is starved and reaches no write.
+			{From: wrapper, To: paramErr, Tier: 2},
+			// The `$1` closure's single incoming edge comes from the chi dispatch
+			// site, NOT the wrapper — so the wrapper cannot reach it, but
+			// `expandFroms(wrapper)` still binds it by prefix.
+			{From: dispatch, To: closure, Tier: 2},
+			{From: closure, To: strictH, Tier: 2},
+			{From: strictH, To: store, Tier: 2},
+			// The classified write lives past the seam.
+			{From: store, To: "boundary:db DELETE provisioning_outbox", Tier: 1, Boundary: "outbound-sync"},
+			// GetHealth reaches no write at all — the clean read-only baseline.
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+
+	from := map[string]bool{}
+	if len(p.MustNotReach) > 0 {
+		for _, f := range p.MustNotReach[0].From {
+			from[f] = true
+		}
+	}
+	// The wrapper writes through its `$1` closure — it must NOT be ratcheted as a
+	// read-only route, even though its bare forward cone is starved past the seam.
+	if from[wrapper] {
+		t.Errorf("the strict-server wrapper writes through its closure but was swept into read-routes-stay-read-only: From = %v", p.MustNotReach[0].From)
+	}
+	// The genuinely read-only route is still ratcheted.
+	if !from[readRoute] {
+		t.Errorf("the read-only route must still be ratcheted; From = %v", p.MustNotReach[0].From)
+	}
+
+	// The decisive assertion: the proposal must pass its own gate. Before the fix
+	// fitness flagged the wrapper's `$1` closure reaching the DELETE — init's own
+	// output exited 1 (R7). It must now be clean.
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy violates its own source graph (R7): %v", f)
+		}
+	}
+}
+
+// R7 invariant (generic): for EVERY route the proposer keeps in
+// `read-routes-stay-read-only`, the enforcer's own evalReach over that entry's
+// name-expanded family must NOT be `reachable`. This is the property that makes
+// init self-clean by construction — proven against the graph rather than asserted
+// on one fixture. A regression that let proposeReadOnly judge over a node set
+// narrower than expandFroms (the R7 bug) trips here on the strict-server topology.
+func TestProposeKeptReadOnlyRoutesAreEnforcerClean(t *testing.T) {
+	const (
+		wrapper  = "(*example.com/svc/internal/api.W).Create"
+		closure  = "(*example.com/svc/internal/api.W).Create$1"
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		store    = "(*example.com/svc/internal/store.S).Del"
+		health   = "(*example.com/svc/internal/api.W).Health"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: health, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: dispatch, To: closure, Tier: 2},
+			{From: closure, To: store, Tier: 2},
+			{From: store, To: "boundary:db DELETE x", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+	if len(p.MustNotReach) == 0 {
+		t.Fatal("expected a read-only rule for the Health route")
+	}
+	to := p.MustNotReach[0].To
+	for _, from := range p.MustNotReach[0].From {
+		if v, ev := evalReach(ix, expandFroms(ix, []string{from}), to); v == reachable {
+			t.Errorf("proposer KEPT %s read-only, but the enforcer finds its family reaches %s", from, ev.target)
+		}
+	}
+}
+
+// R7 review, prefix-sibling: a genuinely read-only route `GetUser` whose FQN is a
+// string PREFIX of a writing route `GetUserAvatar`. Because matchAny now binds a
+// from-entry only at an identifier boundary, `GetUser` does NOT bind the distinct
+// `GetUserAvatar` (the next byte is the identifier char 'A'), so the writer's
+// effects are no longer swept into GetUser's read-only verdict: GetUser is
+// correctly ratcheted, GetUserAvatar correctly excluded, and the policy is
+// self-clean. The bare-HasPrefix matcher used to drop GetUser entirely (silent
+// under-protection, with a false "every entrypoint writes" guide claim).
+func TestProposePrefixSiblingDoesNotSuppressReadOnly(t *testing.T) {
+	const (
+		getUser   = "(*example.com/svc/internal/api.W).GetUser"
+		getUserAv = "(*example.com/svc/internal/api.W).GetUserAvatar"
+		avStore   = "(*example.com/svc/internal/store.S).Put"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: getUser, Sig: "func()", Tier: 1},
+			{FQN: getUserAv, Sig: "func()", Tier: 1},
+			{FQN: avStore, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: getUserAv, To: avStore, Tier: 2},
+			{From: avStore, To: "boundary:db INSERT avatars", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, guide := Propose(ix, "svc")
+	from := setOf(proposedFrom(p))
+	if !from[getUser] {
+		t.Errorf("GetUser reaches no write and must be ratcheted read-only; From = %v", proposedFrom(p))
+	}
+	if from[getUserAv] {
+		t.Errorf("GetUserAvatar writes (db INSERT) and must NOT be ratcheted; From = %v", proposedFrom(p))
+	}
+	if strings.Contains(guide, "Every entrypoint currently performs at least one external write") {
+		t.Errorf("guide falsely claims every entrypoint writes while GetUser is read-only")
+	}
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy must be self-clean: %v", f)
+		}
+	}
+}
+
+// R7 review, opaque mis-attribution: a read-only route `GetUser` (reaches nothing)
+// whose FQN prefixes a sibling `GetUserData` that reaches an OPAQUE db-call. The
+// boundary-aware matchAny must not fold GetUserData's opaque label into GetUser's
+// cone, so the "Read-only status unproven" disclosure names ONLY GetUserData, not
+// GetUser. The bare matcher used to list GetUser as reaching a `db call` it never
+// touches.
+func TestProposeUnprovenDisclosureNotPollutedByPrefixSibling(t *testing.T) {
+	const (
+		getUser     = "(*example.com/svc/internal/api.W).GetUser"
+		getUserData = "(*example.com/svc/internal/api.W).GetUserData"
+		st          = "(*example.com/svc/internal/store.S).Load"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: getUser, Sig: "func()", Tier: 1},
+			{FQN: getUserData, Sig: "func()", Tier: 1},
+			{FQN: st, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: getUserData, To: st, Tier: 2},
+			{From: st, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, guide := Propose(ix, "svc")
+	if !setOf(proposedFrom(p))[getUser] {
+		t.Errorf("GetUser reaches no DB effect and must be ratcheted read-only; From = %v", proposedFrom(p))
+	}
+	sec := guideSection(guide, "Read-only status unproven")
+	// Match the backtick-delimited form the disclosure emits, since ShortName of
+	// GetUser ("api.W.GetUser") is itself a substring of "api.W.GetUserData".
+	if !strings.Contains(sec, "`"+ShortName(getUserData)+"`") {
+		t.Errorf("the opaque-db sibling GetUserData must be disclosed as unproven; section:\n%s", sec)
+	}
+	if strings.Contains(sec, "`"+ShortName(getUser)+"`") {
+		t.Errorf("GetUser reaches no opaque label and must NOT be mis-attributed in the unproven disclosure; section:\n%s", sec)
+	}
+}
+
+// setOf is a small membership-set helper for the From-list assertions.
+func setOf(ss []string) map[string]bool {
+	m := make(map[string]bool, len(ss))
+	for _, s := range ss {
+		m[s] = true
+	}
+	return m
+}
+
+// R7 coverage: the write behind the seam reaches a bus PUBLISH (a rule.To target
+// that is NOT a db verb) through a SECOND closure ($2). Exercises both the
+// multi-`$N`-closure family expansion and the bus-PUBLISH branch of the read-only
+// target set — the main R7 fixture only covers a single db-DELETE closure.
+func TestProposeExcludesBusPublisherAcrossMultiClosureSeam(t *testing.T) {
+	const (
+		wrapper  = "(*example.com/svc/internal/api.W).Emit"
+		c1       = "(*example.com/svc/internal/api.W).Emit$1"
+		c2       = "(*example.com/svc/internal/api.W).Emit$2"
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		pub      = "(*example.com/svc/internal/bus.B).Send"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: c1, Sig: "func()", Tier: 1},
+			{FQN: c2, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: pub, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: dispatch, To: c1, Tier: 2},
+			{From: dispatch, To: c2, Tier: 2},
+			{From: c2, To: pub, Tier: 2},
+			{From: pub, To: "boundary:bus PUBLISH orders", Tier: 1, Boundary: "outbound-async"},
+		},
+	}
+	ix := graph.NewIndex(g)
+	p, _ := Propose(ix, "svc")
+	for _, from := range proposedFrom(p) {
+		if from == wrapper {
+			t.Errorf("the wrapper publishes through its $2 closure but was ratcheted read-only")
+		}
+	}
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy violates its own source graph: %v", f)
+		}
+	}
+}
+
+// proposedFrom returns the read-only rule's from-set, or nil if none was proposed.
+func proposedFrom(p *policy.Policy) []string {
+	if len(p.MustNotReach) == 0 {
+		return nil
+	}
+	return p.MustNotReach[0].From
 }
 
 // guideSection returns the body of the first "## ..." section whose header

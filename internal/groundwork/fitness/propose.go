@@ -356,7 +356,7 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 		if strings.HasSuffix(s, ".main") {
 			continue
 		}
-		cone := append([]string{s}, ix.Reachable(s)...)
+		cone := readOnlyCone(ix, s)
 		writes := false
 		routeUnclass := map[string]bool{}
 		for _, e := range ix.Effects(cone...) {
@@ -406,6 +406,34 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 				"Their read-only status is UNPROVEN, so they were left OUT of `read-routes-stay-read-only` rather than ratcheted on a claim the graph cannot support — these routes MIGHT mutate. Review before trusting; making the SQL constant exposes the verb and lets init classify it.",
 				len(unproven), dbCallPhrase(setutil.SortedKeys(unclassLabels)), shortList(unproven)))
 	}
+}
+
+// readOnlyCone returns the reachability cone proposeReadOnly judges a route source
+// over, computed so the read-only verdict matches what fitness will ENFORCE.
+//
+// checkMustNotReach binds a from-entry through expandFroms (matchNodes/matchAny),
+// which — beyond the source itself — binds the source's generated CLOSURE family,
+// its `$N` closures, joined to the source FQN at the `$` identifier boundary.
+// readOnlyCone reuses that SAME expandFroms primitive rather than re-deriving a
+// private match, so the proposer and the gate expand a from-entry identically. On
+// an oapi-codegen strict-server wrapper — a graph root whose static out-edges stop
+// at the chi router before its own per-handler `$1` closure (the forward seam) —
+// `Reachable(wrapper)` is starved and never sees the write the closure reaches,
+// but `expandFroms(wrapper)` pulls the closure in, so the proposer excludes the
+// wrapper instead of proposing a read-only entry the gate then violates (R7).
+//
+// reconcile re-runs the real Check on the assembled policy and prunes any entry
+// that still fails, so reconcile — not this helper — is the AUTHORITATIVE guarantee
+// that init's output passes its own gate; readOnlyCone is the cheaper up-front
+// exclusion that keeps a correctly-excluded writer out of the noisy latent-findings
+// list. This deliberately differs from proposeBudget / routeUnclassifiedDB, which
+// judge the same sources over the BARE `ix.Reachable(s)` cone: those feed the
+// io_budget rule, whose enforcer (RouteWrites) binds each route per-source WITHOUT
+// expansion — so matching that enforcer means not expanding the closure family.
+// Each proposer mirrors the binding of the enforcer it feeds.
+func readOnlyCone(ix *graph.Index, source string) []string {
+	family := expandFroms(ix, []string{source})
+	return append(family, ix.Reachable(family...)...)
 }
 
 // proposeConcurrent ratchets the current truth about concurrency: if no
@@ -553,9 +581,21 @@ func reconcile(ix *graph.Index, p *policy.Policy, g *guide) {
 					p.MustPassThrough = nil
 				}
 			case "must_not_reach":
-				var kept []string
+				// Drop the from-entry that OWNS the violation. The finding names the
+				// node that actually reached the target (f.From), which the enforcer
+				// took from the NAME-EXPANDED from-set — for an oapi-codegen wrapper
+				// that is the entry's `$1` closure, not the entry itself, so the old
+				// bare `from == f.From` test never matched and the relaxation was a
+				// silent no-op. Identify the owning entry through the SAME expandFroms
+				// the enforcer used: its family contains the violating node iff it owns
+				// the violation (exact match is included by expansion, so no separate
+				// equality test is needed). The boundary-aware matchAny means this
+				// binds only the true closure family, never a prefix-sibling route, so
+				// the prune is precise. (readOnlyCone means init no longer proposes
+				// such an entry; this keeps the relaxation honest if one reaches here.)
+				kept := make([]string, 0, len(p.MustNotReach[0].From))
 				for _, from := range p.MustNotReach[0].From {
-					if from != f.From {
+					if !setutil.StringSet(expandFroms(ix, []string{from}))[f.From] {
 						kept = append(kept, from)
 					}
 				}
