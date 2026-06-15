@@ -153,7 +153,7 @@ func TestClassifyMarkerShapes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			markers := frontier.Classify(tc.input)
+			markers := frontier.Classify(tc.input).Markers
 			for kind, bin := range tc.present {
 				m, ok := marker(markers, kind)
 				if !ok {
@@ -170,6 +170,37 @@ func TestClassifyMarkerShapes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The three-valued split: a confirmed-severed route is a marker (not unconfirmed);
+// a no-op stub reaching no effect with no severed closure is UNCONFIRMED (not a
+// marker, not silently dropped); a route reaching an effect is neither. This is the
+// signal that keeps attribution_loss honest as a lower bound.
+func TestClassifyUnconfirmedRoutes(t *testing.T) {
+	const (
+		health = "(*example.com/svc/internal/api.W).Health"
+		list   = "(*example.com/svc/internal/api.W).List"
+	)
+	v := in(
+		[]string{wrap, clo, store, health, list},
+		[][2]string{
+			{clo, store}, {store, "boundary:db DELETE x"}, // wrap: confirmed-severed (own $1)
+			{list, "boundary:db SELECT y"}, // list: reaches an effect
+			// health: reaches nothing, owns no closure → unconfirmed
+		},
+		[]frontier.InEntry{
+			{Fn: wrap, Name: "POST /x"},
+			{Fn: health, Name: "GET /health"},
+			{Fn: list, Name: "GET /list"},
+		}, nil)
+	r := frontier.Classify(v)
+
+	if _, ok := marker(r.Markers, "starved-entrypoint"); !ok {
+		t.Error("the confirmed-severed route must be a starved-entrypoint marker")
+	}
+	if len(r.UnconfirmedRoutes) != 1 || r.UnconfirmedRoutes[0] != health {
+		t.Errorf("want exactly the Health stub unconfirmed (not the severed or the effectful route), got %v", r.UnconfirmedRoutes)
 	}
 }
 

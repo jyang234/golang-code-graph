@@ -103,16 +103,23 @@ func TestApplyReclaimersClosesSeam(t *testing.T) {
 		t.Error("reclaimed edges must carry their Via provenance in the graph")
 	}
 
-	r := frontier.Summarize(g.Frontier, len(g.Entrypoints))
+	r := frontier.Summarize(graphio.ClassifyFrontier(g), len(g.Entrypoints))
 	if r.StarvedEntrypoints != 0 || r.AttributionLoss != 0 {
 		t.Errorf("seam not closed: %d/%d starved (%.2f), want 0", r.StarvedEntrypoints, r.Entrypoints, r.AttributionLoss)
 	}
 	if r.Counts[frontier.BinB] != 0 {
 		t.Errorf("reclaim must clear the B frontier; got B=%d markers=%+v", r.Counts[frontier.BinB], r.Markers)
 	}
-	for _, m := range g.Frontier {
-		if m.Kind == "severed-closure" || m.Kind == "starved-entrypoint" {
-			t.Errorf("reclaimed graph must carry no seam marker, got %+v", m)
+	// The reclaimed routes now reach their effects, so they are neither severed nor
+	// unconfirmed.
+	if len(r.UnconfirmedRoutes) != 0 {
+		t.Errorf("reclaim must leave no unconfirmed routes, got %v", r.UnconfirmedRoutes)
+	}
+	if g.Frontier != nil {
+		for _, m := range g.Frontier.Markers {
+			if m.Kind == "severed-closure" || m.Kind == "starved-entrypoint" {
+				t.Errorf("reclaimed graph must carry no seam marker, got %+v", m)
+			}
 		}
 	}
 }

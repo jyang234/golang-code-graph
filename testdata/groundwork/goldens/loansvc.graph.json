@@ -504,27 +504,30 @@
       "always": true
     }
   ],
-  "frontier": [
-    {
-      "kind": "dynamic-bus",
-      "bin": "A",
-      "site": "bus PUBLISH <dynamic>",
-      "owner": "(*example.com/loansvc/internal/origination.Evaluator).notify",
-      "reclaimer_hint": "runtime-resolved target — disclose; resolvable only by observation, never statically"
-    },
-    {
-      "kind": "severed-closure",
-      "bin": "B",
-      "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$1",
-      "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
-      "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
-    },
-    {
-      "kind": "severed-closure",
-      "bin": "B",
-      "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$2",
-      "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
-      "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
-    }
-  ]
+  "frontier": {
+    "markers": [
+      {
+        "kind": "dynamic-bus",
+        "bin": "A",
+        "site": "bus PUBLISH <dynamic>",
+        "owner": "(*example.com/loansvc/internal/origination.Evaluator).notify",
+        "reclaimer_hint": "runtime-resolved target — disclose; resolvable only by observation, never statically"
+      },
+      {
+        "kind": "severed-closure",
+        "bin": "B",
+        "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$1",
+        "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
+        "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
+      },
+      {
+        "kind": "severed-closure",
+        "bin": "B",
+        "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$2",
+        "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
+        "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
+      }
+    ],
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
 }

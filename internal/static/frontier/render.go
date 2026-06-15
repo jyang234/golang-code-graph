@@ -14,15 +14,18 @@ func Render(name, algo string, r *Report) string {
 		algo = "unrecorded"
 	}
 	fmt.Fprintf(&b, "frontier: %s  (algo %s)\n", name, algo)
-	fmt.Fprintf(&b, "  entrypoints: %d   starved: %d (%.0f%% attribution loss)\n",
+	fmt.Fprintf(&b, "  entrypoints: %d   confirmed-severed: %d (%.0f%% attribution loss, a LOWER BOUND)\n",
 		r.Entrypoints, r.StarvedEntrypoints, 100*r.AttributionLoss)
-	if r.Entrypoints > 0 {
-		// Be honest about the detector's coverage: starvation is confirmed only for
-		// the oapi-codegen strict-server shape, so a low/zero attribution loss is
-		// "no CONFIRMED seam", not a proof of no severance (other dispatch frameworks
-		// are not yet recognized). See docs/design/frontier-instrumentation-plan.md §3.
-		b.WriteString("    (attribution loss confirms the oapi strict-server shape only; " +
-			"0% means no CONFIRMED seam, not no severance)\n")
+	// The third state: routes reaching no effect whose severance we could not
+	// confirm. Listed here (the on-demand view) but kept as an aggregate count in
+	// the committed graph section. A 0 attribution loss with unconfirmed routes is
+	// NOT a proof of no severance — disclose it where a reader will see it.
+	if len(r.UnconfirmedRoutes) > 0 {
+		fmt.Fprintf(&b, "  unconfirmed (reach no effect, cause unverified): %d\n", len(r.UnconfirmedRoutes))
+		for _, fn := range r.UnconfirmedRoutes {
+			fmt.Fprintf(&b, "    - %s\n", short(fn))
+		}
+		b.WriteString("    (no-ops, or seams this classifier does not recognize — attribution_loss is a lower bound)\n")
 	}
 	fmt.Fprintf(&b, "  markers: %d   reclaimable (B): %d (%.0f%%)\n",
 		len(r.Markers), r.Counts[BinB], 100*r.ReclaimableShare)

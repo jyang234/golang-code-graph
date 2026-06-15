@@ -49,6 +49,13 @@ func TestGoldenSectionManifest(t *testing.T) {
 	sort.Strings(names)
 	for _, name := range names {
 		g := loadGraph(t, name)
+		// The frontier section is an object now; its pinned size is its marker count
+		// (0 when absent). The aggregate unconfirmed-route count rides the section but
+		// is not pinned — it is a count, not a per-entry slice.
+		frontierMarkers := 0
+		if g.Frontier != nil {
+			frontierMarkers = len(g.Frontier.Markers)
+		}
 		got := map[string]int{
 			"nodes":        len(g.Nodes),
 			"edges":        len(g.Edges),
@@ -56,7 +63,7 @@ func TestGoldenSectionManifest(t *testing.T) {
 			"entrypoints":  len(g.Entrypoints),
 			"obligations":  len(g.Obligations),
 			"effect_order": len(g.EffectOrder),
-			"frontier":     len(g.Frontier),
+			"frontier":     frontierMarkers,
 		}
 		for section, want := range manifest[name] {
 			if got[section] != want {

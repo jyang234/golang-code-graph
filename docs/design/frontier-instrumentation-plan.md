@@ -186,7 +186,24 @@ not "no severance".** This is a deliberate precision choice — the correlation 
 what makes a starved marker a confirmed seam rather than a guess — but it must be
 *disclosed*, not papered over with a "framework-blind" claim. Each new severance
 shape earns its own confirming correlation (and a fixture), the same prevalence gate
-reclaimers use. The classifier discloses this caveat in its own output.
+reclaimers use.
+
+**The three-valued completion (the trust fix).** A prose caveat is not enough,
+because the audience that over-reads a clean number — the agent — reads the *data*,
+not the prose. So the classifier mirrors `fitness`'s three-valued verdict
+(`provenAbsent` / `noPathFound` / `reachable`): a route reaching no effect is
+**confirmed-severed** (the oapi correlation → a `starved-entrypoint` marker, counted
+in `attribution_loss`), **proven-clean** (reaches an effect), or **unconfirmed** (a
+no-op, or a seam shape we do not recognize). The unconfirmed population is exposed
+machine-readably so `attribution_loss: 0` can never be misread as a proof of no
+severance — it is a LOWER BOUND, framed exactly like the `io_budget` "lower bound /
+frontier blind" caution. Surfaces, split so the committed artifact stays stable:
+- **Committed graph `frontier` section** → the AGGREGATE `unconfirmed_routes` count +
+  a `coverage` string. A count (not per-route markers) so it does not churn under
+  refactoring or cry wolf on every health endpoint, yet it makes the section
+  self-describing: a consumer reading only the graph sees the lower-bound caveat.
+- **On-demand `flowmap frontier`** → the per-route unconfirmed list, where verbosity
+  is acceptable because the reader asked for it and it never pollutes the artifact.
 
 **Determinism:** pure function of the graph; sorted, stable; no verdict coupling.
 

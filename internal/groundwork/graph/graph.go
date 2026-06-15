@@ -57,13 +57,24 @@ type Graph struct {
 	EffectOrder []EffectOrderFact `json:"effect_order,omitempty"`
 	Entrypoints []Entrypoint      `json:"entrypoints,omitempty"`
 
-	// Frontier is the producer's A/B/B2/C classification of where static
-	// reachability stops (flowmap's frontier section). groundwork decodes it on
-	// its own side of the trust boundary — like every other graph-carried section
-	// — so a consumer can READ the disclosed frontier (which routes are severed,
-	// which writes are opaque) instead of reconstructing it from topology. It is a
-	// disclosure: no verdict reads it. Omitted by producers that emit none.
-	Frontier []FrontierMarker `json:"frontier,omitempty"`
+	// Frontier is the producer's classification of where static reachability stops
+	// (flowmap's frontier section). groundwork decodes it on its own side of the
+	// trust boundary — like every other graph-carried section — so a consumer can
+	// READ the disclosed frontier (which routes are severed, which writes are opaque)
+	// AND the unconfirmed-route count + coverage caveat, instead of reconstructing it
+	// from topology. It is a disclosure: no verdict reads it. Omitted when there is
+	// nothing to disclose.
+	Frontier *FrontierSection `json:"frontier,omitempty"`
+}
+
+// FrontierSection mirrors flowmap's disclosed frontier: the per-site markers, the
+// aggregate count of routes whose severance could not be confirmed (so a consumer
+// cannot misread a 0 attribution loss as a proof of no severance), and the coverage
+// caveat naming what the attribution signal confirms.
+type FrontierSection struct {
+	Markers           []FrontierMarker `json:"markers,omitempty"`
+	UnconfirmedRoutes int              `json:"unconfirmed_routes,omitempty"`
+	Coverage          string           `json:"coverage,omitempty"`
 }
 
 // FrontierMarker is one classified frontier site, mirroring flowmap's frontier

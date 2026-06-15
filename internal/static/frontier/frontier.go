@@ -69,22 +69,46 @@ type InBlindSpot struct{ Kind, Site string }
 // InEntry is a named entrypoint and the function registered to handle it.
 type InEntry struct{ Fn, Name string }
 
-// Report is the deterministic roll-up: every marker, the per-bin counts, and the
-// two headline ratios — reclaimable share (B of all) and attribution loss (routes
-// that reach no effect, of all routes).
+// Coverage states what the starvation/attribution signal CONFIRMS, framed like the
+// io_budget "lower bound, not a proof" caution: a route is flagged severed only for
+// the oapi-codegen strict-server shape, so attribution_loss is a LOWER BOUND — a 0
+// with unconfirmed routes present is "no CONFIRMED seam", never a proof of no
+// severance. It rides the disclosed frontier so a consumer reading the data (not
+// just the human view) cannot misread the number.
+const Coverage = "starvation confirmed for the oapi strict-server shape only; " +
+	"unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — " +
+	"attribution_loss is a LOWER BOUND, not a proof of no severance"
+
+// Result is what Classify returns: the sorted marker list plus the UNCONFIRMED
+// routes — entrypoints that reach no effect and are NOT confirmed-severed (a no-op
+// route, or a seam shape this classifier does not recognize). The unconfirmed list
+// is the third state of the three-valued frontier (confirmed-severed / proven-clean
+// / unconfirmed): it is what stops a 0 attribution_loss from reading as a proof.
+type Result struct {
+	Markers           []Marker
+	UnconfirmedRoutes []string // entrypoint FQNs reaching no effect, severance unconfirmed
+}
+
+// Report is the deterministic roll-up: every marker, the per-bin counts, the two
+// headline ratios — reclaimable share (B of all) and attribution loss (CONFIRMED
+// severed routes / all routes) — and the unconfirmed-route population that keeps
+// attribution loss honest as a lower bound.
 type Report struct {
 	Algo               string      `json:"algo,omitempty"` // call-graph algorithm provenance (rta|vta|cha)
 	Markers            []Marker    `json:"markers"`
 	Counts             map[Bin]int `json:"counts"`
 	Entrypoints        int         `json:"entrypoints"`
-	StarvedEntrypoints int         `json:"starved_entrypoints"`
+	StarvedEntrypoints int         `json:"starved_entrypoints"` // CONFIRMED severed
+	UnconfirmedRoutes  []string    `json:"unconfirmed_routes,omitempty"`
+	Coverage           string      `json:"coverage,omitempty"`
 	ReclaimableShare   float64     `json:"reclaimable_share"` // B / total markers
-	AttributionLoss    float64     `json:"attribution_loss"`  // starved / entrypoints
+	AttributionLoss    float64     `json:"attribution_loss"`  // CONFIRMED severed / entrypoints (a lower bound)
 }
 
-// Classify bins in's frontier into a sorted, deduplicated marker list. Pure
-// function of the input: no clock, no corpus, no verdict coupling.
-func Classify(in *Input) []Marker {
+// Classify bins in's frontier into a sorted, deduplicated marker list, plus the
+// unconfirmed-route population. Pure function of the input: no clock, no corpus, no
+// verdict coupling.
+func Classify(in *Input) *Result {
 	nodes := make(map[string]bool, len(in.Nodes))
 	for _, n := range in.Nodes {
 		nodes[n] = true
@@ -161,18 +185,25 @@ func Classify(in *Input) []Marker {
 			ReclaimerHint: "connect " + short(parent) + " to this closure across the dispatch seam"})
 	}
 
-	// Attribution markers: a named entrypoint that reaches no boundary effect
-	// directly AND owns a severed effect-bearing closure — the effect sits in its
-	// OWN `$N` closure, disconnected. That correlation is what makes it a CONFIRMED
-	// seam rather than a guess: it separates a dispatch-severed route (strict-server)
-	// from a genuine no-op stub (an empty handler owns no effect closure, so it is
-	// not flagged — nothing to reclaim).
+	// Attribution: a named entrypoint reaching no boundary effect is one of two
+	// states. If it owns a severed effect-bearing closure — the effect sits in its
+	// OWN `$N` closure, disconnected — it is a CONFIRMED seam (starved-entrypoint,
+	// B). Otherwise its severance is UNCONFIRMED: a genuine no-op stub, or a seam
+	// shape this classifier does not recognize. The unconfirmed routes are NOT
+	// markers (they would cry wolf on every health endpoint and churn the committed
+	// graph under refactoring); they are returned as an aggregate so a 0
+	// attribution_loss cannot be misread as a proof of no severance.
+	var unconfirmed []string
 	for _, ep := range in.Entrypoints {
-		if !severedParent[ep.Fn] || reaches[ep.Fn] {
+		if reaches[ep.Fn] {
 			continue
 		}
-		add(Marker{Kind: "starved-entrypoint", Bin: BinB, Site: ep.Fn, Owner: ep.Name,
-			ReclaimerHint: "route reaches no effect directly, but its own severed closure does — handler chain cut at the dispatch seam"})
+		if severedParent[ep.Fn] {
+			add(Marker{Kind: "starved-entrypoint", Bin: BinB, Site: ep.Fn, Owner: ep.Name,
+				ReclaimerHint: "route reaches no effect directly, but its own severed closure does — handler chain cut at the dispatch seam"})
+		} else {
+			unconfirmed = append(unconfirmed, ep.Fn)
+		}
 	}
 
 	// Disclosed blind spots, binned by kind.
@@ -194,29 +225,34 @@ func Classify(in *Input) []Marker {
 		}
 		return a.Owner < b.Owner
 	})
-	return markers
+	sort.Strings(unconfirmed)
+	return &Result{Markers: markers, UnconfirmedRoutes: unconfirmed}
 }
 
-// Summarize rolls a marker list up into the report ratios. entrypoints is the
-// total number of named routes (needed for attribution loss; not derivable from
-// the markers alone).
-func Summarize(markers []Marker, entrypoints int) *Report {
+// Summarize rolls a Result up into the report ratios. entrypoints is the total
+// number of named routes (needed for attribution loss; not derivable from the
+// markers alone). It carries the unconfirmed-route list and the Coverage caveat so
+// the report — the machine-readable --json view — discloses the lower-bound nature
+// of attribution_loss, not just the human text.
+func Summarize(r *Result, entrypoints int) *Report {
 	counts := map[Bin]int{BinA: 0, BinB: 0, BinB2: 0, BinC: 0}
 	starved := 0
-	for _, m := range markers {
+	for _, m := range r.Markers {
 		counts[m.Bin]++
 		if m.Kind == "starved-entrypoint" {
 			starved++
 		}
 	}
 	rep := &Report{
-		Markers:            markers,
+		Markers:            r.Markers,
 		Counts:             counts,
 		Entrypoints:        entrypoints,
 		StarvedEntrypoints: starved,
+		UnconfirmedRoutes:  r.UnconfirmedRoutes,
+		Coverage:           Coverage,
 	}
-	if len(markers) > 0 {
-		rep.ReclaimableShare = float64(counts[BinB]) / float64(len(markers))
+	if len(r.Markers) > 0 {
+		rep.ReclaimableShare = float64(counts[BinB]) / float64(len(r.Markers))
 	}
 	if entrypoints > 0 {
 		rep.AttributionLoss = float64(starved) / float64(entrypoints)

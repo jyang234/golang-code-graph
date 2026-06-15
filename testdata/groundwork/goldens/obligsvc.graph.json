@@ -1307,5 +1307,9 @@
       "always": true,
       "via": "example.com/obligsvc/internal/app.publishApproved"
     }
-  ]
+  ],
+  "frontier": {
+    "unconfirmed_routes": 1,
+    "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"
+  }
 }

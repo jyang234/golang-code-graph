@@ -80,11 +80,24 @@ type Graph struct {
 	// Frontier is the A/B/B2/C classification of where static reachability stops
 	// being able to answer (docs/design/frontier-instrumentation-plan.md): the
 	// dynamic effects, the strict-server dispatch seams, the opaque-SQL writes, the
-	// over-approximated dispatch. It is computed FROM the assembled graph, a
-	// read-only disclosure (it changes no verdict — R3), and omitted when empty so
-	// a frontier-free service emits a byte-identical graph. Consumers read it
-	// instead of reconstructing the frontier from topology.
-	Frontier []frontier.Marker `json:"frontier,omitempty"`
+	// over-approximated dispatch — plus the AGGREGATE unconfirmed-route count and the
+	// coverage caveat, so a consumer reading only this section cannot misread a 0
+	// attribution loss as a proof of no severance. A read-only disclosure (it changes
+	// no verdict — R3), omitted when there is nothing to disclose so a clean,
+	// unscoped service emits a byte-identical graph.
+	Frontier *FrontierSection `json:"frontier,omitempty"`
+}
+
+// FrontierSection is the disclosed frontier carried in the graph: the per-site
+// markers, plus an AGGREGATE count of routes whose severance could not be confirmed
+// (the third state — kept a count, not per-route markers, so it stays stable under
+// refactoring and does not cry wolf on every health endpoint), plus the coverage
+// caveat naming what the attribution signal confirms. Per-route detail for the
+// unconfirmed routes lives in the on-demand `flowmap frontier` view, not here.
+type FrontierSection struct {
+	Markers           []frontier.Marker `json:"markers,omitempty"`
+	UnconfirmedRoutes int               `json:"unconfirmed_routes,omitempty"`
+	Coverage          string            `json:"coverage,omitempty"`
 }
 
 // Entrypoint is one named root: an HTTP route or a consumed topic, with the
@@ -274,10 +287,32 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
 	// the unscoped build, the same convention those sections use.
 	if entry == "" {
-		g.Frontier = frontier.Classify(frontierInput(g))
+		g.Frontier = frontierSection(g)
 	}
 	return g, nil
 }
+
+// frontierSection classifies g and assembles the disclosed section: the markers,
+// the aggregate unconfirmed-route COUNT (not the per-route list — that rides the
+// on-demand view), and the coverage caveat. Returns nil when there is nothing to
+// disclose, so a clean service emits no section (and absence on an UNSCOPED graph
+// honestly means "proven clean").
+func frontierSection(g *Graph) *FrontierSection {
+	r := frontier.Classify(frontierInput(g))
+	if len(r.Markers) == 0 && len(r.UnconfirmedRoutes) == 0 {
+		return nil
+	}
+	return &FrontierSection{
+		Markers:           r.Markers,
+		UnconfirmedRoutes: len(r.UnconfirmedRoutes),
+		Coverage:          frontier.Coverage,
+	}
+}
+
+// ClassifyFrontier returns the FULL classifier result for g — markers plus the
+// per-route unconfirmed list — for the on-demand `flowmap frontier` view, which
+// shows detail the committed section deliberately keeps as an aggregate.
+func ClassifyFrontier(g *Graph) *frontier.Result { return frontier.Classify(frontierInput(g)) }
 
 // frontierInput adapts the assembled graph into the classifier's serialization-free
 // input view (frontier imports nothing of graphio; graphio adapts to it).
@@ -330,7 +365,7 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 		// whole-service disclosure (see Build), so a scoped reclaim re-sorts its
 		// edges but carries no frontier.
 		if g.Entrypoint == "" {
-			g.Frontier = frontier.Classify(frontierInput(g))
+			g.Frontier = frontierSection(g)
 		}
 	}
 	return added
