@@ -15,8 +15,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
+
+	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 )
 
 // boundaryPrefix marks an edge target that is a typed external sink (a DB op, an
@@ -217,11 +218,7 @@ func (g *Graph) ReclaimCaveat() string {
 	if len(counts) == 0 {
 		return ""
 	}
-	vias := make([]string, 0, len(counts))
-	for v := range counts {
-		vias = append(vias, v)
-	}
-	sort.Strings(vias)
+	vias := setutil.SortedKeys(counts)
 	parts := make([]string, 0, len(vias))
 	for _, v := range vias {
 		parts = append(parts, fmt.Sprintf("%d via %s", counts[v], v))

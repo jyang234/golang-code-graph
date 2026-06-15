@@ -254,6 +254,35 @@ func TestReviewFlagsPolicyGraphSubstrateMismatch(t *testing.T) {
 	}
 }
 
+// The substrate mismatch must be a DISCLOSURE only — it must never enter the
+// base-vs-branch finding diff. A body-only MR (identical structure) judged across
+// a base/branch substrate switch must still abstain NO-STRUCTURAL-SIGNAL: the
+// mismatch is a build artifact, not signal about the change. (Regression: emitting
+// it as a fitness.Check Caution leaked it into NewCautions and flipped the verdict
+// to STRUCTURALLY-CLEAR.)
+func TestSubstrateMismatchDoesNotFlipBodyOnlyVerdict(t *testing.T) {
+	nodes := []graph.Node{{FQN: "(*svc.S).Do", Sig: "func()", Tier: 1}}
+	base := &graph.Graph{Algo: "vta", Nodes: nodes}
+	branch := &graph.Graph{Algo: "rta", Nodes: nodes} // identical structure, different algo
+	a := Review(&policy.Policy{Service: "svc", Version: 1, Substrate: "vta"}, base, branch)
+
+	if a.Verdict != NoStructuralSignal {
+		t.Errorf("a body-only change across a substrate switch must abstain; got %s (cautions=%v)", a.Verdict, a.NewCautions)
+	}
+	for _, c := range a.NewCautions {
+		if strings.Contains(c.Summary, "substrate") {
+			t.Errorf("the substrate mismatch must not appear as a new caution; got %+v", c)
+		}
+	}
+	// The disclosure itself is preserved — on the caveat line, not as a finding.
+	for _, c := range a.Caveats {
+		if strings.Contains(c, "substrate mismatch") {
+			return
+		}
+	}
+	t.Error("the substrate mismatch must still be disclosed as a caveat")
+}
+
 // A branch graph built with `--reclaim` was judged over a substrate that includes
 // edges recovered at a dispatch seam; the verdict must disclose it on the substrate
 // line so a reclaim-informed gate is auditable, not silently folded into a plain

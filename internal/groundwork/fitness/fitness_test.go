@@ -42,36 +42,19 @@ func layeredPolicy() *policy.Policy {
 	}
 }
 
-// A policy proposed on one algorithm but checked against a graph built on another
-// must surface a (non-blocking) substrate Caution, so its spurious reachability
-// findings are read as analyzer artifacts, not regressions (§9). It stays silent
-// when the algorithms agree or either side is unrecorded.
-func TestCheckFlagsSubstrateMismatch(t *testing.T) {
-	mismatchCaution := func(res Result) bool {
-		for _, f := range res.Cautions() {
-			if f.Rule == "substrate" {
-				return true
-			}
-		}
-		return false
-	}
+// The policy-vs-graph substrate mismatch is a DISCLOSURE (a caveat on the
+// substrate line), never a fitness Finding: Check is shared with review/verify,
+// so a finding here would leak into their base-vs-branch diff and flip a verdict.
+// Check must therefore stay silent on a mismatch — the caveat channel
+// (cmdFitness, provenanceCaveats) carries it. The caveat text itself is covered by
+// graph.TestSubstrateMismatchCaveat and review.TestReviewFlagsPolicyGraphSubstrateMismatch.
+func TestCheckEmitsNoSubstrateFinding(t *testing.T) {
 	g := &graph.Graph{Algo: "rta", Nodes: []graph.Node{{FQN: "svc.A", Tier: 1}}}
-	ix := graph.NewIndex(g)
-
-	res := Check(&policy.Policy{Service: "svc", Version: 1, Substrate: "vta"}, ix)
-	if !mismatchCaution(res) {
-		t.Errorf("a vta-proposed policy on an rta graph must raise a substrate caution; got %+v", res.Cautions())
-	}
-	if !res.OK() {
-		t.Error("the substrate mismatch must be advisory (Caution), not gate-failing")
-	}
-
-	// Agreement and unrecorded sides are silent.
-	if res := Check(&policy.Policy{Service: "svc", Version: 1, Substrate: "rta"}, ix); mismatchCaution(res) {
-		t.Error("matching substrate must not raise a caution")
-	}
-	if res := Check(&policy.Policy{Service: "svc", Version: 1}, ix); mismatchCaution(res) {
-		t.Error("an unrecorded policy substrate must not raise a caution")
+	res := Check(&policy.Policy{Service: "svc", Version: 1, Substrate: "vta"}, graph.NewIndex(g))
+	for _, f := range res.Findings {
+		if f.Rule == "substrate" {
+			t.Errorf("Check must not emit a substrate finding (it leaks into review's diff); got %+v", f)
+		}
 	}
 }
 
