@@ -1,0 +1,6 @@
+service: strictsvc
+classify:
+  busPublish:
+    - "example.com/strictsvc/bus#Publish"
+  db:
+    - "database/sql"

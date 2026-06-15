@@ -46,6 +46,16 @@ const (
 	Linkname Kind = "go:linkname"
 )
 
+// Kinds returns every blind-spot category. It exists so exhaustiveness guards —
+// e.g. a classifier that must assign each kind a bin — can iterate the full set and
+// fail when a new kind is added without handling. Keep it in sync with the consts
+// above (a new const belongs here).
+func Kinds() []Kind {
+	return []Kind{
+		NonConstantBoundaryArg, UnresolvedDispatch, Reflect, HighFanOut, Unsafe, Cgo, Linkname,
+	}
+}
+
 // Boundary reports whether a blind spot belongs to the GATED boundary subset.
 // Only the categories that describe an inter-service boundary surface gate: a
 // dynamically-named boundary effect and an unresolved entry-point registration.

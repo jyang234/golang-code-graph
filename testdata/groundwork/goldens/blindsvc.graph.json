@@ -141,5 +141,24 @@
       "name": "POST /users/{id}",
       "fn": "(*example.com/blindsvc/internal/handler.Server).Create"
     }
+  ],
+  "frontier": [
+    {
+      "kind": "dynamic-bus",
+      "bin": "A",
+      "site": "bus PUBLISH <dynamic>",
+      "owner": "(*example.com/blindsvc/internal/notify.Notifier).Emit",
+      "reclaimer_hint": "runtime-resolved target — disclose; resolvable only by observation, never statically"
+    },
+    {
+      "kind": "reflect",
+      "bin": "A",
+      "site": "example.com/blindsvc/internal/encode.Marshal"
+    },
+    {
+      "kind": "unsafe",
+      "bin": "A",
+      "site": "example.com/blindsvc/internal/rawmem"
+    }
   ]
 }

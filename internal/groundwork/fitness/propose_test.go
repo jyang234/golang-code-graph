@@ -633,6 +633,273 @@ func TestProposeUnprovenDisclosureNotPollutedByPrefixSibling(t *testing.T) {
 	}
 }
 
+// R8: the strict-server seam, now for the WAYPOINT proposer. A guarded classified
+// write (db DELETE) sits behind the chi `$1` dispatch seam, reachable only through
+// the generated handler closure. The field report conjectured this fires R7's
+// proposer/enforcer mismatch one proposer over: proposeWaypoint judges with a bare
+// guardedWalk from each source while (it claimed) the must_pass_through enforcer
+// name-expands the from-set to the `$1` family — so init would propose a waypoint
+// the gate then violates.
+//
+// It does not, and this pins WHY: the waypoint rule's From is policy.EntrypointSelector,
+// which expandFroms binds to EXACTLY ix.Sources() — entrypoint:* does NOT name-expand
+// to `$N` closures (only an explicit-FQN from-entry does, the read-only case). So the
+// proposer (guardsAll over ix.Sources()) and the enforcer (guardedWalk over
+// expandFroms(entrypoint:*) = ix.Sources()) walk the identical source set, and the
+// write behind the seam is reachable from the dispatch closure ROOT
+// (HandlerWithOptions$1, a source) that BOTH iterate. The proposal is self-clean by
+// construction, and — the decisive check — the proposed waypoint, enforced over the
+// enforcer's own from-binding, finds no bypass.
+func TestProposeWaypointStrictServerSelfClean(t *testing.T) {
+	ix := graph.NewIndex(strictServerWaypointGraph(false))
+	p, _ := Propose(ix, "svc")
+
+	if len(p.MustPassThrough) != 1 {
+		t.Fatalf("a single seam guards every write path; want one waypoint, got %+v", p.MustPassThrough)
+	}
+
+	// The decisive assertion, the waypoint analogue of TestProposeKeptReadOnlyRoutes-
+	// AreEnforcerClean: the proposed waypoint, walked from the SAME from-binding the
+	// enforcer uses (expandFroms over the rule's entrypoint:* From), must leave no
+	// unallowed bypass. A regression that let proposeWaypoint judge over a source set
+	// the enforcer does not (R8's conjecture, or its mistaken family-aware "fix") trips
+	// here on the strict-server topology.
+	rule := p.MustPassThrough[0]
+	froms := expandFroms(ix, rule.From)
+	for _, from := range froms {
+		if matchAny(from, rule.Through) {
+			continue
+		}
+		cone, _ := guardedWalk(ix, from, rule.Through)
+		for _, fn := range cone {
+			if fn != from && matchAny(fn, rule.To) && !rule.Allowed(from, fn) {
+				t.Errorf("proposer KEPT waypoint %v, but the enforcer finds %s bypasses it to %s", rule.Through, ShortName(from), ShortName(fn))
+			}
+		}
+		for _, e := range ix.Effects(cone...) {
+			if matchAny(e.To, rule.To) && !rule.Allowed(from, e.To) {
+				t.Errorf("proposer KEPT waypoint %v, but the enforcer finds %s bypasses it to %s", rule.Through, ShortName(from), e.To)
+			}
+		}
+	}
+
+	// And the whole-policy invariant: the proposal passes its own gate.
+	res := Check(p, ix)
+	for _, f := range res.Violations() {
+		if f.Rule != "obligation" {
+			t.Errorf("proposed policy violates its own source graph (R8): %v", f)
+		}
+	}
+}
+
+// R8, the universal self-clean invariant — the structural close-the-class guard the
+// field report asked for. init's defining property is that its output is a ratchet of
+// current truth, so for ANY graph the proposal must pass fitness on the SAME graph with
+// zero non-obligation violations — not only the read-only proposer (R7) but the waypoint,
+// concurrency, layering, and budget proposers too. R5/R6/R7 were one class — a
+// proposer/enforcer node-set inconsistency — fixed one proposer at a time, each round a
+// point-fix plus a point-test. This asserts the WHOLE family is self-clean at once across
+// a battery of adversarial topologies, so the next sibling trips here instead of in the
+// field. (TestProposeIsBaselineClean asserts the same property over the real JSON
+// fixtures; together they are the universal invariant.) The assertion is identical and
+// proposer-agnostic — each case is only a topology a particular proposer reacts to.
+func TestProposeSelfCleanAcrossProposers(t *testing.T) {
+	cases := []struct {
+		name string
+		g    *graph.Graph
+	}{
+		// Read-only proposer over the strict-server seam (R7).
+		{"strict-server: read-only writer behind the $1 seam", strictServerReadOnlyGraph()},
+		// Waypoint proposer over the strict-server seam (R8): a single seam guards
+		// every write, reachable only via the dispatch-root closure.
+		{"strict-server: waypoint guards a write behind the $1 seam", strictServerWaypointGraph(false)},
+		// Waypoint proposer, strict-server seam with a second write on a DISJOINT
+		// receiver type that no single seam guards — the proposer must withhold the
+		// rule rather than propose one the gate violates.
+		{"strict-server: waypoint with a disjoint bypassing write", strictServerWaypointGraph(true)},
+		// Mixed substrate: a classified write a seam guards plus an opaque db-call
+		// write that bypasses it (read-only, waypoint, and budget all react).
+		{"mixed: classified guarded write plus opaque bypass", mixedGuardedAndOpaqueGraph()},
+		// Concurrent opaque write off a route (concurrency proposer withholds).
+		{"concurrent: opaque write off a goroutine", concurrentOpaqueGraph()},
+		// A pure read-only fan-out (read-only rule proposed and must stay clean).
+		{"read-only: fan-out reaching no write", readOnlyFanoutGraph()},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ix := graph.NewIndex(tc.g)
+			p, _ := Propose(ix, "svc")
+			if err := p.Validate(); err != nil {
+				t.Fatalf("proposed policy invalid: %v", err)
+			}
+			res := Check(p, ix)
+			for _, f := range res.Violations() {
+				if f.Rule != "obligation" {
+					t.Errorf("proposer/enforcer disagree — init's output violates its own graph: %v", f)
+				}
+			}
+		})
+	}
+}
+
+// strictServerReadOnlyGraph is the R7 topology, factored so the universal invariant
+// and the targeted R7 test share one source of truth: a wrapper root starved past the
+// chi seam, its `$1` closure (reached only from the dispatch root) carrying a classified
+// db DELETE, plus a genuinely read-only route.
+func strictServerReadOnlyGraph() *graph.Graph {
+	const (
+		wrapper   = "(*example.com/svc/internal/api.ServerInterfaceWrapper).Create"
+		closure   = "(*example.com/svc/internal/api.ServerInterfaceWrapper).Create$1"
+		dispatch  = "example.com/svc/internal/api.HandlerWithOptions$1"
+		strictH   = "(*example.com/svc/internal/api.strictHandler).Create"
+		store     = "(*example.com/svc/internal/storage.PostgresStore).del"
+		readRoute = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetHealth"
+	)
+	return &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: strictH, Sig: "func() error", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: readRoute, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: dispatch, To: closure, Tier: 2},
+			{From: closure, To: strictH, Tier: 2},
+			{From: strictH, To: store, Tier: 2},
+			{From: store, To: "boundary:db DELETE provisioning_outbox", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+}
+
+// strictServerWaypointGraph is the R8 topology: a classified db DELETE behind the chi
+// `$1` dispatch seam, guarded by the app.Service type on its only path. With bypass=true
+// a second write reaches the DB on a DISJOINT receiver type the seam cannot cover, so no
+// single waypoint guards every path and the proposer must withhold the rule.
+func strictServerWaypointGraph(bypass bool) *graph.Graph {
+	const (
+		wrapper  = "(*example.com/svc/internal/api.W).Create"
+		closure  = "(*example.com/svc/internal/api.W).Create$1"
+		dispatch = "example.com/svc/internal/api.HandlerWithOptions$1"
+		seamM    = "(*example.com/svc/internal/app.Service).Do"
+		store    = "(*example.com/svc/internal/storage.PostgresStore).save"
+		paramErr = "(*example.com/svc/internal/handler.Server).ParamErr"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+			{FQN: dispatch, Sig: "func()", Tier: 1},
+			{FQN: seamM, Sig: "func() error", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: paramErr, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			// The wrapper root's static reach stops at the param error handler — it
+			// never crosses chi's dynamic dispatch to its own `$1` closure (the seam).
+			{From: wrapper, To: paramErr, Tier: 2},
+			// The closure's only incoming edge is the chi dispatch root, and every
+			// write path runs through the app.Service seam.
+			{From: dispatch, To: closure, Tier: 2},
+			{From: closure, To: seamM, Tier: 2},
+			{From: seamM, To: store, Tier: 2},
+			{From: store, To: "boundary:db DELETE provisioning_outbox", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+	if bypass {
+		const (
+			sync2  = "(*example.com/svc/internal/api.V).Sync"
+			store2 = "(*example.com/svc/internal/storage.OtherStore).put"
+		)
+		g.Nodes = append(g.Nodes,
+			graph.Node{FQN: sync2, Sig: "func()", Tier: 1},
+			graph.Node{FQN: store2, Sig: "func() error", Tier: 1},
+		)
+		g.Edges = append(g.Edges,
+			graph.Edge{From: sync2, To: store2, Tier: 2},
+			graph.Edge{From: store2, To: "boundary:db INSERT audit", Tier: 1, Boundary: "outbound-sync"},
+		)
+	}
+	return g
+}
+
+// mixedGuardedAndOpaqueGraph: a classified write a seam guards, plus an opaque db-call
+// write on another route that bypasses the seam — the read-only, waypoint, and budget
+// proposers all react, and the policy must still be self-clean.
+func mixedGuardedAndOpaqueGraph() *graph.Graph {
+	const (
+		guarded   = "(*example.com/svc/internal/handler.Server).Create"
+		seamM     = "(*example.com/svc/internal/app.Service).Do"
+		store     = "(*example.com/svc/internal/store.Store).Insert"
+		opaque    = "(*example.com/svc/internal/handler.Server).Sync"
+		opaqueSt  = "(*example.com/svc/internal/store.Store).Exec"
+		readRoute = "(*example.com/svc/internal/handler.Server).Livez"
+	)
+	return &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: guarded, Sig: "func()", Tier: 1},
+			{FQN: seamM, Sig: "func() error", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+			{FQN: opaque, Sig: "func()", Tier: 1},
+			{FQN: opaqueSt, Sig: "func() error", Tier: 1},
+			{FQN: readRoute, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: guarded, To: seamM, Tier: 2},
+			{From: seamM, To: store, Tier: 2},
+			{From: store, To: "boundary:db INSERT things", Tier: 1, Boundary: "outbound-sync"},
+			{From: opaque, To: opaqueSt, Tier: 2},
+			{From: opaqueSt, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+}
+
+// concurrentOpaqueGraph: a goroutine-spawned path reaching an opaque db-call write —
+// the concurrency proposer must withhold its rule (unproven), self-clean.
+func concurrentOpaqueGraph() *graph.Graph {
+	const (
+		route   = "(*example.com/svc/internal/inbound.Handler).Handle"
+		spawned = "(*example.com/svc/internal/worker.Worker).Persist"
+		store   = "(*example.com/svc/internal/storage.PostgresStore).write"
+	)
+	return &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: route, Sig: "func()", Tier: 1},
+			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: store, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: route, To: spawned, Tier: 2, Concurrent: true},
+			{From: spawned, To: store, Tier: 2},
+			{From: store, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+}
+
+// readOnlyFanoutGraph: two routes that reach no external write — the read-only rule is
+// proposed and must stay clean against its own graph.
+func readOnlyFanoutGraph() *graph.Graph {
+	const (
+		list = "(*example.com/svc/internal/handler.Server).List"
+		get  = "(*example.com/svc/internal/handler.Server).Get"
+		repo = "(*example.com/svc/internal/store.Store).Query"
+	)
+	return &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: list, Sig: "func()", Tier: 1},
+			{FQN: get, Sig: "func()", Tier: 1},
+			{FQN: repo, Sig: "func() error", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: list, To: repo, Tier: 2},
+			{From: get, To: repo, Tier: 2},
+			{From: repo, To: "boundary:db SELECT rows", Tier: 1, Boundary: "outbound-sync"},
+		},
+	}
+}
+
 // setOf is a small membership-set helper for the From-list assertions.
 func setOf(ss []string) map[string]bool {
 	m := make(map[string]bool, len(ss))

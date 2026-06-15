@@ -178,6 +178,27 @@ func proposeWaypoint(ix *graph.Index, p *policy.Policy, g *guide) {
 		}
 		return
 	}
+	// proposeWaypoint judges write-reachability with guardedWalk over ix.Sources()
+	// — the BARE source roots, not their name-expanded $N closure family. That is
+	// the deliberate mirror of the enforcer this rule feeds, the same discipline
+	// readOnlyCone documents for the read-only proposer: checkMustPassThrough binds
+	// this rule's From (always policy.EntrypointSelector, set below) through
+	// bindFroms→expandFroms, and expandFroms resolves entrypoint:* to EXACTLY
+	// ix.Sources(). The entrypoint selector does NOT name-expand to $N closures —
+	// only an explicit-FQN from-entry does (the read-only rule's case, which
+	// readOnlyCone mirrors with expandFroms). So the proposer and the gate walk the
+	// identical source set with the identical guardedWalk: a `through` that guardsAll
+	// accepts is one the enforcer cannot find a bypass for, by construction.
+	//
+	// On an oapi strict-server topology the classified write behind the chi `$1`
+	// dispatch seam is still reachable from the dispatch closure ROOT
+	// (HandlerWithOptions$1, a graph source), which BOTH sides iterate — so neither
+	// the proposer nor the enforcer is seam-starved here. Expanding each source to
+	// its $1 family (the R7 readOnly fix) would make this proposer STRICTER than its
+	// entrypoint:* enforcer rather than matching it, the opposite of self-clean.
+	// Each proposer mirrors the binding of the enforcer it feeds; for the waypoint
+	// rule that binding is the bare source set (R8). TestProposeWaypointStrictServer*
+	// and TestProposeSelfCleanAcrossProposers pin this against the strict-server seam.
 	sources := ix.Sources()
 
 	guardsAll := func(through string) bool {

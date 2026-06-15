@@ -18,7 +18,9 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	cg "github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
+	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/obligations"
+	"github.com/jyang234/golang-code-graph/internal/static/reclaim"
 	"github.com/jyang234/golang-code-graph/internal/static/roots"
 	"github.com/jyang234/golang-code-graph/internal/static/signatures"
 )
@@ -74,6 +76,15 @@ type Graph struct {
 	// faults, what may already be committed?". Like Obligations it rides
 	// unscoped builds only and is omitted when empty.
 	EffectOrder []obligations.EffectOrder `json:"effect_order,omitempty"`
+
+	// Frontier is the A/B/B2/C classification of where static reachability stops
+	// being able to answer (docs/design/frontier-instrumentation-plan.md): the
+	// dynamic effects, the strict-server dispatch seams, the opaque-SQL writes, the
+	// over-approximated dispatch. It is computed FROM the assembled graph, a
+	// read-only disclosure (it changes no verdict — R3), and omitted when empty so
+	// a frontier-free service emits a byte-identical graph. Consumers read it
+	// instead of reconstructing the frontier from topology.
+	Frontier []frontier.Marker `json:"frontier,omitempty"`
 }
 
 // Entrypoint is one named root: an HTTP route or a consumed topic, with the
@@ -100,6 +111,13 @@ type Edge struct {
 	Tier       int    `json:"tier"`
 	Boundary   string `json:"boundary,omitempty"`
 	Concurrent bool   `json:"concurrent,omitempty"`
+
+	// Via names the reclaimer that recovered this edge, empty for a base
+	// call-graph edge (Phase 3 / D2). A reclaimed edge is one real execution can
+	// take that the builder lost at a dispatch seam; carrying its provenance lets a
+	// reviewer diff base-vs-reclaimed and a verdict self-certify which reclaimers
+	// it leaned on.
+	Via string `json:"via,omitempty"`
 }
 
 // Build renders the full first-party graph of res. If entry is non-empty, the
@@ -249,7 +267,73 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 	}
 
 	sortGraph(g)
+	// Classify the frontier over the finalized graph — a read-only disclosure
+	// section, computed last so it sees every node, edge, blind spot, and entry.
+	// Like Obligations/EffectOrder it is a whole-service disclosure: a scoped
+	// (--entry) cone drops entrypoints and prunes effect paths, so its starvation /
+	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
+	// the unscoped build, the same convention those sections use.
+	if entry == "" {
+		g.Frontier = frontier.Classify(frontierInput(g))
+	}
 	return g, nil
+}
+
+// frontierInput adapts the assembled graph into the classifier's serialization-free
+// input view (frontier imports nothing of graphio; graphio adapts to it).
+func frontierInput(g *Graph) *frontier.Input {
+	in := &frontier.Input{}
+	for _, n := range g.Nodes {
+		in.Nodes = append(in.Nodes, n.FQN)
+	}
+	for _, e := range g.Edges {
+		in.Edges = append(in.Edges, frontier.InEdge{From: e.From, To: e.To})
+	}
+	for _, b := range g.BlindSpots {
+		in.BlindSpots = append(in.BlindSpots, frontier.InBlindSpot{Kind: string(b.Kind), Site: b.Site})
+	}
+	for _, ep := range g.Entrypoints {
+		in.Entrypoints = append(in.Entrypoints, frontier.InEntry{Fn: ep.Fn, Name: ep.Name})
+	}
+	return in
+}
+
+// ApplyReclaimers runs the sound dispatch-seam reclaimers (reclaim package) over
+// res and folds the recovered edges into g, re-sorting and re-classifying the
+// frontier so it reflects the reclaimed graph. It is OPT-IN (D2): Build never calls
+// it, so the default graph — and every committed golden — is unchanged; a caller
+// asks for it explicitly (`flowmap graph --reclaim`). Each added edge is one real
+// execution can take (R2) and carries its reclaimer in Via, so a reviewer can diff
+// base-vs-reclaimed. Returns the number of edges added. Only edges between existing
+// nodes that are not already present are folded in.
+func ApplyReclaimers(g *Graph, res *analyze.Result) int {
+	nodes := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodes[n.FQN] = true
+	}
+	existing := make(map[[2]string]bool, len(g.Edges))
+	for _, e := range g.Edges {
+		existing[[2]string{e.From, e.To}] = true
+	}
+	added := 0
+	for _, e := range reclaim.StrictServer(res) {
+		if !nodes[e.From] || !nodes[e.To] || existing[[2]string{e.From, e.To}] {
+			continue
+		}
+		g.Edges = append(g.Edges, Edge{From: e.From, To: e.To, Tier: 2, Via: e.Via})
+		existing[[2]string{e.From, e.To}] = true
+		added++
+	}
+	if added > 0 {
+		sortGraph(g)
+		// Re-classify only for an unscoped graph — the frontier section is a
+		// whole-service disclosure (see Build), so a scoped reclaim re-sorts its
+		// edges but carries no frontier.
+		if g.Entrypoint == "" {
+			g.Frontier = frontier.Classify(frontierInput(g))
+		}
+	}
+	return added
 }
 
 // obligationSummaries hands the engine its production inputs (CX-2): the
@@ -349,6 +433,10 @@ func sortGraph(g *Graph) {
 	// Total order over every Edge field: a comparator that ignored Boundary and
 	// Concurrent left equal-keyed edges in build order — deterministic only as
 	// long as the pre-sort slice happened to be, a latent output-stability trap.
+	// Via is included for the same reason (dedupEdges compares full struct equality,
+	// so a comparator that omitted Via could order two Via-differing edges by build
+	// order while dedup kept both — a stability gap if a future reclaimer emits a
+	// Via edge parallel to a base From/To).
 	sort.Slice(g.Edges, func(i, j int) bool {
 		a, b := g.Edges[i], g.Edges[j]
 		if a.From != b.From {
@@ -363,7 +451,10 @@ func sortGraph(g *Graph) {
 		if a.Boundary != b.Boundary {
 			return a.Boundary < b.Boundary
 		}
-		return !a.Concurrent && b.Concurrent
+		if a.Concurrent != b.Concurrent {
+			return !a.Concurrent && b.Concurrent
+		}
+		return a.Via < b.Via
 	})
 	g.Edges = dedupEdges(g.Edges)
 }
