@@ -136,13 +136,25 @@ on *different* algorithms, the mismatch is disclosed as a caveat (a delta across
 substrates can move for the analyzer's reasons, not the code's). A graph from a
 pre-provenance flowmap reads `substrate: unrecorded`.
 
+A graph built with `flowmap graph --reclaim` carries edges recovered at a
+framework dispatch seam (the oapi strict-server `wrapper→$1` hop), each tagged with
+the reclaimer in a `via` field. groundwork consumes that field and adds a
+`reclaim-informed: N via <reclaimer>` clause to the same substrate line, so a
+verdict that leaned on a reclaimed edge is auditable as such. Reclaimers only add
+sound edges, so a proof of *absence* over a reclaimed graph is at least as strong;
+the disclosure exists so a *reachable* verdict resting on a reclaimed edge is not
+mistaken for one the base graph already saw.
+
 `init` also records the algorithm it proposed against in the policy's `substrate`
 field, and `fitness`/`verify` flag a **policy-vs-graph** mismatch the same way: a
 policy proposed on `vta` but checked against an `rta` graph (the `flowmap graph`
-default) raises a non-blocking substrate caution, because `rta` over-approximates
-dynamic dispatch and can surface reachability findings `vta` ruled out — so the
-spurious findings read as an analyzer artifact, not a regression. The remedy it
-names: build the gate graph with the same `--algo`, or re-init the policy.
+default) appends a substrate-mismatch note to the same provenance line, because
+`rta` over-approximates dynamic dispatch and can surface reachability findings
+`vta` ruled out — so the spurious findings read as an analyzer artifact, not a
+regression. It is a **disclosure, never a gate finding** (a finding would leak
+into `review`/`verify`'s base-vs-branch diff and mis-flip a verdict), so it
+discloses without blocking. The remedy it names: build the gate graph with the
+same `--algo`, or re-init the policy.
 
 ---
 
@@ -452,6 +464,17 @@ edge — *same description, different computed verdict.* The artifact also repor
 shape, touched packages, contract movement (additive vs breaking), I/O effect
 changes, and which existing entrypoints the change is now live behind. Add
 `--json` to emit the canonical artifact for archival or `verify-artifact`.
+
+The **contract** section is the inter-service surface: named external
+entrypoints (HTTP routes and consumed topics, from the `entrypoints` join) plus
+bus publishes/consumes and outbound dependencies. Removing one is breaking. It is
+deliberately keyed on *named entrypoints*, not on every graph root: an unwired
+exported method, a closure renumbered by a refactor, or an internal function left
+rootless by a deleted backend are all roots but none are inter-service contract,
+so they surface in the structural delta, not as a (breaking) contract change. The
+trade-off is services-scoped — for a graph that exposes no routes/topics (or whose
+routes flowmap did not resolve into the entrypoints join) a removed root is not
+flagged here; such a removal shows in the node/edge delta instead.
 
 Two sections attribute write-surface movement beyond the global effect diff:
 

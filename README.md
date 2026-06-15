@@ -23,8 +23,10 @@ Two cooperating tools, one interface between them:
   typed boundary effects (`go/packages → go/ssa → go/callgraph`), a gated
   inter-service **boundary contract**, per-function **path-obligation
   verdicts** and **partial-effect facts** computed from each function's
-  control-flow graph, and **behavioral golden snapshots** captured from real
-  OpenTelemetry traces.
+  control-flow graph, a disclosed **static-frontier classification** of where
+  reachability stops being able to answer (with opt-in, sound **reclaimers**
+  that close framework dispatch seams), and **behavioral golden snapshots**
+  captured from real OpenTelemetry traces.
 - **groundwork** *judges* those facts against a human-authored policy:
   architectural fitness gates, computed MR review artifacts with an
   unfakeable digest, incident-triage cards, pre-edit grounding cards, and an
@@ -90,6 +92,8 @@ prevention is cheaper than deterministic rejection.
 # Produce the facts (flowmap, the trusted side):
 $ flowmap graph svc/ > graph.json          # call graph + boundary effects + obligations
 $ flowmap graph svc/ --algo vta            # refine interface-dense dispatch (default rta)
+$ flowmap graph svc/ --reclaim             # also recover edges lost at framework dispatch seams (opt-in, sound)
+$ flowmap frontier svc/                    # classify where static reachability stops (A/B/B2/C) — measurement, not a gate
 $ flowmap boundary svc/                    # gated inter-service contract
 
 # Explore and gate (groundwork, the judge):
@@ -134,7 +138,7 @@ threaded through every output.
 ## Layout
 
 ```
-cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--stamp] | diff | coverage | behavior ingest | version
+cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--algo] [--reclaim] [--stamp] | frontier | diff | coverage | behavior ingest | version
 cmd/groundwork/  CLI: reach | triage | ground | fitness | review | verify | diff | verify-artifact
                       | exceptions | policy-check | mcp | version
 harness/ capture/ flow/ ir/   PUBLIC: in-process flow-test capture + the canonical IR
