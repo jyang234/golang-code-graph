@@ -465,8 +465,13 @@ func cmdFitness(args []string) error {
 	}
 	// Provenance first: a green fitness pass is only as strong as the substrate it
 	// was computed on, so the verdict states which call-graph algorithm produced
-	// the graph it judged (R3).
-	fmt.Print(graph.ProvenanceLine(g.Algo, g.Caveats))
+	// the graph it judged (R3) and, when the graph was built with `--reclaim`, that
+	// the verdict leaned on edges recovered at a dispatch seam (R9).
+	caveats := g.Caveats
+	if rc := g.ReclaimCaveat(); rc != "" {
+		caveats = append(append([]string{}, caveats...), rc)
+	}
+	fmt.Print(graph.ProvenanceLine(g.Algo, caveats))
 	violations, cautions := res.Violations(), res.Cautions()
 	for _, f := range violations {
 		printFinding("⛔", f)

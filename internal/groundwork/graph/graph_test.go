@@ -33,6 +33,43 @@ func TestProvenanceLineAndRoundTrip(t *testing.T) {
 	}
 }
 
+// A graph from `flowmap graph --reclaim` carries a per-edge `via` provenance tag
+// (R9). groundwork must CONSUME it — the decoder rejected it before, so every
+// command died on a reclaimed graph — and ReclaimCaveat must disclose it so a
+// verdict computed over the reclaimed substrate is auditable as reclaim-informed.
+func TestReclaimEdgeRoundTripAndCaveat(t *testing.T) {
+	const j = `{"algo":"vta","nodes":[{"fqn":"svc/api.Wrapper.Create","sig":"f"},{"fqn":"svc/api.Wrapper.Create$1","sig":"f"}],"edges":[{"from":"svc/api.Wrapper.Create","to":"svc/api.Wrapper.Create$1","via":"strict-server"}],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("a reclaimed graph (via field) must round-trip, got %v", err)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].Via != "strict-server" {
+		t.Fatalf("via did not round-trip: edges=%+v", g.Edges)
+	}
+	rc := g.ReclaimCaveat()
+	if !strings.Contains(rc, "reclaim-informed") || !strings.Contains(rc, "1 via strict-server") {
+		t.Errorf("ReclaimCaveat = %q, want it to name the reclaimer and count", rc)
+	}
+	// The disclosure must ride the substrate line every verdict surface echoes.
+	line := ProvenanceLine(g.Algo, []string{rc})
+	if !strings.Contains(line, "substrate: vta") || !strings.Contains(line, "reclaim-informed") {
+		t.Errorf("provenance line = %q, want substrate + reclaim disclosure", line)
+	}
+}
+
+// A base (no --reclaim) graph carries no via, so ReclaimCaveat is silent — the
+// committed, byte-identical default graph must disclose nothing.
+func TestReclaimCaveatSilentOnBaseGraph(t *testing.T) {
+	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db SELECT users"}],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if rc := g.ReclaimCaveat(); rc != "" {
+		t.Errorf("ReclaimCaveat on a base graph = %q, want empty", rc)
+	}
+}
+
 func TestLoadRequiresNodes(t *testing.T) {
 	const j = `{"edges":[],"blind_spots":[]}`
 	if _, err := Load(strings.NewReader(j)); err == nil {

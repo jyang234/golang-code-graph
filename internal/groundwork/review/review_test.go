@@ -150,6 +150,47 @@ func TestReviewRecordsSubstrateAndMismatch(t *testing.T) {
 	}
 }
 
+// A branch graph built with `--reclaim` was judged over a substrate that includes
+// edges recovered at a dispatch seam; the verdict must disclose it on the substrate
+// line so a reclaim-informed gate is auditable, not silently folded into a plain
+// pass (R9).
+func TestReviewDisclosesReclaimedSubstrate(t *testing.T) {
+	mk := func(reclaimed bool) *graph.Graph {
+		e := graph.Edge{From: "(*svc.S).Do", To: "(*svc.S).Do$1"}
+		if reclaimed {
+			e.Via = "strict-server"
+		}
+		return &graph.Graph{
+			Algo:  "vta",
+			Nodes: []graph.Node{{FQN: "(*svc.S).Do", Sig: "func()", Tier: 1}, {FQN: "(*svc.S).Do$1", Sig: "func()", Tier: 1}},
+			Edges: []graph.Edge{e},
+		}
+	}
+	p := &policy.Policy{Service: "svc", Version: 1}
+
+	a := Review(p, mk(true), mk(true))
+	var disclosed bool
+	for _, c := range a.Caveats {
+		if strings.Contains(c, "reclaim-informed") {
+			disclosed = true
+		}
+	}
+	if !disclosed {
+		t.Errorf("a reclaimed branch substrate must be disclosed as a caveat; got %v", a.Caveats)
+	}
+	if !strings.Contains(a.Render(), "reclaim-informed") {
+		t.Errorf("render must echo the reclaim disclosure; got:\n%s", a.Render())
+	}
+
+	// A base (no --reclaim) branch discloses nothing.
+	b := Review(p, mk(false), mk(false))
+	for _, c := range b.Caveats {
+		if strings.Contains(c, "reclaim-informed") {
+			t.Errorf("a base branch substrate must not synthesize a reclaim caveat; got %q", c)
+		}
+	}
+}
+
 // The same feature wired two ways must produce different verdicts from the same
 // (absent) prose — the comprehension the reviewer was losing.
 func TestSameFeatureDifferentVerdict(t *testing.T) {

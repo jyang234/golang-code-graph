@@ -18,6 +18,12 @@ func provenanceCaveats(base, branch *graph.Graph) []string {
 		out = append(out, fmt.Sprintf("base graph built on %s, branch on %s — substrate differs; a delta may be the analyzer's, not the code's", base.Algo, branch.Algo))
 	}
 	out = append(out, branch.Caveats...)
+	// When the branch graph was built with `--reclaim`, the verdict was computed
+	// over a substrate that includes edges recovered at a dispatch seam; disclose
+	// it on the same substrate line so a reclaim-informed gate is auditable (R9).
+	if rc := branch.ReclaimCaveat(); rc != "" {
+		out = append(out, rc)
+	}
 	if len(out) == 0 {
 		return nil
 	}

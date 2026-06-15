@@ -257,6 +257,16 @@ its effects, leaving only the irreducible A/B2 frontier. Default Build is unchan
 "strict-server"`. Soundness (R2) is enforced by the detector below and the
 no-false-positives test (oapisvc/loansvc recover nothing).
 
+**Consumer side (R9):** the groundwork decoder (`groundwork/graph.Edge`) now
+accepts and round-trips the per-edge `via` tag — without it `DisallowUnknownFields`
+rejected every reclaimed graph (`unknown field "via"`, exit 2), so the reclaimer was
+producible but not consumable through `init`/`fitness`/`verify`/`review`/`reach`.
+The substrate disclosure is extended too (`Graph.ReclaimCaveat`): when a graph
+carries reclaimed edges, the substrate line every verdict surface echoes appends
+`reclaim-informed: N via <reclaimer> …`, so a verdict that leaned on a reclaimed
+edge is auditable as such — the Algo/Caveats discipline (R3) extended to the
+reclaimer provenance.
+
 **What:** sound static-analysis passes that add the missing edges for a recognized
 B-shape. First target, measured as ~80% of the strict-server frontier:
 

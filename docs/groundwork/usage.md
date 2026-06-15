@@ -973,7 +973,7 @@ it. Top-level sections:
 | Section | What it is | Notes |
 |---|---|---|
 | `nodes[]` | `{fqn, sig, tier, fallible}` per first-party function | sorted by fqn |
-| `edges[]` | `{from, to, tier, boundary?, concurrent?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed |
+| `edges[]` | `{from, to, tier, boundary?, concurrent?, via?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed; `via` names the reclaimer (`flowmap --reclaim`) that recovered the edge at a dispatch seam — a verdict over it self-discloses as reclaim-informed |
 | `blind_spots[]` | `{kind, site, detail}` — where the graph's knowledge stops | the soundness frontier |
 | `obligations[]` | `{rule, kind, fn, site, status, detail}` per anchored site | statuses are an open vocabulary: **fail closed on ones you don't recognize** |
 | `effect_order[]` | `{fn, effect, effect_site, callee, callee_site, always}` | "effect can/always precedes this fallible call" |

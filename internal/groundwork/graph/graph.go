@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -154,6 +155,17 @@ type Edge struct {
 	Tier       int    `json:"tier"`
 	Boundary   string `json:"boundary,omitempty"`
 	Concurrent bool   `json:"concurrent,omitempty"`
+
+	// Via names the reclaimer that recovered this edge (flowmap's opt-in
+	// `--reclaim`), empty for a base call-graph edge. A reclaimed edge is one
+	// real execution can take that the builder lost at a framework dispatch seam
+	// (the oapi strict-server wrapper→closure hop) — reclaimers only ADD sound
+	// can-reach edges (R2), never remove one. groundwork decodes it on its own
+	// side of the trust boundary like every other graph-carried field: a
+	// reclaimed graph must be CONSUMABLE (init/fitness/verify/review/reach), and
+	// a verdict computed over it self-discloses that it leaned on a reclaimed
+	// substrate via ReclaimCaveat, the Algo/Caveats discipline extended.
+	Via string `json:"via,omitempty"`
 }
 
 // BlindSpot is one disclosed gap in the graph's knowledge. Site is a first-party
@@ -181,6 +193,41 @@ func ProvenanceLine(algo string, caveats []string) string {
 		line += " — " + strings.Join(caveats, "; ")
 	}
 	return line + "\n"
+}
+
+// ReclaimCaveat returns a substrate caveat disclosing that this graph carries
+// reclaimed edges (flowmap's opt-in `--reclaim`), or "" when it carries none. It
+// names each reclaimer and its edge count so a verdict computed over the graph is
+// AUDITABLE as reclaim-informed — the Algo/Caveats substrate discipline (R3)
+// extended to the reclaimer provenance. Folded into the caveats every verdict
+// surface already echoes (fitness/verify/review), so a reader sees on the same
+// substrate line that the verdict leaned on edges recovered at a dispatch seam.
+//
+// A proof of ABSENCE over a reclaimed graph is at least as strong as over the base
+// graph (reclaimers only add sound edges — R2 — so they can turn provenAbsent→
+// reachable, never the reverse); the disclosure exists so a REACHABLE verdict that
+// rests on a reclaimed edge is not mistaken for one the base graph already saw.
+func (g *Graph) ReclaimCaveat() string {
+	counts := map[string]int{}
+	for _, e := range g.Edges {
+		if e.Via != "" {
+			counts[e.Via]++
+		}
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	vias := make([]string, 0, len(counts))
+	for v := range counts {
+		vias = append(vias, v)
+	}
+	sort.Strings(vias)
+	parts := make([]string, 0, len(vias))
+	for _, v := range vias {
+		parts = append(parts, fmt.Sprintf("%d via %s", counts[v], v))
+	}
+	return "reclaim-informed: " + strings.Join(parts, ", ") +
+		" edge(s) recovered at a dispatch seam (flowmap --reclaim) — a reachable verdict may rest on a reclaimed edge"
 }
 
 // IsBoundary reports whether the edge targets an external sink rather than a
