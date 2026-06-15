@@ -1,0 +1,281 @@
+// Package frontier classifies a built call graph's FRONTIER — every place static
+// reachability stops being able to answer — into the taxonomy from
+// docs/design/frontier-instrumentation-plan.md, deterministically and with no
+// coupling to any verdict surface (rule R3: a frontier label can only
+// (mis)prioritize our own work, never change a fitness/verify result).
+//
+// The four bins:
+//
+//	A  — truly dynamic: resolved only at runtime (<dynamic> bus/HTTP targets,
+//	     reflection, cgo/unsafe/linkname). Irreducible statically; disclose.
+//	B  — reclaimable structure: statically determined but unconnected by the
+//	     current builder (the strict-server `$1` dispatch seam; a route whose cone
+//	     is starved of every effect). The static lever — a sound reclaimer ADDS
+//	     the missing edge.
+//	B2 — consumer-reclaimable: opaque only because the SOURCE is non-constant (a
+//	     `db ExecContext` from runtime-built SQL). The consumer makes it constant.
+//	C  — over-approximation: sound but imprecise (HighFanOut shared dispatch). Not
+//	     blindness; precision.
+//
+// This is Phase 1 of the plan: the measurement instrument. It reads a graph and
+// reports; it does not yet emit the disclosed `frontier` section (Phase 2) or add
+// edges (Phase 3).
+package frontier
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
+	"github.com/jyang234/golang-code-graph/internal/static/graphio"
+)
+
+// Bin is one taxonomy class. The string values are the stable wire vocabulary.
+type Bin string
+
+const (
+	BinA  Bin = "A"  // truly dynamic
+	BinB  Bin = "B"  // reclaimable structure
+	BinB2 Bin = "B2" // consumer-reclaimable (opaque SQL)
+	BinC  Bin = "C"  // over-approximation
+)
+
+// Marker is one frontier site, binned, with the reclaim target when there is one.
+type Marker struct {
+	Kind          string `json:"kind"`                     // e.g. "severed-closure", "dynamic-bus", "opaque-db", "starved-entrypoint", "HighFanOut"
+	Bin           Bin    `json:"bin"`                      //
+	Site          string `json:"site"`                     // the FQN or effect label the marker is about
+	Owner         string `json:"owner,omitempty"`          // the reclaim target / the function making the effect
+	ReclaimerHint string `json:"reclaimer_hint,omitempty"` // what a reclaimer (B) or the consumer (B2) would do
+}
+
+// Report is the deterministic inventory: every marker, the per-bin counts, and the
+// two headline ratios — reclaimable share (B of all) and attribution loss (routes
+// that reach no effect, of all routes).
+type Report struct {
+	Algo               string      `json:"algo,omitempty"`
+	Markers            []Marker    `json:"markers"`
+	Counts             map[Bin]int `json:"counts"`
+	Entrypoints        int         `json:"entrypoints"`
+	StarvedEntrypoints int         `json:"starved_entrypoints"`
+	ReclaimableShare   float64     `json:"reclaimable_share"` // B / total markers
+	AttributionLoss    float64     `json:"attribution_loss"`  // starved / entrypoints
+}
+
+// Classify bins g's frontier. Pure function of the graph: sorted, deduplicated,
+// no clock, no corpus, no verdict coupling.
+func Classify(g *graphio.Graph) *Report {
+	nodes := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodes[n.FQN] = true
+	}
+	out := map[string][]string{}
+	hasCaller := map[string]bool{}
+	for _, e := range g.Edges {
+		out[e.From] = append(out[e.From], e.To)
+		if nodes[e.To] {
+			hasCaller[e.To] = true
+		}
+	}
+
+	seen := map[[3]string]bool{}
+	var markers []Marker
+	add := func(m Marker) {
+		key := [3]string{m.Kind, m.Site, m.Owner}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		markers = append(markers, m)
+	}
+
+	// Effect-edge markers: dynamic targets (A) and opaque DB writes (B2).
+	for _, e := range g.Edges {
+		if !strings.HasPrefix(e.To, "boundary:") {
+			continue
+		}
+		label := strings.TrimPrefix(e.To, "boundary:")
+		switch {
+		case strings.Contains(e.To, "<dynamic>"):
+			kind := "dynamic-effect"
+			if strings.HasPrefix(label, "bus ") {
+				kind = "dynamic-bus"
+			}
+			add(Marker{Kind: kind, Bin: BinA, Site: label, Owner: e.From,
+				ReclaimerHint: "runtime-resolved target — disclose; resolvable only by observation, never statically"})
+		case strings.HasPrefix(label, "db ") && !readableDBVerb(label):
+			add(Marker{Kind: "opaque-db", Bin: BinB2, Site: label, Owner: e.From,
+				ReclaimerHint: "make the SQL a constant so the verb is readable (" + short(e.From) + ")"})
+		}
+	}
+
+	// Structural markers: the severed `$N` dispatch seam (B). A closure qualifies
+	// only when ALL of:
+	//   - it is a graph root (no caller) — the forward edge into it was lost;
+	//   - its de-`$N` lexical parent IS a node — we know the exact reclaim target;
+	//   - it REACHES A BOUNDARY EFFECT — it hides real downstream work.
+	// The effect requirement is the soundness filter (Gate 2 of the plan): a leaf
+	// callback (a sort comparator, an empty closure) is also a parentless `$N`
+	// node, but it hides nothing AND a `parent → callback` edge would usually be
+	// FALSE (the parent PASSES it to a higher-order function, it does not CALL it).
+	// Restricting to effect-reaching closures keeps B to the seams that both hide
+	// work and have a real reclaim edge — not every Go closure.
+	severedParent := map[string]bool{} // a function that owns a severed effect-bearing closure
+	for fqn := range nodes {
+		if hasCaller[fqn] {
+			continue
+		}
+		parent, ok := closureParent(fqn)
+		if !ok || !nodes[parent] {
+			continue
+		}
+		if !reachesAnyEffect(fqn, out, nodes) {
+			continue
+		}
+		severedParent[parent] = true
+		add(Marker{Kind: "severed-closure", Bin: BinB, Site: fqn, Owner: parent,
+			ReclaimerHint: "connect " + short(parent) + " to this closure across the dispatch seam"})
+	}
+
+	// Attribution markers: a named entrypoint (HTTP route / consumed topic) that
+	// reaches no boundary effect directly, AND owns a severed effect-bearing closure
+	// — i.e. the effect sits in its OWN `$N` closure, disconnected. That correlation
+	// is what makes it a CONFIRMED seam rather than a guess: it distinguishes a route
+	// severed by dispatch (strict-server: `Create` reaches nothing, but `Create$1`
+	// reaches the DELETE) from a route that is genuinely a no-op stub (an empty
+	// handler owns no effect-bearing closure, so it is not flagged — nothing to
+	// reclaim). Attribution loss counts only the confirmed-seam routes.
+	starved := 0
+	for _, ep := range g.Entrypoints {
+		if reachesAnyEffect(ep.Fn, out, nodes) || !severedParent[ep.Fn] {
+			continue
+		}
+		starved++
+		add(Marker{Kind: "starved-entrypoint", Bin: BinB, Site: ep.Fn, Owner: ep.Name,
+			ReclaimerHint: "route reaches no effect directly, but its own severed closure does — handler chain cut at the dispatch seam"})
+	}
+
+	// Disclosed blind spots, binned by kind.
+	for _, bs := range g.BlindSpots {
+		add(Marker{Kind: string(bs.Kind), Bin: blindSpotBin(bs.Kind), Site: bs.Site})
+	}
+
+	sort.Slice(markers, func(i, j int) bool {
+		a, b := markers[i], markers[j]
+		if a.Bin != b.Bin {
+			return a.Bin < b.Bin
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Site != b.Site {
+			return a.Site < b.Site
+		}
+		return a.Owner < b.Owner
+	})
+
+	counts := map[Bin]int{BinA: 0, BinB: 0, BinB2: 0, BinC: 0}
+	for _, m := range markers {
+		counts[m.Bin]++
+	}
+	rep := &Report{
+		Algo:               g.Algo,
+		Markers:            markers,
+		Counts:             counts,
+		Entrypoints:        len(g.Entrypoints),
+		StarvedEntrypoints: starved,
+	}
+	if len(markers) > 0 {
+		rep.ReclaimableShare = float64(counts[BinB]) / float64(len(markers))
+	}
+	if len(g.Entrypoints) > 0 {
+		rep.AttributionLoss = float64(starved) / float64(len(g.Entrypoints))
+	}
+	return rep
+}
+
+// reachesAnyEffect reports whether any boundary effect is reachable from seed over
+// first-party edges. Deterministic; the visit order does not affect the boolean.
+func reachesAnyEffect(seed string, out map[string][]string, nodes map[string]bool) bool {
+	visited := map[string]bool{seed: true}
+	stack := []string{seed}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, to := range out[cur] {
+			if strings.HasPrefix(to, "boundary:") {
+				return true
+			}
+			if nodes[to] && !visited[to] {
+				visited[to] = true
+				stack = append(stack, to)
+			}
+		}
+	}
+	return false
+}
+
+// closureParent returns the FQN with a trailing `$N` (and any further `$N`)
+// stripped — the lexical parent a generated closure was defined in — and whether
+// fqn was a closure at all.
+func closureParent(fqn string) (string, bool) {
+	i := strings.LastIndex(fqn, "$")
+	if i < 0 {
+		return "", false
+	}
+	suffix := fqn[i+1:]
+	if suffix == "" || !allDigits(suffix) {
+		return "", false
+	}
+	return fqn[:i], true
+}
+
+// readableDBVerb reports whether a "db ..." label's leading token is an uppercase
+// SQL keyword (SELECT/INSERT/DELETE/...) the labeler read from constant SQL, as
+// opposed to a method-name fallback ("ExecContext", "call") it emits when the SQL
+// is non-constant. Upper-case-and-alphabetic is the discriminator: sqlOpTable
+// upper-cases the verb, while the *ssa.Function fallback name never is.
+func readableDBVerb(label string) bool {
+	verb := strings.TrimPrefix(label, "db ")
+	if sp := strings.IndexByte(verb, ' '); sp >= 0 {
+		verb = verb[:sp]
+	}
+	if verb == "" {
+		return false
+	}
+	for _, r := range verb {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+func blindSpotBin(k blindspots.Kind) Bin {
+	switch k {
+	case blindspots.HighFanOut:
+		return BinC
+	default:
+		// reflect, unsafe, cgo, go:linkname, UnresolvedDispatch,
+		// NonConstantBoundaryArg — all runtime/irreducible frontiers.
+		return BinA
+	}
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// short renders an FQN compactly for hints (drops the module path prefix).
+func short(fqn string) string {
+	s := strings.TrimPrefix(fqn, "(")
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, ")", ""), "*", "")
+}

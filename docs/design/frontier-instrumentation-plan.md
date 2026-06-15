@@ -2,11 +2,26 @@
 
 > **`PROPOSAL`** · exploratory, building the case · _drafted 2026-06-15_
 
-**Status:** measured, not yet built. A throwaway classifier and one committed
-fixture (`testdata/fixtures/strictsvc`, `TestStrictServerForwardStarvation`)
-established the gap is real and sizable; this note designs the proper version.
-The framing question this doc must answer for the owner: **how do we instrument
-the frontier without violating "determinism over everything"?**
+**Status:** Phase 1 (the classifier + attribution check) is **shipped** as
+`flowmap frontier` (`internal/static/frontier`, `frontier_test.go`); the committed
+fixture `testdata/fixtures/strictsvc` is its motivating measurement. Phases 2–4
+(disclosure, reclaimers, the trace lane) remain designed-not-built. The framing
+question this doc answers for the owner: **how do we instrument the frontier
+without violating "determinism over everything"?**
+
+First numbers from the shipped classifier (`--algo vta`):
+
+| service | entrypoints | attribution loss | markers | B share |
+|---|---|---|---|---|
+| `strictsvc` (strict-server) | 3 | **100%** (3/3) | 8 | **75%** |
+| `oapisvc` (non-strict, control) | 2 | 0% | 0 | — |
+| `loansvc` (direct-call) | 3 | 0% | 3 | 67% |
+| dogfood (`.`, this repo) | 3 | 0% | 0 (vta) / 5 C (rta) | — |
+
+The strict-server frontier is B-dominated (reclaimable structure), every route is
+severed from its effects, and the non-strict control is correctly clean — the
+measurement the rest of this plan acts on. (The dogfood rta-vs-vta delta is the
+algo-provenance footgun of §7, visible in the same tool.)
 
 The toolset's job is *deterministic instrumentation for AI agents and human
 reviewers* — same code in, same verdict out, no guessing. The "frontier" is every
@@ -112,14 +127,28 @@ acts on B2; C is a known-and-accepted posture.
 
 ---
 
-## 3. Component 1 — the frontier classifier (productize the throwaway)
+## 3. Component 1 — the frontier classifier (productize the throwaway) — SHIPPED
 
 **What:** given any analyzer-produced graph, emit a deterministic inventory of its
 frontier, binned A/B/B2/C, with per-marker location and (for B) a reclaimer hint.
 
-**Where:** a `flowmap frontier <dir>` subcommand (and a library the tests call),
-output a sorted JSON artifact + a human view — same dual-output discipline as
-`boundary`/`graph`.
+**Where (built):** `internal/static/frontier` (a producer-side package so Phase 2
+can reuse it to emit the disclosed section), exposed as `flowmap frontier [--algo]
+[--json] <dir>` — human summary by default, canonical JSON with `--json`, same
+dual-output discipline as `boundary`/`graph`. It is a measurement: it never fails
+closed and imports no verdict surface.
+
+**Two precision rules that survived contact with real graphs (both tighten B so the
+"reclaimable share" can't be inflated):**
+- A `severed-closure` is B only if it **reaches a boundary effect** — a leaf
+  callback (sort comparator) is also a parentless `$N` node but hides nothing, and
+  a `parent → callback` edge would usually be FALSE (the parent *passes* it, not
+  *calls* it). This is the soundness gate (Gate 2) applied at measurement time.
+- A `starved-entrypoint` is flagged only when the route **owns a severed
+  effect-bearing closure** — distinguishing a dispatch-severed route (strict-server)
+  from a genuine no-op stub (which owns no effect closure, so nothing to reclaim).
+  Without this, the empty `GetLoanApplicationStatus` stub in non-strict oapisvc
+  false-flagged; with it, oapisvc is correctly clean.
 
 **Inputs:** the graph (`graphio.Graph`) plus the markers already in it — boundary
 effect labels, `blind_spots`, and *derived* structural markers (orphan-root
@@ -300,10 +329,11 @@ Explicit list of where this work could slip the doctrine, and the guardrail:
 
 ## 9. Phasing (measurement-driven)
 
-1. **Classifier + attribution check (component 1 + the meta-gap).** Generic, no
-   verdict coupling, immediate value: turns the throwaway into a standing,
-   deterministic number across all fixtures. Lowest risk, highest leverage for
-   "where is the frontier actually." Ships the strictsvc inventory as a golden.
+1. **Classifier + attribution check (component 1 + the meta-gap). ✅ DONE.**
+   Generic, no verdict coupling, immediate value: turns the throwaway into a
+   standing, deterministic number across all fixtures. Shipped as `flowmap
+   frontier` with the strictsvc inventory pinned in `frontier_test.go`. (The
+   attribution-loss ratio is the meta-gap made first-class.)
 2. **Structured disclosure (component 2).** Surface the B-frontier so agents stop
    reading a false 0. Read-only w.r.t. verdicts.
 3. **First reclaimer (component 3): strict-server seam.** Only after 1 confirms

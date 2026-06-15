@@ -1,8 +1,9 @@
 // Command flowmap is the CLI for the flowmap verification system: the static
-// subcommands `boundary` (generate or --check the gated boundary contract) and
-// `graph` (the non-gated call-graph view); `diff` (the structural change set
-// between two canonical traces); and `coverage` (boundary effects no flow
-// exercises).
+// subcommands `boundary` (generate or --check the gated boundary contract),
+// `graph` (the non-gated call-graph view), and `frontier` (the A/B/B2/C
+// classification of where static reachability stops — a measurement, not a gate);
+// `diff` (the structural change set between two canonical traces); and `coverage`
+// (boundary effects no flow exercises).
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/buildinfo"
 	"github.com/jyang234/golang-code-graph/internal/canon"
+	"github.com/jyang234/golang-code-graph/internal/canonjson"
 	"github.com/jyang234/golang-code-graph/internal/config"
 	"github.com/jyang234/golang-code-graph/internal/coverage"
 	"github.com/jyang234/golang-code-graph/internal/diff"
@@ -26,6 +28,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/boundary"
 	"github.com/jyang234/golang-code-graph/internal/static/callgraph"
+	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
 	"github.com/jyang234/golang-code-graph/internal/syscontext"
 	"github.com/jyang234/golang-code-graph/ir"
@@ -56,6 +59,8 @@ func run(args []string) error {
 		return cmdBoundary(args[1:])
 	case "graph":
 		return cmdGraph(args[1:])
+	case "frontier":
+		return cmdFrontier(args[1:])
 	case "diff":
 		return cmdDiff(args[1:])
 	case "coverage":
@@ -141,6 +146,46 @@ func cmdGraph(args []string) error {
 	}
 	_, err = os.Stdout.Write(b)
 	return err
+}
+
+// cmdFrontier classifies a service's static frontier (docs/design/frontier-
+// instrumentation-plan.md, Phase 1): the deterministic A/B/B2/C inventory of every
+// place reachability stops being able to answer, with the reclaimable share and
+// the route attribution-loss ratio. It is a measurement view, not a gate — it
+// never fails closed and never touches a verdict. Default output is the human
+// summary; --json emits the full marker list as canonical JSON.
+func cmdFrontier(args []string) error {
+	fs := flag.NewFlagSet("frontier", flag.ContinueOnError)
+	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch), "cha"`)
+	asJSON := fs.Bool("json", false, "emit the full marker inventory as canonical JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	dir := dirArg(fs)
+
+	opt, err := algoOption(*algo)
+	if err != nil {
+		return err
+	}
+	res, err := analyze.Analyze(dir, opt)
+	if err != nil {
+		return err
+	}
+	g, err := graphio.Build(res, "")
+	if err != nil {
+		return err
+	}
+	rep := frontier.Classify(g)
+	if *asJSON {
+		b, err := canonjson.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(b)
+		return err
+	}
+	fmt.Print(frontier.Render(dir, rep))
+	return nil
 }
 
 // algoOption maps the --algo flag to a call-graph Options. The empty string and
@@ -776,6 +821,7 @@ usage: flowmap <command> [flags] [dir]
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
   graph [--entry R] [--algo A] [dir]  print the non-gated call-graph view (--algo rta|vta|cha; default rta)
+  frontier [--algo A] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects
