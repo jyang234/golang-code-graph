@@ -137,6 +137,12 @@ func Classify(in *Input) []Marker {
 	// callback (a sort comparator, an empty closure) is also a parentless `$N`
 	// node, but it hides nothing AND a `parent → callback` edge would usually be
 	// FALSE (the parent PASSES it to a higher-order function, it does not CALL it).
+	// Which nodes can reach a boundary effect — computed ONCE by a reverse sweep
+	// from the effect-producing nodes (O(V+E)), so the severed-closure and
+	// entrypoint checks below are O(1) lookups instead of a fresh forward BFS per
+	// candidate (which was O((k+m)·(V+E))).
+	reaches := effectReachers(out, nodes)
+
 	severedParent := map[string]bool{}
 	for fqn := range nodes {
 		if hasCaller[fqn] {
@@ -146,7 +152,7 @@ func Classify(in *Input) []Marker {
 		if !ok || !nodes[parent] {
 			continue
 		}
-		if !reachesAnyEffect(fqn, out, nodes) {
+		if !reaches[fqn] {
 			continue
 		}
 		severedParent[parent] = true
@@ -162,7 +168,7 @@ func Classify(in *Input) []Marker {
 	// not flagged — nothing to reclaim).
 	starved := 0
 	for _, ep := range in.Entrypoints {
-		if reachesAnyEffect(ep.Fn, out, nodes) || !severedParent[ep.Fn] {
+		if !severedParent[ep.Fn] || reaches[ep.Fn] {
 			continue
 		}
 		starved++
@@ -218,25 +224,40 @@ func Summarize(markers []Marker, entrypoints int) *Report {
 	return rep
 }
 
-// reachesAnyEffect reports whether any boundary effect is reachable from seed over
-// first-party edges. Deterministic; the visit order does not affect the boolean.
-func reachesAnyEffect(seed string, out map[string][]string, nodes map[string]bool) bool {
-	visited := map[string]bool{seed: true}
-	stack := []string{seed}
-	for len(stack) > 0 {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		for _, to := range out[cur] {
+// effectReachers returns the set of nodes that can reach at least one boundary
+// effect over first-party call edges. It is computed once per classification by a
+// reverse sweep: seed with every node that has a boundary out-edge, then propagate
+// backward along caller→callee edges. A node is in the set iff it, or something it
+// transitively calls, makes a boundary effect — the same predicate the old
+// per-seed forward BFS computed, in one O(V+E) pass instead of one per candidate.
+// The result is a set, so the sweep order does not affect it (determinism holds).
+func effectReachers(out map[string][]string, nodes map[string]bool) map[string]bool {
+	rev := map[string][]string{} // callee -> first-party callers
+	reaches := map[string]bool{}
+	var queue []string
+	for from, tos := range out {
+		for _, to := range tos {
 			if strings.HasPrefix(to, "boundary:") {
-				return true
-			}
-			if nodes[to] && !visited[to] {
-				visited[to] = true
-				stack = append(stack, to)
+				if !reaches[from] {
+					reaches[from] = true
+					queue = append(queue, from)
+				}
+			} else if nodes[to] {
+				rev[to] = append(rev[to], from)
 			}
 		}
 	}
-	return false
+	for len(queue) > 0 {
+		cur := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		for _, caller := range rev[cur] {
+			if !reaches[caller] {
+				reaches[caller] = true
+				queue = append(queue, caller)
+			}
+		}
+	}
+	return reaches
 }
 
 // closureParent returns the FQN with a trailing `$N` stripped — the lexical parent

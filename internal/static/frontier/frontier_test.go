@@ -68,6 +68,26 @@ func TestStrictServerFrontierSection(t *testing.T) {
 	}
 }
 
+// A scoped (--entry) build carries NO frontier section: it is a whole-service
+// disclosure, and a scoped cone drops entrypoints and prunes effect paths, so its
+// starvation / attribution-loss signal would be a scoping artifact. Gating it on
+// the unscoped build matches the Obligations/EffectOrder convention.
+func TestScopedBuildHasNoFrontier(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(file), "..", "..", "..", "testdata", "fixtures", "strictsvc")
+	res, err := analyze.Analyze(dir, callgraph.Options{Algo: callgraph.AlgoVTA})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	g, err := graphio.Build(res, "POST /eventTypeTemplates")
+	if err != nil {
+		t.Fatalf("scoped build: %v", err)
+	}
+	if len(g.Frontier) != 0 {
+		t.Errorf("scoped build must carry no frontier section; got %d markers: %+v", len(g.Frontier), g.Frontier)
+	}
+}
+
 // The negative control: non-strict oapisvc registers wrapper methods directly, so
 // there is NO dispatch seam. Its one empty-stub route must NOT be flagged — a no-op
 // handler owns no severed effect-bearing closure. Proves the classifier does not

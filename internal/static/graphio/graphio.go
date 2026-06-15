@@ -269,7 +269,13 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 	sortGraph(g)
 	// Classify the frontier over the finalized graph — a read-only disclosure
 	// section, computed last so it sees every node, edge, blind spot, and entry.
-	g.Frontier = frontier.Classify(frontierInput(g))
+	// Like Obligations/EffectOrder it is a whole-service disclosure: a scoped
+	// (--entry) cone drops entrypoints and prunes effect paths, so its starvation /
+	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
+	// the unscoped build, the same convention those sections use.
+	if entry == "" {
+		g.Frontier = frontier.Classify(frontierInput(g))
+	}
 	return g, nil
 }
 
@@ -320,7 +326,12 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 	}
 	if added > 0 {
 		sortGraph(g)
-		g.Frontier = frontier.Classify(frontierInput(g))
+		// Re-classify only for an unscoped graph — the frontier section is a
+		// whole-service disclosure (see Build), so a scoped reclaim re-sorts its
+		// edges but carries no frontier.
+		if g.Entrypoint == "" {
+			g.Frontier = frontier.Classify(frontierInput(g))
+		}
 	}
 	return added
 }

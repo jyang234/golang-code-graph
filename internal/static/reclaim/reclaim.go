@@ -68,8 +68,15 @@ func StrictServer(res *analyze.Result) []Edge {
 	return edges
 }
 
-// serveHTTPReceivers returns the receiver value of every ServeHTTP invoke
+// serveHTTPReceivers returns the receiver value of every net/http ServeHTTP invoke
 // (`handler.ServeHTTP(w, r)` on an http.Handler interface) in f.
+//
+// The method is matched by net/http PACKAGE + name, not the bare name "ServeHTTP":
+// the reclaimer's soundness rests on `http.HandlerFunc.ServeHTTP(w,r)` calling the
+// underlying func, which is a property of net/http specifically. An unrelated
+// interface that merely declares a method named ServeHTTP need not invoke the
+// closure flowing to it, so matching it could add an edge real execution does not
+// take (an R2 violation) and would mis-attribute it to the strict-server seam.
 func serveHTTPReceivers(f *ssa.Function) []ssa.Value {
 	var out []ssa.Value
 	for _, b := range f.Blocks {
@@ -79,7 +86,8 @@ func serveHTTPReceivers(f *ssa.Function) []ssa.Value {
 				continue
 			}
 			c := call.Common()
-			if c.IsInvoke() && c.Method != nil && c.Method.Name() == "ServeHTTP" {
+			if c.IsInvoke() && c.Method != nil && c.Method.Name() == "ServeHTTP" &&
+				c.Method.Pkg() != nil && c.Method.Pkg().Path() == "net/http" {
 				out = append(out, c.Value)
 			}
 		}
