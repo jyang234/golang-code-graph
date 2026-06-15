@@ -155,18 +155,9 @@ func blindTag(s *RouteIOSide) string {
 // new edge to an already-written target is correctly not "new surface" — that
 // per-route movement is routeIODeltas' job.
 func newWriteTargets(p *policy.Policy, base, branch *graph.Graph) []string {
-	labels := func(g *graph.Graph) map[string]bool {
-		m := map[string]bool{}
-		for _, e := range g.Edges {
-			if label, ok := fitness.WriteLabel(e); ok {
-				m[label] = true
-			}
-		}
-		return m
-	}
-	baseL := labels(base)
+	baseL := edgeSet(base.Edges, fitness.WriteLabel)
 	var out []string
-	for l := range labels(branch) {
+	for l := range edgeSet(branch.Edges, fitness.WriteLabel) {
 		if !baseL[l] && !p.EffectRatchet.Allows(l) {
 			out = append(out, l)
 		}

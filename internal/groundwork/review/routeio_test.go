@@ -74,9 +74,12 @@ func TestNewWriteBehindExistingRoute(t *testing.T) {
 	}
 }
 
-// A renamed route shows its counts on both one-sided rows, so a rename cannot
-// launder a count change — and the rename itself is already a breaking
-// entrypoint contract change.
+// A renamed route HANDLER shows its counts on both one-sided rows, so a rename
+// cannot launder a count change. The handler FQN moved (UpdateUser →
+// UpdateUserV2) but the route name (PUT /users/{id}) is unchanged, so it is NOT
+// a breaking entrypoint contract change: the contract is the route name, not the
+// handler symbol (R10 — keying the entrypoint delta on the FQN over-fired on any
+// handler-symbol move, including a plain rename, even with the route intact).
 func TestRouteRenameShowsOneSidedRows(t *testing.T) {
 	const renamed = "(*example.com/layeredsvc/internal/handler.Server).UpdateUserV2"
 	p := loadPolicy(t)
@@ -112,8 +115,13 @@ func TestRouteRenameShowsOneSidedRows(t *testing.T) {
 	if added == nil || added.Base != nil || added.Branch.Writes != 2 {
 		t.Errorf("added-route row = %+v, want branch-only with 2 writes", added)
 	}
-	if a.Verdict != Block {
-		t.Errorf("verdict = %s; the removed entrypoint is a breaking contract change", a.Verdict)
+	// The route name (PUT /users/{id}) is unchanged, so the handler rename is not
+	// a breaking contract change — the structural delta still registers the move.
+	if anyBreaking(a.Contract) {
+		t.Errorf("a handler rename with a stable route name must not be a breaking contract change; got %+v", a.Contract)
+	}
+	if a.Verdict != StructurallyClear {
+		t.Errorf("verdict = %s, want STRUCTURALLY-CLEAR for a handler rename with a stable route", a.Verdict)
 	}
 }
 

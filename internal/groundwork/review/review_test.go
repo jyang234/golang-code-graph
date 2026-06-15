@@ -157,62 +157,90 @@ func TestReviewRecordsSubstrateAndMismatch(t *testing.T) {
 	}
 }
 
-// Internal identity churn — a graph root that is not an external entrypoint —
-// must not read as a breaking external-contract change: a closure renumbered by a
-// refactor and an internal function left rootless by a deleted backend are both
-// roots but neither is the contract. A removed HTTP route (a real external
-// entrypoint) still blocks (§9).
+// The entrypoint contract delta is keyed on the ROUTE NAME, not the handler FQN,
+// so it must distinguish three cases:
+//   - an inline-closure route handler renumbered by an extract-function refactor
+//     (run$4 → newHTTPServer$1) keeps the same route name → NOT breaking (R10);
+//   - internal identity churn — an internal root left rootless by a deleted
+//     backend, a non-route closure — carries no route name → NOT breaking (§9);
+//   - a genuinely removed route (its entrypoint gone from the join) → breaking.
+//
+// The renumbered-closure case is modeled as the ACTUAL route handler (the field
+// case: GET /livez registered as an anonymous func in run()), not a separate
+// non-entrypoint root — the FQN-keyed delta over-fired precisely because that
+// closure is in the entrypoint set, so the topology under test must match (R10).
 func TestContractDistinguishesInternalRootChurnFromExternalRemoval(t *testing.T) {
 	const (
-		routeFn  = "(*svc/internal/handler.Server).GetUser"
-		store    = "(*svc/internal/store.Store).Select"
-		internal = "svc/internal/worker.pollMessages"
-		closure  = "svc.newHTTPServer$1"
+		routeFn    = "(*svc/internal/handler.Server).GetUser"
+		store      = "(*svc/internal/store.Store).Select"
+		internal   = "svc/internal/worker.pollMessages"
+		closureOld = "svc.run$4"           // GET /livez inline-closure handler, base
+		closureNew = "svc.newHTTPServer$1" // same handler, renumbered by extract-function refactor
+	)
+	const (
+		userRoute  = "GET /users/{id}"
+		livezRoute = "GET /livez"
 	)
 	base := &graph.Graph{
 		Algo: "vta",
 		Nodes: []graph.Node{
 			{FQN: routeFn, Sig: "f", Tier: 1}, {FQN: store, Sig: "f", Tier: 2},
-			{FQN: internal, Sig: "f", Tier: 1}, {FQN: closure, Sig: "f", Tier: 1},
+			{FQN: internal, Sig: "f", Tier: 1}, {FQN: closureOld, Sig: "f", Tier: 1},
 		},
 		Edges: []graph.Edge{
-			{From: routeFn, To: store}, {From: internal, To: store}, {From: closure, To: store},
+			{From: routeFn, To: store}, {From: internal, To: store}, {From: closureOld, To: store},
 		},
-		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /users/{id}", Fn: routeFn}},
+		Entrypoints: []graph.Entrypoint{
+			{Kind: "http", Name: userRoute, Fn: routeFn},
+			{Kind: "http", Name: livezRoute, Fn: closureOld},
+		},
 	}
 	p := &policy.Policy{Service: "svc", Version: 1}
 
-	// Branch drops the internal root and the closure (their call sites removed):
-	// both become absent roots, neither is an entrypoint → no breaking contract.
-	internalChurn := &graph.Graph{
-		Algo:        "vta",
-		Nodes:       []graph.Node{{FQN: routeFn, Sig: "f", Tier: 1}, {FQN: store, Sig: "f", Tier: 2}},
-		Edges:       []graph.Edge{{From: routeFn, To: store}},
-		Entrypoints: base.Entrypoints,
+	// Branch renumbers the /livez closure handler (run$4 → newHTTPServer$1) and
+	// drops the internal root: the route NAME is unchanged on both sides, and the
+	// internal root carries no route name → no breaking contract change (R10/§9).
+	// The FQN-keyed delta over-fired here: closureOld (a Source + entrypoint) is
+	// gone and closureNew is new, reading as a removed+added route.
+	refactored := &graph.Graph{
+		Algo: "vta",
+		Nodes: []graph.Node{
+			{FQN: routeFn, Sig: "f", Tier: 1}, {FQN: store, Sig: "f", Tier: 2},
+			{FQN: closureNew, Sig: "f", Tier: 1},
+		},
+		Edges: []graph.Edge{{From: routeFn, To: store}, {From: closureNew, To: store}},
+		Entrypoints: []graph.Entrypoint{
+			{Kind: "http", Name: userRoute, Fn: routeFn},
+			{Kind: "http", Name: livezRoute, Fn: closureNew},
+		},
 	}
-	a := Review(p, base, internalChurn)
+	a := Review(p, base, refactored)
 	for _, c := range a.Contract {
-		if c.Breaking {
-			t.Errorf("internal root/closure removal must not be a breaking contract change; got %+v", c)
+		if c.Surface == "entrypoint" && c.Breaking {
+			t.Errorf("a renumbered closure route handler must not be a breaking contract change; got %+v", c)
 		}
 	}
 	if anyBreaking(a.Contract) {
-		t.Error("verdict must not be driven BREAKING by internal identity churn")
+		t.Error("verdict must not be driven BREAKING by closure renumber / internal identity churn")
 	}
 
-	// Branch drops the HTTP route's handler — a real external entrypoint removal.
+	// Branch drops the /livez route entirely — its entrypoint is gone from the
+	// join → a real external entrypoint removal, keyed on the route name.
 	routeRemoved := &graph.Graph{
 		Algo: "vta",
 		Nodes: []graph.Node{
-			{FQN: store, Sig: "f", Tier: 2}, {FQN: internal, Sig: "f", Tier: 1}, {FQN: closure, Sig: "f", Tier: 1},
+			{FQN: routeFn, Sig: "f", Tier: 1}, {FQN: store, Sig: "f", Tier: 2}, {FQN: internal, Sig: "f", Tier: 1},
 		},
-		Edges:       []graph.Edge{{From: internal, To: store}, {From: closure, To: store}},
-		Entrypoints: base.Entrypoints,
+		Edges:       []graph.Edge{{From: routeFn, To: store}, {From: internal, To: store}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: userRoute, Fn: routeFn}},
 	}
 	b := Review(p, base, routeRemoved)
 	var sawBreakingRoute bool
 	for _, c := range b.Contract {
 		if c.Op == "-" && c.Surface == "entrypoint" && c.Breaking {
+			if c.Name != livezRoute {
+				t.Errorf("the breaking removal must name the removed route %q; got %q", livezRoute, c.Name)
+			}
 			sawBreakingRoute = true
 		}
 	}

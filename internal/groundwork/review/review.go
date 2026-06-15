@@ -30,7 +30,7 @@ func Review(p *policy.Policy, base, branch *graph.Graph) Artifact {
 		Shape:            d.shape(),
 		Touches:          d.pkgDeltas(),
 		NewViolations:    newViolations,
-		Contract:         contractChanges(d, baseIx, branchIx),
+		Contract:         contractChanges(baseIx, branchIx),
 		Effects:          ioEffects(d),
 		RouteIO:          routeIODeltas(p, baseIx, branchIx, baseRW, branchRW),
 		NewWriteTargets:  newWriteTargets(p, base, branch),
@@ -165,6 +165,15 @@ func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, c
 	return violations, cautions, standingCautions, baseRes.RouteWrites, branchRes.RouteWrites
 }
 
+// routeKey identifies an external entrypoint by kind AND name. Keying on the
+// name alone would let an http route and a consumer topic that happen to share a
+// name collapse to one entry, so removing one could be masked by the other; the
+// kind keeps the two namespaces apart.
+type routeKey struct{ kind, name string }
+
+// effectKey identifies an inter-service effect target by its surface and name.
+type effectKey struct{ surface, name string }
+
 // contractChanges reports inter-service surface movement: entrypoints and
 // bus/outbound effects added or removed. DB effects are excluded — the store is
 // the service's own, not its contract. A removal is breaking.
@@ -175,39 +184,64 @@ func newFindings(p *policy.Policy, baseIx, branchIx *graph.Index) (violations, c
 // the contract: an unwired exported method, a closure orphaned by an
 // extract-function refactor (run$4 → newHTTPServer$1), and an internal function
 // left rootless when a backend is deleted (pollMessages, Queue.Acknowledge) are
-// all roots but none are inter-service contract. Keying the entrypoint surface on
-// the external-entrypoint set (not Sources) is what keeps that internal identity
-// churn from reading as a breaking external-contract change (field report §9):
-// such churn is internal structure and surfaces in the node/edge delta, not here.
-func contractChanges(d graphDelta, baseIx, branchIx *graph.Index) []ContractChange {
+// all roots but none are inter-service contract.
+//
+// The delta is keyed on the ROUTE NAME (ep.Name) — the HTTP method+path or
+// consumed topic — NOT the handler FQN. The route name is the inter-service
+// contract; the handler FQN is an implementation detail that a refactor may move
+// without changing the contract. Keying on the FQN over-fired on a route handled
+// by an inline closure (GET /livez registered as an anonymous func in run()):
+// its handler FQN is a synthetic, position-derived name (…run$4), and an
+// extract-function refactor renumbers it (run$4 → newHTTPServer$1) while the
+// route name is unchanged, so the FQN-keyed delta read one route as
+// removed+added — a spurious breaking contract change (field report R10).
+// Name-keying subsumes the §9 orphan-root exclusion too: an internal root, an
+// unwired exported method, and a refactor-orphaned non-route closure are all
+// absent from the entrypoints join, so they carry no route name and never enter
+// this delta — that churn is internal structure, surfaced in the node/edge delta.
+//
+// The effect surface is keyed the same way: on the SET of effect TARGETS (each
+// published topic, consumed topic, outbound endpoint), not per emitting edge. A
+// topic is "published" if ANY function publishes it, so the contract is a
+// set-membership fact, not a per-emitter one. Keying per edge (on the boundary
+// edge's From) over-fired on the same class as R10 — a refactor that moved the
+// emitting function while the target stood read as removed+added: a renamed or
+// extracted publisher, or a consolidation pointing several callers at one helper
+// (in obligsvc, loan.approved is published by seven functions; collapsing them
+// onto publishApproved fired six spurious breaking removals). Set-keying reports
+// a removal only when the target leaves the branch entirely — the genuine
+// contract break — and is independent of the effect_ratchet (newWriteTargets,
+// which already keys on the write-label set), so the write ratchet is unaffected.
+func contractChanges(baseIx, branchIx *graph.Index) []ContractChange {
 	var out []ContractChange
 
-	extBase := externalEntrypoints(baseIx)
-	extBranch := externalEntrypoints(branchIx)
-	baseSrc := setutil.StringSet(baseIx.Sources())
-	branchSrc := setutil.StringSet(branchIx.Sources())
-	for _, s := range branchIx.Sources() {
-		if !baseSrc[s] && extBranch[s] {
-			out = append(out, ContractChange{Op: "+", Surface: "entrypoint", Name: fitness.ShortName(s)})
+	baseRoutes := externalRoutes(baseIx)
+	branchRoutes := externalRoutes(branchIx)
+	for k := range branchRoutes {
+		if !baseRoutes[k] {
+			out = append(out, ContractChange{Op: "+", Surface: "entrypoint", Name: k.name})
 		}
 	}
-	for _, s := range baseIx.Sources() {
-		if !branchSrc[s] && extBase[s] {
-			out = append(out, ContractChange{Op: "-", Surface: "entrypoint", Name: fitness.ShortName(s), Breaking: true})
-		}
-	}
-
-	for _, e := range d.effectsAdded {
-		if surface, name, ok := classifyContract(e); ok {
-			out = append(out, ContractChange{Op: "+", Surface: surface, Name: name})
-		}
-	}
-	for _, e := range d.effectsRemoved {
-		if surface, name, ok := classifyContract(e); ok {
-			out = append(out, ContractChange{Op: "-", Surface: surface, Name: name, Breaking: true})
+	for k := range baseRoutes {
+		if !branchRoutes[k] {
+			out = append(out, ContractChange{Op: "-", Surface: "entrypoint", Name: k.name, Breaking: true})
 		}
 	}
 
+	baseEff := contractEffects(baseIx)
+	branchEff := contractEffects(branchIx)
+	for k := range branchEff {
+		if !baseEff[k] {
+			out = append(out, ContractChange{Op: "+", Surface: k.surface, Name: k.name})
+		}
+	}
+	for k := range baseEff {
+		if !branchEff[k] {
+			out = append(out, ContractChange{Op: "-", Surface: k.surface, Name: k.name, Breaking: true})
+		}
+	}
+
+	out = dedupeConsumeWithEntrypoint(out)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Surface != out[j].Surface {
 			return out[i].Surface < out[j].Surface
@@ -220,26 +254,73 @@ func contractChanges(d graphDelta, baseIx, branchIx *graph.Index) []ContractChan
 	return out
 }
 
-// externalEntrypoints returns the handler FQNs bound to a named external
-// entrypoint — an HTTP route or a consumed topic. It is how a graph ROOT is told
-// apart from internal structure: only a root that handles a route or topic is the
-// service's inter-service contract. A root absent from this set (an unwired
-// exported method, a refactor-orphaned closure, an internal function left
-// rootless by a deleted call site) is internal churn, not a contract change.
+// dedupeConsumeWithEntrypoint drops a `consume` effect change when the same topic
+// already moves on the `entrypoint` surface with the same op. A consumed topic is
+// usually both a consumer entrypoint (the Entrypoints join) and a `bus CONSUME`
+// boundary effect, so one logical consumed-topic change would otherwise report
+// twice with the identical Name (entrypoint + consume). The entrypoint surface is
+// the canonical named representation, so it wins; a consume effect with no matching
+// entrypoint (a mid-flow consume that is not a registered entrypoint) is kept.
+func dedupeConsumeWithEntrypoint(cs []ContractChange) []ContractChange {
+	entry := map[[2]string]bool{}
+	for _, c := range cs {
+		if c.Surface == "entrypoint" {
+			entry[[2]string{c.Op, c.Name}] = true
+		}
+	}
+	out := cs[:0]
+	for _, c := range cs {
+		if c.Surface == "consume" && entry[[2]string{c.Op, c.Name}] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// externalRoutes returns the set of NAMED external routes a graph exposes — the
+// HTTP method+path or consumed topic (ep.Name) of each http/consumer entrypoint,
+// keyed by (kind, name). The route name, not the handler FQN, is the inter-service
+// contract: it is stable across refactors that move a route's handler (an
+// extract-function renumber of an inline-closure handler, run$4 → newHTTPServer$1),
+// so a delta keyed on it reports only genuine route additions and removals, never
+// handler-identity churn. A root absent from the entrypoints join (an unwired
+// exported method, a refactor-orphaned non-route closure, an internal function left
+// rootless by a deleted call site) contributes no name and is internal churn,
+// surfaced in the node/edge delta.
 //
-// When the graph carries no entrypoints join at all (a pre-entrypoints flowmap,
-// or a service with no detected external surface) this is empty, so no root
-// movement is reported as a contract change — correct for a service with no
-// declared external surface, and a deliberate trade: the precise external signal
-// over the structural over-approximation that cried wolf on internal churn.
-func externalEntrypoints(ix *graph.Index) map[string]bool {
-	out := map[string]bool{}
+// When the graph carries no entrypoints join at all (a pre-entrypoints flowmap, or
+// a service with no detected external surface) this is empty, so no route movement
+// is reported as a contract change — correct for a service with no declared external
+// surface, and a deliberate trade: the precise external signal over the structural
+// over-approximation that cried wolf on internal churn.
+func externalRoutes(ix *graph.Index) map[routeKey]bool {
+	out := map[routeKey]bool{}
 	for _, ep := range ix.Entrypoints() {
-		if ep.Kind == "http" || ep.Kind == "consumer" {
-			out[ep.Fn] = true
+		if (ep.Kind == "http" || ep.Kind == "consumer") && ep.Name != "" {
+			out[routeKey{ep.Kind, ep.Name}] = true
 		}
 	}
 	return out
+}
+
+// contractEffects returns the set of inter-service effect targets a graph
+// exposes — each published topic, consumed topic, and outbound endpoint, keyed by
+// (surface, name) (DB effects excluded: the store is internal, not contract).
+// Like externalRoutes, this is the CONTRACT as a set-membership fact, deduped
+// across every emitting edge: a topic is published if any function publishes it,
+// so which function does is an implementation detail. Deduping here is what keeps
+// a refactor that moves the emitter (rename, extract-function, or consolidating
+// several callers onto one helper) from reading as a removed+added effect — the
+// per-edge keying over-fired on exactly that, the same class as R10.
+func contractEffects(ix *graph.Index) map[effectKey]bool {
+	return edgeSet(ix.Edges(), func(e graph.Edge) (effectKey, bool) {
+		if !e.IsBoundary() {
+			return effectKey{}, false
+		}
+		surface, name, ok := classifyContract(e)
+		return effectKey{surface, name}, ok
+	})
 }
 
 // classifyContract maps a boundary effect to its inter-service surface, or

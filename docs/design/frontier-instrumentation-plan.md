@@ -383,11 +383,39 @@ which are real here:
   a verdict leaned on reclaimed edges — auditability for reviewers.
 - **Breaking-contract over-fire on internal churn (field report §9) — SHIPPED.**
   `review`/`verify` keyed the entrypoint contract surface on graph *roots*
-  (`Sources()`), so a closure renumbered by a refactor (run$4 → newHTTPServer$1) or
-  an internal function left rootless by a deleted backend read as a BREAKING
-  external-contract change. The surface is now keyed on the *external entrypoint*
-  join (`externalEntrypoints`: HTTP routes / consumed topics) — internal root and
-  closure churn is structural delta, not contract, and no longer blocks a merge.
+  (`Sources()`), so an internal function left rootless by a deleted backend, or a
+  non-route closure orphaned by a refactor, read as a BREAKING external-contract
+  change. The surface was first keyed on the *external entrypoint* join (HTTP
+  routes / consumed topics) so orphan roots — absent from the join — no longer
+  block. This closed the orphan-root half; the closure-as-route-handler half was
+  still open (R10).
+- **Breaking-contract over-fire on handler-symbol movement (field report R10) —
+  SHIPPED.** Keying the entrypoint join by *handler FQN* still over-fired whenever
+  a route's handler symbol moved but the route was unchanged: an inline-closure
+  handler (GET /livez as an anonymous func in `run()`) renumbered by an
+  extract-function refactor (`run$4 → newHTTPServer$1`), or any named handler
+  plainly renamed, read as a removed+added route. The delta is now keyed on the
+  *route name* (`ep.Name`: HTTP method+path / consumed topic), the actual
+  inter-service contract — `externalRoutes` replaces `externalEntrypoints`. This
+  subsumes the §9 orphan-root exclusion (orphan roots carry no route name) and
+  closes R10 in one change, with genuine route-removal detection intact.
+  `TestContractNonBreakingUnderHandlerRefactorOverGeneratedGraphs` locks it across
+  a generated corpus (renumbered closures, renamed named handlers, §9 churn), the
+  review/contract analogue of the proposer self-clean property — the topology
+  match a hand fixture had missed (R3/R7/R10).
+- **Breaking-contract over-fire on effect-emitter movement (R10 sibling) —
+  SHIPPED.** The same FQN-keying defect lived in the contract's effect surface:
+  it keyed per boundary edge (on the emitting function, the edge's `From`), so a
+  refactor that moved an emitter while the target stood — a renamed/extracted
+  publisher, or a consolidation pointing several callers at one helper (in
+  obligsvc, `loan.approved` is published by seven functions) — read as a
+  removed+added effect, a spurious breaking change. The delta now keys on the
+  effect TARGET SET (each published/consumed topic, outbound endpoint:
+  `contractEffects`), so a removal fires only when the target leaves the branch
+  entirely — the genuine break. It is independent of the effect ratchet
+  (`newWriteTargets` already keys on the write-label set), so the write ratchet is
+  unaffected. Locked by `TestContractEffectKeyedOnTargetNotEmitter` (rename,
+  extract-function, consolidation, genuine removal/addition controls).
 - **Universal self-clean invariant across inputs — SHIPPED.** R5–R8 were each a
   proposer/enforcer node-set gap a fixture missed.
   `TestProposeSelfCleanOverGeneratedGraphs` makes the invariant literal over a

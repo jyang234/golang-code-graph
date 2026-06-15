@@ -48,7 +48,7 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string) GateResul
 	newViolations, _, standingCautions, _, _ := newFindings(p, baseIx, branchIx)
 
 	var breaking []ContractChange
-	for _, c := range contractChanges(d, baseIx, branchIx) {
+	for _, c := range contractChanges(baseIx, branchIx) {
 		if c.Breaking {
 			breaking = append(breaking, c)
 		}

@@ -111,11 +111,15 @@ No percentage semantics anywhere.
 the count comparison has no common key — a count increase hides in a "new"
 route.
 
-**Result: attack fails against the existing system.** A removed entrypoint is
-already a **breaking contract change** (`review.contractChanges`) and renders
-BLOCK; the laundering attempt fires a louder alarm than the thing it hides.
-Belt-and-braces: appearing/disappearing routes are listed in the delta section
-with their one-sided counts, so even an allow-listed rename shows its numbers.
+**Result: attack fails against the existing system.** The per-route delta lists
+the renamed handler's before/after as two **one-sided rows** (keyed on handler
+FQN), so the count never gains a common key to hide in — the increase shows on
+the new row regardless. Note that renaming a handler while the *route name* is
+unchanged is correctly NOT a breaking contract change (`review.contractChanges`
+keys the entrypoint contract on the route name, not the handler FQN — R10): the
+external surface is the same route, so the gate stays quiet on the contract while
+the one-sided rows still expose the count. The laundering defense is the
+per-route attribution, not the contract gate.
 
 ### Attack on PC-2: blind-frontier count shifts
 
