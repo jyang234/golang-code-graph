@@ -175,7 +175,8 @@ func cmdFrontier(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep := frontier.Classify(g)
+	// Build already classified and embedded the frontier section; summarize it.
+	rep := frontier.Summarize(g.Frontier, len(g.Entrypoints))
 	if *asJSON {
 		b, err := canonjson.Marshal(rep)
 		if err != nil {
@@ -184,7 +185,7 @@ func cmdFrontier(args []string) error {
 		_, err = os.Stdout.Write(b)
 		return err
 	}
-	fmt.Print(frontier.Render(dir, rep))
+	fmt.Print(frontier.Render(dir, g.Algo, rep))
 	return nil
 }
 

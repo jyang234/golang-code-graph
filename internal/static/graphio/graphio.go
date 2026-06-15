@@ -18,6 +18,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	cg "github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
+	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/obligations"
 	"github.com/jyang234/golang-code-graph/internal/static/roots"
 	"github.com/jyang234/golang-code-graph/internal/static/signatures"
@@ -74,6 +75,15 @@ type Graph struct {
 	// faults, what may already be committed?". Like Obligations it rides
 	// unscoped builds only and is omitted when empty.
 	EffectOrder []obligations.EffectOrder `json:"effect_order,omitempty"`
+
+	// Frontier is the A/B/B2/C classification of where static reachability stops
+	// being able to answer (docs/design/frontier-instrumentation-plan.md): the
+	// dynamic effects, the strict-server dispatch seams, the opaque-SQL writes, the
+	// over-approximated dispatch. It is computed FROM the assembled graph, a
+	// read-only disclosure (it changes no verdict — R3), and omitted when empty so
+	// a frontier-free service emits a byte-identical graph. Consumers read it
+	// instead of reconstructing the frontier from topology.
+	Frontier []frontier.Marker `json:"frontier,omitempty"`
 }
 
 // Entrypoint is one named root: an HTTP route or a consumed topic, with the
@@ -249,7 +259,29 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 	}
 
 	sortGraph(g)
+	// Classify the frontier over the finalized graph — a read-only disclosure
+	// section, computed last so it sees every node, edge, blind spot, and entry.
+	g.Frontier = frontier.Classify(frontierInput(g))
 	return g, nil
+}
+
+// frontierInput adapts the assembled graph into the classifier's serialization-free
+// input view (frontier imports nothing of graphio; graphio adapts to it).
+func frontierInput(g *Graph) *frontier.Input {
+	in := &frontier.Input{}
+	for _, n := range g.Nodes {
+		in.Nodes = append(in.Nodes, n.FQN)
+	}
+	for _, e := range g.Edges {
+		in.Edges = append(in.Edges, frontier.InEdge{From: e.From, To: e.To})
+	}
+	for _, b := range g.BlindSpots {
+		in.BlindSpots = append(in.BlindSpots, frontier.InBlindSpot{Kind: string(b.Kind), Site: b.Site})
+	}
+	for _, ep := range g.Entrypoints {
+		in.Entrypoints = append(in.Entrypoints, frontier.InEntry{Fn: ep.Fn, Name: ep.Name})
+	}
+	return in
 }
 
 // obligationSummaries hands the engine its production inputs (CX-2): the

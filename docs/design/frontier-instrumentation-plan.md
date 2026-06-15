@@ -179,17 +179,27 @@ the anti-molding instrument.
 
 ---
 
-## 4. Component 2 — structured frontier disclosure
+## 4. Component 2 — structured frontier disclosure — SHIPPED
 
 **The gap it closes:** today `blind_spots` carries only the
 reflect/HighFanOut/unsafe family (`graph.go` `BlindSpot`); structural starvation
 (severed closures, empty-cone routes) is **implicit in topology** and invisible to
 a consumer reading the disclosure. Finding 2: the agent reads 0 and trusts it.
 
-**What:** promote the derived B-markers into the graph's disclosed frontier as a
-new, typed `frontier` section (D1 — kept separate from the verdict-coupled
-`blind_spots`), so the frontier is something a consumer can *read*, not
-*reconstruct*. An agent
+**Built:** `graphio.Graph` gained a typed `frontier` section (omitempty — a
+frontier-free service emits a byte-identical graph), populated by `graphio.Build`
+over the finalized graph; `flowmap graph` now emits it. The consumer
+(`groundwork/graph.Graph`) decodes it on its own side of the trust boundary
+(`DisallowUnknownFields`-safe) and exposes it via `Index.Frontier()`. Kept SEPARATE
+from `blind_spots` (D1): `blind_spots` is verdict-coupled (it raises Cautions),
+the `frontier` section is read-only — no verdict reads it. The golden manifest
+ratchet now pins per-service frontier counts, so a future analyzer change to the
+section faces a reviewer.
+
+**Original intent:** promote the derived B-markers into the graph's disclosed
+frontier as a new, typed `frontier` section (D1 — kept separate from the
+verdict-coupled `blind_spots`), so the frontier is something a consumer can *read*,
+not *reconstruct*. An agent
 asking "can I trust this route's effect list?" gets a direct, machine-readable
 "no — this route's cone is severed at `<site>` (kind: strict-server-seam, bin: B)."
 
@@ -334,8 +344,10 @@ Explicit list of where this work could slip the doctrine, and the guardrail:
    standing, deterministic number across all fixtures. Shipped as `flowmap
    frontier` with the strictsvc inventory pinned in `frontier_test.go`. (The
    attribution-loss ratio is the meta-gap made first-class.)
-2. **Structured disclosure (component 2).** Surface the B-frontier so agents stop
-   reading a false 0. Read-only w.r.t. verdicts.
+2. **Structured disclosure (component 2). ✅ DONE.** The graph carries a typed,
+   read-only `frontier` section (`graphio.Build` emits it, `Index.Frontier()` reads
+   it, the manifest ratchet pins it) so agents read the B-frontier instead of a
+   false 0. Verdict-neutral.
 3. **First reclaimer (component 3): strict-server seam.** Only after 1 confirms
    prevalence on a real (not just fixture) corpus. Sound, provenance-tagged. The
    `strictsvc` characterization test flips to green-attribution when it lands.

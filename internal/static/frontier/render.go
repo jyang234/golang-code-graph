@@ -8,9 +8,8 @@ import (
 // Render is the human view of a Report: the headline ratios, the per-bin counts,
 // and the reclaimable seams a reader would act on first. The --json output carries
 // the full marker list; this is the at-a-glance summary.
-func Render(name string, r *Report) string {
+func Render(name, algo string, r *Report) string {
 	var b strings.Builder
-	algo := r.Algo
 	if algo == "" {
 		algo = "unrecorded"
 	}

@@ -4,6 +4,10 @@
 // coupling to any verdict surface (rule R3: a frontier label can only
 // (mis)prioritize our own work, never change a fitness/verify result).
 //
+// It is intentionally free of any serialization type: it takes a minimal Input,
+// not a graphio.Graph, so the analysis does not depend on the producer's schema —
+// graphio imports frontier (to embed the section), never the reverse.
+//
 // The four bins:
 //
 //	A  — truly dynamic: resolved only at runtime (<dynamic> bus/HTTP targets,
@@ -16,10 +20,6 @@
 //	     `db ExecContext` from runtime-built SQL). The consumer makes it constant.
 //	C  — over-approximation: sound but imprecise (HighFanOut shared dispatch). Not
 //	     blindness; precision.
-//
-// This is Phase 1 of the plan: the measurement instrument. It reads a graph and
-// reports; it does not yet emit the disclosed `frontier` section (Phase 2) or add
-// edges (Phase 3).
 package frontier
 
 import (
@@ -27,7 +27,6 @@ import (
 	"strings"
 
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
-	"github.com/jyang234/golang-code-graph/internal/static/graphio"
 )
 
 // Bin is one taxonomy class. The string values are the stable wire vocabulary.
@@ -41,6 +40,7 @@ const (
 )
 
 // Marker is one frontier site, binned, with the reclaim target when there is one.
+// It is the wire shape graphio embeds as the graph's `frontier` section.
 type Marker struct {
 	Kind          string `json:"kind"`                     // e.g. "severed-closure", "dynamic-bus", "opaque-db", "starved-entrypoint", "HighFanOut"
 	Bin           Bin    `json:"bin"`                      //
@@ -49,11 +49,30 @@ type Marker struct {
 	ReclaimerHint string `json:"reclaimer_hint,omitempty"` // what a reclaimer (B) or the consumer (B2) would do
 }
 
-// Report is the deterministic inventory: every marker, the per-bin counts, and the
+// Input is the minimal graph view Classify needs: first-party node FQNs, the call
+// and boundary edges, the disclosed blind spots, and the named entrypoints. It is
+// deliberately free of any serialization type so the classifier stays independent
+// of the producer's schema.
+type Input struct {
+	Nodes       []string
+	Edges       []InEdge
+	BlindSpots  []InBlindSpot
+	Entrypoints []InEntry
+}
+
+// InEdge is a call or boundary edge (To is a "boundary:..." label for an effect).
+type InEdge struct{ From, To string }
+
+// InBlindSpot is a disclosed blind spot; Kind is the blindspots.Kind string value.
+type InBlindSpot struct{ Kind, Site string }
+
+// InEntry is a named entrypoint and the function registered to handle it.
+type InEntry struct{ Fn, Name string }
+
+// Report is the deterministic roll-up: every marker, the per-bin counts, and the
 // two headline ratios — reclaimable share (B of all) and attribution loss (routes
 // that reach no effect, of all routes).
 type Report struct {
-	Algo               string      `json:"algo,omitempty"`
 	Markers            []Marker    `json:"markers"`
 	Counts             map[Bin]int `json:"counts"`
 	Entrypoints        int         `json:"entrypoints"`
@@ -62,16 +81,16 @@ type Report struct {
 	AttributionLoss    float64     `json:"attribution_loss"`  // starved / entrypoints
 }
 
-// Classify bins g's frontier. Pure function of the graph: sorted, deduplicated,
-// no clock, no corpus, no verdict coupling.
-func Classify(g *graphio.Graph) *Report {
-	nodes := make(map[string]bool, len(g.Nodes))
-	for _, n := range g.Nodes {
-		nodes[n.FQN] = true
+// Classify bins in's frontier into a sorted, deduplicated marker list. Pure
+// function of the input: no clock, no corpus, no verdict coupling.
+func Classify(in *Input) []Marker {
+	nodes := make(map[string]bool, len(in.Nodes))
+	for _, n := range in.Nodes {
+		nodes[n] = true
 	}
 	out := map[string][]string{}
 	hasCaller := map[string]bool{}
-	for _, e := range g.Edges {
+	for _, e := range in.Edges {
 		out[e.From] = append(out[e.From], e.To)
 		if nodes[e.To] {
 			hasCaller[e.To] = true
@@ -90,7 +109,7 @@ func Classify(g *graphio.Graph) *Report {
 	}
 
 	// Effect-edge markers: dynamic targets (A) and opaque DB writes (B2).
-	for _, e := range g.Edges {
+	for _, e := range in.Edges {
 		if !strings.HasPrefix(e.To, "boundary:") {
 			continue
 		}
@@ -118,9 +137,7 @@ func Classify(g *graphio.Graph) *Report {
 	// callback (a sort comparator, an empty closure) is also a parentless `$N`
 	// node, but it hides nothing AND a `parent → callback` edge would usually be
 	// FALSE (the parent PASSES it to a higher-order function, it does not CALL it).
-	// Restricting to effect-reaching closures keeps B to the seams that both hide
-	// work and have a real reclaim edge — not every Go closure.
-	severedParent := map[string]bool{} // a function that owns a severed effect-bearing closure
+	severedParent := map[string]bool{}
 	for fqn := range nodes {
 		if hasCaller[fqn] {
 			continue
@@ -137,16 +154,14 @@ func Classify(g *graphio.Graph) *Report {
 			ReclaimerHint: "connect " + short(parent) + " to this closure across the dispatch seam"})
 	}
 
-	// Attribution markers: a named entrypoint (HTTP route / consumed topic) that
-	// reaches no boundary effect directly, AND owns a severed effect-bearing closure
-	// — i.e. the effect sits in its OWN `$N` closure, disconnected. That correlation
-	// is what makes it a CONFIRMED seam rather than a guess: it distinguishes a route
-	// severed by dispatch (strict-server: `Create` reaches nothing, but `Create$1`
-	// reaches the DELETE) from a route that is genuinely a no-op stub (an empty
-	// handler owns no effect-bearing closure, so it is not flagged — nothing to
-	// reclaim). Attribution loss counts only the confirmed-seam routes.
+	// Attribution markers: a named entrypoint that reaches no boundary effect
+	// directly AND owns a severed effect-bearing closure — the effect sits in its
+	// OWN `$N` closure, disconnected. That correlation is what makes it a CONFIRMED
+	// seam rather than a guess: it separates a dispatch-severed route (strict-server)
+	// from a genuine no-op stub (an empty handler owns no effect closure, so it is
+	// not flagged — nothing to reclaim).
 	starved := 0
-	for _, ep := range g.Entrypoints {
+	for _, ep := range in.Entrypoints {
 		if reachesAnyEffect(ep.Fn, out, nodes) || !severedParent[ep.Fn] {
 			continue
 		}
@@ -156,8 +171,8 @@ func Classify(g *graphio.Graph) *Report {
 	}
 
 	// Disclosed blind spots, binned by kind.
-	for _, bs := range g.BlindSpots {
-		add(Marker{Kind: string(bs.Kind), Bin: blindSpotBin(bs.Kind), Site: bs.Site})
+	for _, bs := range in.BlindSpots {
+		add(Marker{Kind: bs.Kind, Bin: blindSpotBin(bs.Kind), Site: bs.Site})
 	}
 
 	sort.Slice(markers, func(i, j int) bool {
@@ -173,23 +188,32 @@ func Classify(g *graphio.Graph) *Report {
 		}
 		return a.Owner < b.Owner
 	})
+	return markers
+}
 
+// Summarize rolls a marker list up into the report ratios. entrypoints is the
+// total number of named routes (needed for attribution loss; not derivable from
+// the markers alone).
+func Summarize(markers []Marker, entrypoints int) *Report {
 	counts := map[Bin]int{BinA: 0, BinB: 0, BinB2: 0, BinC: 0}
+	starved := 0
 	for _, m := range markers {
 		counts[m.Bin]++
+		if m.Kind == "starved-entrypoint" {
+			starved++
+		}
 	}
 	rep := &Report{
-		Algo:               g.Algo,
 		Markers:            markers,
 		Counts:             counts,
-		Entrypoints:        len(g.Entrypoints),
+		Entrypoints:        entrypoints,
 		StarvedEntrypoints: starved,
 	}
 	if len(markers) > 0 {
 		rep.ReclaimableShare = float64(counts[BinB]) / float64(len(markers))
 	}
-	if len(g.Entrypoints) > 0 {
-		rep.AttributionLoss = float64(starved) / float64(len(g.Entrypoints))
+	if entrypoints > 0 {
+		rep.AttributionLoss = float64(starved) / float64(entrypoints)
 	}
 	return rep
 }
@@ -215,16 +239,15 @@ func reachesAnyEffect(seed string, out map[string][]string, nodes map[string]boo
 	return false
 }
 
-// closureParent returns the FQN with a trailing `$N` (and any further `$N`)
-// stripped — the lexical parent a generated closure was defined in — and whether
-// fqn was a closure at all.
+// closureParent returns the FQN with a trailing `$N` stripped — the lexical parent
+// a generated closure was defined in — and whether fqn was a closure at all.
 func closureParent(fqn string) (string, bool) {
 	i := strings.LastIndex(fqn, "$")
 	if i < 0 {
 		return "", false
 	}
 	suffix := fqn[i+1:]
-	if suffix == "" || !allDigits(suffix) {
+	if !allDigits(suffix) {
 		return "", false
 	}
 	return fqn[:i], true
@@ -251,15 +274,13 @@ func readableDBVerb(label string) bool {
 	return true
 }
 
-func blindSpotBin(k blindspots.Kind) Bin {
-	switch k {
-	case blindspots.HighFanOut:
+func blindSpotBin(kind string) Bin {
+	if kind == string(blindspots.HighFanOut) {
 		return BinC
-	default:
-		// reflect, unsafe, cgo, go:linkname, UnresolvedDispatch,
-		// NonConstantBoundaryArg — all runtime/irreducible frontiers.
-		return BinA
 	}
+	// reflect, unsafe, cgo, go:linkname, UnresolvedDispatch, NonConstantBoundaryArg
+	// — all runtime/irreducible frontiers.
+	return BinA
 }
 
 func allDigits(s string) bool {

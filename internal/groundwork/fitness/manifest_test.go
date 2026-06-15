@@ -56,6 +56,7 @@ func TestGoldenSectionManifest(t *testing.T) {
 			"entrypoints":  len(g.Entrypoints),
 			"obligations":  len(g.Obligations),
 			"effect_order": len(g.EffectOrder),
+			"frontier":     len(g.Frontier),
 		}
 		for section, want := range manifest[name] {
 			if got[section] != want {

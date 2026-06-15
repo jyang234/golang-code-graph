@@ -270,5 +270,9 @@ func (ix *Index) Obligations() []Obligation { return ix.g.Obligations }
 // EffectOrder returns the graph's partial-effect order facts.
 func (ix *Index) EffectOrder() []EffectOrderFact { return ix.g.EffectOrder }
 
+// Frontier returns the producer's classified frontier markers (the disclosed
+// A/B/B2/C sites). A read-only disclosure: no verdict reads it.
+func (ix *Index) Frontier() []FrontierMarker { return ix.g.Frontier }
+
 // Entrypoints returns the graph's named roots (routes, topics) with handlers.
 func (ix *Index) Entrypoints() []Entrypoint { return ix.g.Entrypoints }

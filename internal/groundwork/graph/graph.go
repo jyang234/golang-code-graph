@@ -56,6 +56,26 @@ type Graph struct {
 	Obligations []Obligation      `json:"obligations,omitempty"`
 	EffectOrder []EffectOrderFact `json:"effect_order,omitempty"`
 	Entrypoints []Entrypoint      `json:"entrypoints,omitempty"`
+
+	// Frontier is the producer's A/B/B2/C classification of where static
+	// reachability stops (flowmap's frontier section). groundwork decodes it on
+	// its own side of the trust boundary — like every other graph-carried section
+	// — so a consumer can READ the disclosed frontier (which routes are severed,
+	// which writes are opaque) instead of reconstructing it from topology. It is a
+	// disclosure: no verdict reads it. Omitted by producers that emit none.
+	Frontier []FrontierMarker `json:"frontier,omitempty"`
+}
+
+// FrontierMarker is one classified frontier site, mirroring flowmap's frontier
+// wire shape. Bin is the open taxonomy vocabulary ("A"/"B"/"B2"/"C"); a consumer
+// MUST treat an unrecognized bin as "disclosed but unclassified" rather than
+// assuming a meaning — the fail-closed convention for every graph-carried enum.
+type FrontierMarker struct {
+	Kind          string `json:"kind"`
+	Bin           string `json:"bin"`
+	Site          string `json:"site"`
+	Owner         string `json:"owner,omitempty"`
+	ReclaimerHint string `json:"reclaimer_hint,omitempty"`
 }
 
 // Entrypoint is one named root flowmap discovered: an HTTP route or a consumed
