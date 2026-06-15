@@ -175,6 +175,19 @@ shape only when the classifier shows that shape is common, not because one field
 report named it. That is the answer to "are we hyper-molding": the classifier is
 the anti-molding instrument.
 
+**Coverage limit — be honest about it (do not over-read a low attribution loss).**
+The *taxonomy and bins* are framework-agnostic, but one detector is not: the
+`starved-entrypoint` marker fires only when a route's effect lives in a `$N`
+closure lexically nested in the registered handler — the oapi-codegen strict-server
+shape. A framework that severs differently (grpc-gateway / connect / gin route work
+in a separate generated function or a method on another type) produces no
+`starved-entrypoint` marker, so **a 0% attribution loss means "no CONFIRMED seam",
+not "no severance".** This is a deliberate precision choice — the correlation is
+what makes a starved marker a confirmed seam rather than a guess — but it must be
+*disclosed*, not papered over with a "framework-blind" claim. Each new severance
+shape earns its own confirming correlation (and a fixture), the same prevalence gate
+reclaimers use. The classifier discloses this caveat in its own output.
+
 **Determinism:** pure function of the graph; sorted, stable; no verdict coupling.
 
 ---
@@ -270,8 +283,9 @@ type Reclaimer interface {
   refine-opt-in precedent: the base graph is unchanged and the reclaimed graph is
   an explicit, diffable superset.
 
-This keeps us neither hyper-molded (the core is generic; the taxonomy and
-classifier are framework-blind) nor over-general (we don't build speculative
+This keeps us neither hyper-molded (the core is generic — the taxonomy and bins
+are framework-agnostic; only the *seam-confirming correlations* are shape-specific,
+disclosed as a coverage limit per §3) nor over-general (we don't build speculative
 reclaimers for shapes the measurement says are rare).
 
 **Relationship to prior art.** `wrapper-fanout-investigation.md` shipped `--algo`

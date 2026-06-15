@@ -16,6 +16,14 @@ func Render(name, algo string, r *Report) string {
 	fmt.Fprintf(&b, "frontier: %s  (algo %s)\n", name, algo)
 	fmt.Fprintf(&b, "  entrypoints: %d   starved: %d (%.0f%% attribution loss)\n",
 		r.Entrypoints, r.StarvedEntrypoints, 100*r.AttributionLoss)
+	if r.Entrypoints > 0 {
+		// Be honest about the detector's coverage: starvation is confirmed only for
+		// the oapi-codegen strict-server shape, so a low/zero attribution loss is
+		// "no CONFIRMED seam", not a proof of no severance (other dispatch frameworks
+		// are not yet recognized). See docs/design/frontier-instrumentation-plan.md §3.
+		b.WriteString("    (attribution loss confirms the oapi strict-server shape only; " +
+			"0% means no CONFIRMED seam, not no severance)\n")
+	}
 	fmt.Fprintf(&b, "  markers: %d   reclaimable (B): %d (%.0f%%)\n",
 		len(r.Markers), r.Counts[BinB], 100*r.ReclaimableShare)
 	fmt.Fprintf(&b, "    A  truly dynamic       : %d\n", r.Counts[BinA])
