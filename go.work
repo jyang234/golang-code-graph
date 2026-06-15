@@ -8,6 +8,7 @@ use (
 	.
 	./testdata/fixtures/loansvc
 	./testdata/fixtures/oapisvc
+	./testdata/fixtures/strictsvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc
