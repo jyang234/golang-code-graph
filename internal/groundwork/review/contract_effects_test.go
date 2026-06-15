@@ -97,3 +97,90 @@ func TestContractEffectKeyedOnTargetNotEmitter(t *testing.T) {
 		t.Errorf("a new topic must surface as an added contract effect; got %+v", bAdded.Contract)
 	}
 }
+
+// A consumed topic is usually both a consumer entrypoint and a `bus CONSUME`
+// boundary effect. Removing the consumption must report ONE breaking line (the
+// entrypoint surface), not two with the identical Name (entrypoint + consume) —
+// the consume effect is deduped against the entrypoint that already represents it.
+func TestConsumerTopicNotDoubleReported(t *testing.T) {
+	p := &policy.Policy{Service: "svc", Version: 1}
+	const topic = "payment.settled"
+	base := &graph.Graph{
+		Algo:  "vta",
+		Nodes: []graph.Node{{FQN: "svc.OnSettled", Sig: "f", Tier: 1}, {FQN: "svc.run", Sig: "f", Tier: 1}},
+		Edges: []graph.Edge{
+			{From: "svc.run", To: "boundary:bus CONSUME " + topic, Tier: 1, Boundary: "inbound"},
+		},
+		Entrypoints: []graph.Entrypoint{{Kind: "consumer", Name: topic, Fn: "svc.OnSettled"}},
+	}
+	branch := &graph.Graph{Algo: "vta", Nodes: []graph.Node{{FQN: "svc.run", Sig: "f", Tier: 1}}}
+
+	a := Review(p, base, branch)
+	var named []ContractChange
+	for _, c := range a.Contract {
+		if c.Name == topic {
+			named = append(named, c)
+		}
+	}
+	if len(named) != 1 {
+		t.Fatalf("removing a consumed topic must report exactly one contract line for %q; got %+v", topic, named)
+	}
+	if named[0].Surface != "entrypoint" || !named[0].Breaking || named[0].Op != "-" {
+		t.Errorf("the surviving line must be the breaking entrypoint removal; got %+v", named[0])
+	}
+}
+
+// A mid-flow `bus CONSUME` that is NOT a registered consumer entrypoint must
+// still be reported on the consume surface — the dedup only suppresses a consume
+// that an entrypoint already represents.
+func TestUnregisteredConsumeStillReported(t *testing.T) {
+	p := &policy.Policy{Service: "svc", Version: 1}
+	base := &graph.Graph{
+		Algo:  "vta",
+		Nodes: []graph.Node{{FQN: "svc.worker", Sig: "f", Tier: 1}},
+		Edges: []graph.Edge{{From: "svc.worker", To: "boundary:bus CONSUME audit.events", Tier: 1, Boundary: "inbound"}},
+	}
+	branch := &graph.Graph{Algo: "vta", Nodes: []graph.Node{{FQN: "svc.worker", Sig: "f", Tier: 1}}}
+	a := Review(p, base, branch)
+	var saw bool
+	for _, c := range a.Contract {
+		if c.Op == "-" && c.Surface == "consume" && c.Name == "audit.events" && c.Breaking {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("an unregistered consume removal must still be a breaking contract change; got %+v", a.Contract)
+	}
+}
+
+// The entrypoint contract delta is keyed on (kind, name): an http route and a
+// consumer topic that share a name are distinct contracts, so removing one must
+// not be masked by the other surviving. (Name-only keying would collapse them.)
+func TestEntrypointKeyedByKindNotJustName(t *testing.T) {
+	p := &policy.Policy{Service: "svc", Version: 1}
+	const shared = "orders" // an http route and a topic both named "orders"
+	base := &graph.Graph{
+		Algo:  "vta",
+		Nodes: []graph.Node{{FQN: "svc.H", Sig: "f", Tier: 1}, {FQN: "svc.C", Sig: "f", Tier: 1}},
+		Entrypoints: []graph.Entrypoint{
+			{Kind: "http", Name: shared, Fn: "svc.H"},
+			{Kind: "consumer", Name: shared, Fn: "svc.C"},
+		},
+	}
+	// Branch drops only the http route; the consumer topic survives.
+	branch := &graph.Graph{
+		Algo:        "vta",
+		Nodes:       []graph.Node{{FQN: "svc.C", Sig: "f", Tier: 1}},
+		Entrypoints: []graph.Entrypoint{{Kind: "consumer", Name: shared, Fn: "svc.C"}},
+	}
+	a := Review(p, base, branch)
+	var sawHTTPRemoval bool
+	for _, c := range a.Contract {
+		if c.Op == "-" && c.Surface == "entrypoint" && c.Name == shared && c.Breaking {
+			sawHTTPRemoval = true
+		}
+	}
+	if !sawHTTPRemoval {
+		t.Errorf("removing an http route must be breaking even when a consumer topic of the same name survives; got %+v", a.Contract)
+	}
+}

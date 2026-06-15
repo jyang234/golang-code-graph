@@ -140,6 +140,21 @@ func (d graphDelta) pkgDeltas() []PkgDelta {
 
 // --- set helpers -----------------------------------------------------------
 
+// edgeSet collects, into a set, the label extract returns for each edge where it
+// reports ok. It is the iterate-filter-dedupe skeleton shared by the contract
+// effect surface (contractEffects, keyed on the effect target) and the write
+// ratchet (newWriteTargets, keyed on the write label) — the two differ only in
+// the per-edge extractor.
+func edgeSet[T comparable](edges []graph.Edge, extract func(graph.Edge) (T, bool)) map[T]bool {
+	out := map[T]bool{}
+	for _, e := range edges {
+		if v, ok := extract(e); ok {
+			out[v] = true
+		}
+	}
+	return out
+}
+
 func nodeSet(g *graph.Graph) map[string]bool {
 	s := make(map[string]bool, len(g.Nodes))
 	for _, n := range g.Nodes {

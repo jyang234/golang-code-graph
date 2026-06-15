@@ -31,10 +31,11 @@ func TestContractNonBreakingUnderHandlerRefactorOverGeneratedGraphs(t *testing.T
 	p := &policy.Policy{Service: "svc", Version: 1}
 	for s := int64(0); s < seeds; s++ {
 		r := rand.New(rand.NewSource(s))
-		base, refactored, routes := genRouteGraphs(r)
+		base, refactored, routes, topic := genRouteGraphs(r)
 
-		// The refactor: handler symbols moved, route names unchanged → the
-		// entrypoint contract is intact, so nothing here may read as breaking.
+		// The refactor: handler symbols AND the effect emitter moved, route names
+		// and the published topic unchanged → both contract surfaces are intact,
+		// so nothing here may read as a breaking or even an entrypoint change.
 		a := Review(p, base, refactored)
 		for _, c := range a.Contract {
 			if c.Surface == "entrypoint" {
@@ -43,7 +44,7 @@ func TestContractNonBreakingUnderHandlerRefactorOverGeneratedGraphs(t *testing.T
 			}
 		}
 		if anyBreaking(a.Contract) {
-			t.Fatalf("seed %d: a handler refactor with stable route names was judged breaking: %+v\n%s",
+			t.Fatalf("seed %d: a handler/emitter refactor with stable contract names was judged breaking: %+v\n%s",
 				s, a.Contract, dumpRoutes(base, refactored))
 		}
 
@@ -63,6 +64,21 @@ func TestContractNonBreakingUnderHandlerRefactorOverGeneratedGraphs(t *testing.T
 			t.Fatalf("seed %d: dropping route %q must be a breaking entrypoint removal; got %+v",
 				s, dropped, b.Contract)
 		}
+
+		// Effect-path control: genuinely drop the published topic (remove the
+		// emitter edge) — the effect-set delta must still surface a breaking
+		// removal, so the non-breaking property above is not vacuous for effects.
+		c2 := Review(p, base, dropEffectTarget(base, topic))
+		var sawEffectDrop bool
+		for _, c := range c2.Contract {
+			if c.Op == "-" && c.Surface == "publish" && c.Breaking {
+				sawEffectDrop = true
+			}
+		}
+		if !sawEffectDrop {
+			t.Fatalf("seed %d: dropping the published topic must be a breaking effect removal; got %+v",
+				s, c2.Contract)
+		}
 	}
 }
 
@@ -70,12 +86,15 @@ func TestContractNonBreakingUnderHandlerRefactorOverGeneratedGraphs(t *testing.T
 // route's handler is moved between base and branch — an inline-closure handler
 // renumbered by an extract-function refactor (run$N → newHTTPServer$M), or a
 // named handler plainly renamed (H{i} → H{i}V2) — while the route NAME and kind
-// are held identical. Each handler delegates into a shared, unmoved store node
-// (the field topology: handlers delegate, they don't emit effects directly), so
-// no effect-source movement clouds the entrypoint contract delta. Internal
-// (non-entrypoint) root churn is mixed in so §9's orphan-root exclusion is
+// are held identical. Each handler delegates into a shared, unmoved store node so
+// no effect-source movement clouds the entrypoint contract delta. It also carries
+// one CONTRACT effect (a published topic) emitted by a function the refactor MOVES
+// (Emit → EmitV2), with the topic held stable — so the effect-set contract path is
+// exercised under emitter movement too (the R10-sibling fix), not just entrypoints.
+// The published topic is returned so the caller can drop it as a negative control.
+// Internal (non-entrypoint) root churn is mixed in so §9's orphan-root exclusion is
 // exercised alongside R10. Deterministic in r.
-func genRouteGraphs(r *rand.Rand) (base, refactored *graph.Graph, routes []string) {
+func genRouteGraphs(r *rand.Rand) (base, refactored *graph.Graph, routes []string, topic string) {
 	const mod = "example.com/svc/"
 	const store = "(*" + mod + "internal/store.Store).Exec"
 	storeEffect := graph.Edge{From: store, To: "boundary:db UPDATE users", Tier: 1, Boundary: "outbound-sync"}
@@ -117,6 +136,18 @@ func genRouteGraphs(r *rand.Rand) (base, refactored *graph.Graph, routes []strin
 		routes = append(routes, name)
 	}
 
+	// A contract EFFECT (a published topic) emitted by a function the refactor
+	// MOVES (Emit → EmitV2). The topic stands; only the emitter FQN changes, so
+	// the effect-set contract path must read it as unchanged — exercising the
+	// R10-sibling fix across the corpus.
+	topic = fmt.Sprintf("boundary:bus PUBLISH topic.evt%d", r.Intn(1<<16))
+	emitterBase := fmt.Sprintf("(*%sinternal/notify.Notifier).Emit", mod)
+	emitterBranch := emitterBase + "V2"
+	baseNodes = append(baseNodes, graph.Node{FQN: emitterBase, Sig: "func() error", Tier: 1})
+	baseEdges = append(baseEdges, graph.Edge{From: emitterBase, To: topic, Tier: 1, Boundary: "outbound-sync"})
+	brNodes = append(brNodes, graph.Node{FQN: emitterBranch, Sig: "func() error", Tier: 1})
+	brEdges = append(brEdges, graph.Edge{From: emitterBranch, To: topic, Tier: 1, Boundary: "outbound-sync"})
+
 	// §9 internal churn: a non-entrypoint root present only in base and a
 	// different one only in branch — neither is in the entrypoints join, so
 	// neither may read as a contract change.
@@ -129,7 +160,21 @@ func genRouteGraphs(r *rand.Rand) (base, refactored *graph.Graph, routes []strin
 
 	base = &graph.Graph{Algo: "vta", Nodes: baseNodes, Edges: baseEdges, Entrypoints: baseEps}
 	refactored = &graph.Graph{Algo: "vta", Nodes: brNodes, Edges: brEdges, Entrypoints: brEps}
-	return base, refactored, routes
+	return base, refactored, routes, topic
+}
+
+// dropEffectTarget returns a copy of g with every edge to the given boundary
+// target removed — a genuine effect-contract removal, the negative control for
+// the effect-set non-breaking property.
+func dropEffectTarget(g *graph.Graph, to string) *graph.Graph {
+	edges := make([]graph.Edge, 0, len(g.Edges))
+	for _, e := range g.Edges {
+		if e.To == to {
+			continue
+		}
+		edges = append(edges, e)
+	}
+	return &graph.Graph{Algo: g.Algo, Nodes: g.Nodes, Edges: edges, Entrypoints: g.Entrypoints}
 }
 
 // dropRoute returns a copy of g with the named route's entrypoint (and its
