@@ -40,21 +40,30 @@ func Template(path string) string {
 	return out
 }
 
-// stripHostAndQuery reduces a full or relative URL to its path component.
+// stripHostAndQuery reduces a full or relative URL to its path component. Query
+// and fragment are cut first, then any scheme://host prefix is stripped
+// REPEATEDLY: a malformed path can carry more than one (":///://x"), and a single
+// pass would leave a "://" behind — breaking Template's idempotence (the residual
+// scheme re-strips on the next pass) and its no-scheme guarantee. Looping to a
+// fixed point (FuzzTemplateInvariants) keeps the canonical form stable.
 func stripHostAndQuery(raw string) string {
-	if i := strings.Index(raw, "://"); i >= 0 {
-		rest := raw[i+3:]
-		if j := strings.IndexByte(rest, '/'); j >= 0 {
-			raw = rest[j:]
-		} else {
-			raw = "/"
-		}
-	}
 	if i := strings.IndexByte(raw, '?'); i >= 0 {
 		raw = raw[:i]
 	}
 	if i := strings.IndexByte(raw, '#'); i >= 0 {
 		raw = raw[:i]
+	}
+	for {
+		i := strings.Index(raw, "://")
+		if i < 0 {
+			break
+		}
+		rest := raw[i+3:]
+		j := strings.IndexByte(rest, '/')
+		if j < 0 {
+			return "/"
+		}
+		raw = rest[j:]
 	}
 	return raw
 }
