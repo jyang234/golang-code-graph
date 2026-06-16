@@ -1,8 +1,11 @@
 # Capability scorecard — an honest assessment
 
-> **`DESIGN RECORD`** · capability assessment, graded by evidence (re-grade on new evidence) · _reviewed 2026-06-13_
+> **`DESIGN RECORD`** · capability assessment, graded by evidence (re-grade on new evidence) · _reviewed 2026-06-16_
 
-**As of:** 2026-06-11, branch `claude/design-ideas-planning-0ymckn`.
+**As of:** 2026-06-16, HEAD `45d70bd` (branch `claude/golang-code-graph-eval-hkzmdm`).
+This re-grade adds the static-frontier classifier, the strict-server reclaimer,
+and `--expect` commit-identity gate binding (all shipped since the 2026-06-13
+review), and records the determinism/fail-closed hardening wave.
 **Purpose:** what this toolset can actually do, graded by *evidence class*, with
 each capability's known limits beside its strengths. Re-grade when the
 evidence changes; the drill record (`drills.md`) and the test suite are the
@@ -34,6 +37,8 @@ no committed lock would be ⚠️, not ✅.
 | Partial-effect facts (`effect_order`) | ✅ | Disburse scenario locked (dominating publish → always; branch-arm → possibly); negative cases tested | **Same-function orderings only** — disclosed on every fault card; absence is never an all-clear |
 | Entrypoints join (route/topic → fn) | ✅ | Resolver-tested incl. method-less roots, mount prefixes, param wildcards | Registration-site literals; gin/gorilla/gRPC routes absent (loud no-match); middleware resolves to the wrapping closure |
 | Graph stamping (`--stamp`) | ✅ | All four verify behaviors tested; goldens proven unstamped/unchanged | Caller-supplied only — verifies the claim chain, not the deploy pipeline's existence |
+| Static-frontier classifier (`flowmap frontier`) | ✅ | Classifier + attribution check locked on hand-authored graph fixtures and the `strictsvc`/`oapisvc`/`loansvc` services (`internal/static/frontier/frontier_test.go`, `frontier_classify_test.go`); the three-valued disclosure (confirmed-starved / unconfirmed / clean) is tested both ways so a 0-loss can't be misread | **Measurement, not a gate** — imports no verdict surface; attribution loss is a *lower bound*, not a proof; whole-service only (a scoped `--entry` build carries no frontier section by design) |
+| Strict-server seam reclaimer (`flowmap graph --reclaim`) | ✅ | Recovers exactly the strict-server dispatch edges, each tagged with `via` provenance, and **zero false positives** on non-seam services (`internal/static/reclaim/reclaim_test.go`); folding the edges in drives the frontier's attribution loss to 0 | Opt-in by design (default graph and goldens unchanged); covers only the oapi strict-server seam shape; promotion to default-on is gated on real-service prevalence evidence (not yet collected) |
 
 ## groundwork (the judge)
 
@@ -42,6 +47,7 @@ no committed lock would be ⚠️, not ✅.
 | Six policy families (layering, must_not_reach, must_pass_through, no_concurrent_reach, io_budget, blind-spot ratchet) | ✅ | Each family has fixture verdicts both ways; `entrypoint:*` binds everywhere; fail-closed on unknown vocabularies | `concurrent` flag conflates go/defer (disclosed; split planned on evidence); path-insensitive over-approximation throughout |
 | Review artifact + digest + verify-artifact | ✅ | Tamper, stale, and **re-signed forgery** all caught by tests; abstention suppressed by any new signal | Digest is not the anchor — recomputation from CI-generated graphs is; set-based delta misses new-call-site-to-already-called-target (documented) |
 | Pre-flight gate (`verify`) | ✅ | Blocks on new violations / scope creep / breaking contract / gated blind spots; fixture-proven | Only as trustworthy as graph generation — the trust boundary is CI wiring, not this binary |
+| Commit-identity gate binding (`--expect`) | ✅ | `--expect <sha>` binds fitness/review/verify/verify-artifact to the branch graph's stamp; a mismatch fails *operationally before* the verdict, and `GROUNDWORK_REQUIRE_STAMP` turns a forgotten flag into a CI failure rather than a silent skip (`cmd/groundwork/gatestamp_test.go`) | Stamp is caller-supplied (verifies the claim chain, not that a deploy happened); boundary contracts deliberately out of scope; inert without the flag (no golden churn) |
 | Exceptions audit (dead-entry detection) | ✅ | Set-based attribution; the caution↔violation swap that fooled the count-proxy version is the regression test | Liveness is per-graph: an entry dead on this service may be live on another sharing the policy |
 | Incident triage (5 symptom kinds) | 📐 | **10/10 recall, median 8% hunt space, route scenarios 3%** (E1); trace handoff proven end-to-end (E2); staleness mis-scope demonstrated (E3); thresholds are committed assertions | Fixture is 39 nodes and well-factored — fractions will grow on monoliths (why the thresholds are ratchets); non-code causes are out of scope, stated on every fault card |
 | Partial-effect fault answers | ✅ | Certainly/possibly split locked; scope statement prints even when sections are empty | Inherits effect_order's same-function limit |
@@ -54,8 +60,8 @@ no committed lock would be ⚠️, not ✅.
 
 | Property | Grade | Evidence |
 |---|---|---|
-| Byte-determinism across machines | ✅ | Cross-checkout path-invariance test; canonical JSON everywhere; sites normalized through a total ladder |
-| Silence-is-never-a-silent-pass | ✅ | Fail-closed conventions are *tested*: unknown statuses → caution, inert rules → UNMATCHED, dead exceptions → flagged, blind frontiers → caution/require_proof |
+| Byte-determinism across machines | ✅ | Cross-checkout path-invariance test; canonical JSON everywhere; sites normalized through a total ladder; the concurrent-ordering tie-break, the canonical-JSON marshaler, SQL normalization (idempotent), and OTLP decode are each fuzz-guarded (`FuzzCanonConcurrentOrderInvariant`, `canonjson.FuzzMarshalDeterministic`, `sql.FuzzNormalizeIdempotent`, `otlpjson.Fuzz*` — the SQL fuzzer found and fixed a non-idempotent tokenizer bug), and a nightly fuzz CI accumulates the corpus past the PR seed set |
+| Silence-is-never-a-silent-pass | ✅ | Fail-closed conventions are *tested*: unknown statuses → caution, inert rules → UNMATCHED, dead exceptions → flagged, blind frontiers → caution/require_proof; an unmarshalable span signature fails closed (panics) rather than degrading to op-only order; gate matchers bind at identifier boundaries so a prefix collision can no longer fail open (`policy.MatchPrefix`, class-guarded by `opkey.TestNoHardcodedOpKeyPrefix`) |
 | No AI in any verdict | ✅ | By construction; E4 deliberately excluded from the suite for this reason |
 | Documentation | ✅ | Concepts primer, integration guide, drill record, this scorecard; every doc claim maps to a runnable command and a locking test |
 

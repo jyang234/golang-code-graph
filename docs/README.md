@@ -47,7 +47,7 @@ the system actually works."
 
 | Doc | What it covers |
 |---|---|
-| [`adopting-flowmap.md`](guides/adopting-flowmap.md) | End-to-end recipe for wiring flowmap into a Go service. |
+| [`adopting-flowmap.md`](guides/adopting-flowmap.md) | End-to-end recipe for wiring flowmap **and groundwork** into a Go service and across the lifecycle (design/build/review/triage). |
 | [`rule-anchoring.md`](guides/rule-anchoring.md) | Authoring `must-precede` obligations across a dispatch boundary. |
 | [`integration/README.md`](guides/integration/README.md) | Conventions + copy-ready scaffolding for an out-of-process e2e suite. |
 | [`integration/otlp-integration-guide.md`](guides/integration/otlp-integration-guide.md) | Step-by-step for adding post-hoc capture to an existing OTLP e2e suite. |

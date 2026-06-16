@@ -29,9 +29,12 @@ structure. It answers, in reviewer priority order:
 6. **Reach** — which existing entrypoints the change is now live behind.
 
 ```bash
-groundwork review policy.json base-graph.json branch-graph.json \
-    --base-contract base.json --head-contract branch.json
+groundwork review policy.json base-graph.json branch-graph.json
 ```
+
+Contract movement is derived from the boundary effects already in the two graphs
+— there is no separate contract input. (For a standalone boundary-contract diff,
+`groundwork diff <base-contract.json> <branch-contract.json>`.)
 
 ## The anti-fake guarantee
 
@@ -39,7 +42,7 @@ Every artifact carries `digest = sha256(structural content)`. Two independent
 checks prove it cannot be faked:
 
 ```bash
-groundwork verify-artifact artifact.json policy.json base-graph.json branch-graph.json ...
+groundwork verify-artifact artifact.json policy.json base-graph.json branch-graph.json [--expect <sha>]
 ```
 
 1. **Body integrity** — the claimed body must hash to the claimed digest. Edit
