@@ -27,6 +27,7 @@ type Index struct {
 	callers map[string][]string // sorted, deduped first-party callers, by callee FQN
 	effOf   map[string][]Edge   // boundary edges, keyed by the first-party FQN that makes them
 	blind   map[string][]BlindSpot
+	sources []string // caller-less nodes, sorted; a pure function of the graph, computed once
 }
 
 // NewIndex builds an Index over g. The graph is retained by reference; callers
@@ -64,6 +65,17 @@ func NewIndex(g *Graph) *Index {
 	for _, b := range g.BlindSpots {
 		ix.blind[b.Site] = append(ix.blind[b.Site], b)
 	}
+
+	// Sources (caller-less nodes) are a pure function of the now-frozen adjacency,
+	// so compute the sorted set once here instead of re-scanning every node and
+	// re-sorting on every Sources() call (the ground card and every reach pass hit
+	// this on the serving path).
+	for fqn := range ix.nodes {
+		if len(ix.callers[fqn]) == 0 {
+			ix.sources = append(ix.sources, fqn)
+		}
+	}
+	sort.Strings(ix.sources)
 	return ix
 }
 
@@ -157,22 +169,23 @@ func (ix *Index) walk(seeds []string, next func(string) []string) []string {
 // approximation of "entrypoint"; flowmap's boundary contract can later refine
 // these with their route/topic names. The result is sorted.
 func (ix *Index) Sources() []string {
-	out := make([]string, 0)
-	for fqn := range ix.nodes {
-		if len(ix.callers[fqn]) == 0 {
-			out = append(out, fqn)
-		}
-	}
-	sort.Strings(out)
-	return out
+	// Return a copy so a caller cannot mutate the cached, shared slice.
+	return append([]string(nil), ix.sources...)
 }
 
 // EntrypointCover returns the Sources from which fqn is transitively reachable —
 // the entry points the function is live behind. The result is sorted.
 func (ix *Index) EntrypointCover(fqn string) []string {
-	reaching := setutil.StringSet(ix.Reaching(fqn))
+	return ix.EntrypointCoverFrom(fqn, setutil.StringSet(ix.Reaching(fqn)))
+}
+
+// EntrypointCoverFrom is EntrypointCover for a caller that has ALREADY computed
+// fqn's reverse-reachable set. The ground card needs both the cover and the raw
+// reaching set, so this lets it pay for the (O(V+E)) reverse BFS once instead of
+// twice on the serving path. reaching must be the set form of ix.Reaching(fqn).
+func (ix *Index) EntrypointCoverFrom(fqn string, reaching map[string]bool) []string {
 	var out []string
-	for _, s := range ix.Sources() {
+	for _, s := range ix.sources {
 		if s == fqn || reaching[s] {
 			out = append(out, s)
 		}

@@ -84,6 +84,23 @@ func TestEntrypointCover(t *testing.T) {
 	}
 }
 
+// EntrypointCoverFrom must produce exactly what EntrypointCover does for every
+// node — ground.For relies on the equivalence to feed a single reverse-BFS into
+// the cover instead of running the BFS twice per card.
+func TestEntrypointCoverFromParity(t *testing.T) {
+	ix := loadGolden(t, "loansvc.graph.json")
+	for _, fqn := range ix.Nodes() {
+		reaching := map[string]bool{}
+		for _, r := range ix.Reaching(fqn) {
+			reaching[r] = true
+		}
+		want := ix.EntrypointCover(fqn)
+		if got := ix.EntrypointCoverFrom(fqn, reaching); !reflect.DeepEqual(got, want) {
+			t.Errorf("EntrypointCoverFrom(%s) = %v, want %v", fqn, got, want)
+		}
+	}
+}
+
 func TestEffects(t *testing.T) {
 	ix := loadGolden(t, "layeredsvc.graph.json")
 	// The full downstream effect surface of the UpdateUser route is its two writes.

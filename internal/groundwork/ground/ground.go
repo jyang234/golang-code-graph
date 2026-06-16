@@ -54,7 +54,12 @@ func For(ix *graph.Index, p *policy.Policy, fqn string) (Card, error) {
 	c := Card{FQN: fqn, Sig: node.Sig, Tier: node.Tier}
 	c.Callers = append([]string{}, ix.Callers(fqn)...)
 	c.Callees = append([]string{}, ix.Callees(fqn)...)
-	c.Entrypoints = ix.EntrypointCover(fqn)
+	// reaching is fqn's reverse-reachable set (an O(V+E) BFS). The card needs it
+	// twice — for the entrypoint cover here and the blind-spot frontier below — so
+	// compute it once and feed both, rather than running the BFS twice per call on
+	// the MCP serving path (ground is invoked before every edit).
+	reaching := ix.Reaching(fqn)
+	c.Entrypoints = ix.EntrypointCoverFrom(fqn, setutil.StringSet(reaching))
 
 	cone := append([]string{fqn}, ix.Reachable(fqn)...)
 	coneEffects := ix.Effects(cone...)
@@ -74,7 +79,6 @@ func For(ix *graph.Index, p *policy.Policy, fqn string) (Card, error) {
 	// <dynamic> boundary effects in the cone are synthesized into blind spots too:
 	// they are the frontier the effects claim stops being sound past, and they do
 	// not appear in the graph's blind_spots[] manifest.
-	reaching := ix.Reaching(fqn)
 	traversed := append(append([]string{}, cone...), reaching...)
 	seen := map[string]bool{}
 	addBlind := func(b graph.BlindSpot) {

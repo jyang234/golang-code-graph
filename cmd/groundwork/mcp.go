@@ -640,7 +640,7 @@ func (f *mcpFleet) fleetEvents() map[string]any {
 func (f *mcpFleet) chains() map[string]any {
 	var fleet []chains.Service
 	brokers := map[string]policy.Broker{}
-	conflict := ""
+	conflicts := map[string]bool{}
 	for _, name := range f.names {
 		s := f.services[name]
 		fleet = append(fleet, chains.Service{Name: name, Index: s.ix})
@@ -649,13 +649,17 @@ func (f *mcpFleet) chains() map[string]any {
 		}
 		for bn, b := range s.p.Brokers {
 			if existing, ok := brokers[bn]; ok && existing != b {
-				conflict = bn
+				conflicts[bn] = true
 			}
 			brokers[bn] = b
 		}
 	}
-	if conflict != "" {
-		return toolError(fmt.Sprintf("broker %q is declared differently by more than one loaded policy; the bus guarantee must have a single source", conflict))
+	if len(conflicts) > 0 {
+		// Sort the conflicting names so the error is byte-identical run to run —
+		// ranging s.p.Brokers (a map) otherwise reported whichever conflict the
+		// iteration happened to visit last, breaking the determinism every fleet
+		// lens and replayed drill depends on.
+		return toolError(fmt.Sprintf("broker(s) %s declared differently by more than one loaded policy; the bus guarantee must have a single source", strings.Join(setutil.SortedKeys(conflicts), ", ")))
 	}
 	return toolText(f.staleNotes() + chains.Build(fleet, brokers).Render())
 }
