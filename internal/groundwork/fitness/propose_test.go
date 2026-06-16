@@ -73,6 +73,41 @@ func TestProposeRatchetsBlindSpots(t *testing.T) {
 	}
 }
 
+// R12: the current external write surface becomes the observe-first effect-ratchet
+// baseline (the sibling of the blind-spot ratchet), so a NEW write target is
+// reported from day one and gating is a one-line flip (§10's first gate). The
+// baseline must cover EVERY WriteLabel in the graph — the exact set review's
+// newWriteTargets diffs over — so init never reports its own surface as new. The
+// guide also couples the ratchet to blind_spot_ratchet (the dynamic-laundering
+// escape), so an adopter gating effect-first sees the dependency.
+func TestProposeRatchetsWriteTargets(t *testing.T) {
+	g := loadGraph(t, "layeredsvc.graph.json")
+	p, guide := Propose(graph.NewIndex(g), "layeredsvc")
+	if p.EffectRatchet == nil || p.EffectRatchet.Gate {
+		t.Fatalf("effect_ratchet = %+v, want proposed observe-first (gate:false)", p.EffectRatchet)
+	}
+	want := map[string]bool{}
+	for _, e := range g.Edges {
+		if label, ok := WriteLabel(e); ok {
+			want[label] = true
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("fixture has no classified writes — it cannot exercise the baseline")
+	}
+	if len(p.EffectRatchet.Allow) != len(want) {
+		t.Fatalf("baseline has %d allow(s), want %d (one per current write target)", len(p.EffectRatchet.Allow), len(want))
+	}
+	for _, a := range p.EffectRatchet.Allow {
+		if !want[a.Target] {
+			t.Errorf("baseline allow %q is not a current write target", a.Target)
+		}
+	}
+	if !strings.Contains(guide, "gate both") {
+		t.Errorf("guide must couple the effect ratchet to blind_spot_ratchet (gate both); got:\n%s", guide)
+	}
+}
+
 // R5: on a db-call substrate (production CRUD built from non-constant SQL, so the
 // writes label "db call" and IsWrite cannot read them), init must NOT sweep the
 // opaque write routes into `read-routes-stay-read-only`. The classified-only
@@ -133,6 +168,16 @@ func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
 	// The "what init cannot derive" section names the opaque-write limit.
 	if !strings.Contains(guide, "Opaque DB writes") {
 		t.Errorf("guide closing must list opaque DB writes under what init cannot derive")
+	}
+
+	// R12: the effect ratchet is still proposed observe-first even with ZERO
+	// classified writes — armed so the first real write is reported — and the
+	// opaque frontier that evades it is disclosed, not laundered into "bounded".
+	if p.EffectRatchet == nil || p.EffectRatchet.Gate || len(p.EffectRatchet.Allow) != 0 {
+		t.Errorf("effect_ratchet = %+v, want proposed observe-first with an empty baseline (no classified writes)", p.EffectRatchet)
+	}
+	if !strings.Contains(guide, "opaque writes evade") {
+		t.Errorf("guide must disclose that opaque db-call writes evade the effect ratchet")
 	}
 
 	// The proposal must still be a clean ratchet of its own graph (no must_not_reach

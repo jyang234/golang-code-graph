@@ -1,21 +1,27 @@
 package review
 
 import (
-	"fmt"
-
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 )
 
 // provenanceCaveats returns the call-graph substrate notes to record on a verdict
 // computed over a base/branch pair. The branch's caveats are the provenance of
-// the code under review; when the two sides were built on different algorithms a
-// synthesized caveat discloses the mismatch, because a delta computed across
-// substrates can move for reasons that are the analyzer's, not the code's. Nil
-// when neither side recorded provenance (graphs from a pre-provenance flowmap).
+// the code under review; when the two sides were built on different algorithms — or
+// by different flowmap builds — a synthesized caveat discloses the mismatch, because
+// a delta computed across substrates OR across producer versions can move for reasons
+// that are the analyzer's/tool's, not the code's. Nil when neither side recorded
+// provenance (graphs from a pre-provenance flowmap).
 func provenanceCaveats(policyAlgo string, base, branch *graph.Graph) []string {
 	var out []string
-	if base.Algo != "" && branch.Algo != "" && base.Algo != branch.Algo {
-		out = append(out, fmt.Sprintf("base graph built on %s, branch on %s — substrate differs; a delta may be the analyzer's, not the code's", base.Algo, branch.Algo))
+	if ac := graph.AlgoMismatchCaveat(base.Algo, branch.Algo); ac != "" {
+		out = append(out, ac)
+	}
+	// Same class as the algo mismatch, one dimension over: a base built by one
+	// flowmap build and a branch by another can diff on a pure tool artifact (a
+	// relabeled effect, an SSA-order shift) with the same code. Disclose it so the
+	// delta is read as a producer artifact, not a code change (R11).
+	if tc := graph.ToolMismatchCaveat(base.Tool, branch.Tool); tc != "" {
+		out = append(out, tc)
 	}
 	// A policy proposed on one algorithm but gated against a graph built on
 	// another can surface spurious reachability findings (the algorithms differ

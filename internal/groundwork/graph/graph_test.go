@@ -33,6 +33,55 @@ func TestProvenanceLineAndRoundTrip(t *testing.T) {
 	}
 }
 
+// A graph carrying flowmap's producing-build version (the `tool` header, R11)
+// must round-trip — the decoder rejects unknown fields, so a field flowmap now
+// emits has to be taught here — and ToolMismatchCaveat must disclose a base/branch
+// producer skew while staying silent on a match or an unrecorded side.
+func TestToolFieldRoundTripAndMismatchCaveat(t *testing.T) {
+	const j = `{"tool":"flowmap-1.2.3","algo":"vta","nodes":[],"edges":[],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("the producer (tool) field must round-trip, got %v", err)
+	}
+	if g.Tool != "flowmap-1.2.3" {
+		t.Fatalf("tool=%q, want flowmap-1.2.3", g.Tool)
+	}
+	if got := ToolMismatchCaveat("a", "b"); !strings.Contains(got, "producer mismatch") || !strings.Contains(got, "a") || !strings.Contains(got, "b") {
+		t.Errorf("a mismatch must name both producers; got %q", got)
+	}
+	for _, c := range []struct{ base, branch string }{
+		{"a", "a"}, // agree (dogfood: one pinned binary)
+		{"", "b"},  // base unrecorded
+		{"a", ""},  // branch unrecorded
+		{"", ""},   // both unrecorded
+	} {
+		if got := ToolMismatchCaveat(c.base, c.branch); got != "" {
+			t.Errorf("ToolMismatchCaveat(%q,%q) = %q, want silent", c.base, c.branch, got)
+		}
+	}
+}
+
+// The base↔branch algo mismatch is the sibling of the tool and substrate caveats,
+// and like them is a unit-testable helper (not inline at the call site): it must
+// name both algorithms when they differ and stay silent when either is unrecorded
+// or the two agree. The wording is pinned because review's substrate-disclosure
+// tests match the "substrate differs" phrase.
+func TestAlgoMismatchCaveat(t *testing.T) {
+	if got := AlgoMismatchCaveat("rta", "vta"); !strings.Contains(got, "rta") || !strings.Contains(got, "vta") || !strings.Contains(got, "substrate differs") {
+		t.Errorf("a mismatch must name both algos and say 'substrate differs'; got %q", got)
+	}
+	for _, c := range []struct{ base, branch string }{
+		{"vta", "vta"}, // agree
+		{"", "rta"},    // base unrecorded
+		{"vta", ""},    // branch unrecorded
+		{"", ""},       // both unrecorded
+	} {
+		if got := AlgoMismatchCaveat(c.base, c.branch); got != "" {
+			t.Errorf("AlgoMismatchCaveat(%q,%q) = %q, want silent", c.base, c.branch, got)
+		}
+	}
+}
+
 // A graph from `flowmap graph --reclaim` carries a per-edge `via` provenance tag
 // (R9). groundwork must CONSUME it — the decoder rejected it before, so every
 // command died on a reclaimed graph — and ReclaimCaveat must disclose it so a

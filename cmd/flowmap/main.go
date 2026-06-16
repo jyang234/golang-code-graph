@@ -150,6 +150,14 @@ func cmdGraph(args []string) error {
 	// break byte-identical regeneration. Unstamped output is byte-identical to
 	// pre-stamp flowmap; CI passes --stamp "$GITHUB_SHA" explicitly.
 	g.Stamp = *stamp
+	// The tool version is the one provenance dimension the caller cannot supply —
+	// only this binary knows which build it is — so it IS derived here, at the CLI
+	// boundary rather than in graphio.Build (which stays pure: the determinism test
+	// and Build-built goldens must not vary by producing binary). It lets groundwork
+	// flag a base/branch built by two flowmap versions, whose "same code → same
+	// graph" guarantee holds only within one tool version (R11). regen.sh strips it
+	// so the committed goldens regenerate byte-identically, the unstamped convention.
+	g.Tool = buildinfo.Version(version)
 	b, err := g.Marshal()
 	if err != nil {
 		return err

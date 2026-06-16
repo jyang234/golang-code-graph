@@ -16,8 +16,9 @@ import (
 // an aspiration: layers from the package call DAG, waypoints that already
 // guard every entrypoint-to-DB path, read-only invariants for routes that
 // already write nothing, the write budget at today's maximum, current blind
-// spots allow-listed observe-first. The tool proposes from facts; a
-// CODEOWNER reviews, tightens, and commits — the trust model is unchanged.
+// spots allow-listed observe-first, and the current external write targets
+// allow-listed observe-first (the effect ratchet). The tool proposes from
+// facts; a CODEOWNER reviews, tightens, and commits — the trust model is unchanged.
 //
 // Self-verification is the load-bearing property: before returning, the
 // proposal is checked against the very graph it was derived from, and
@@ -39,6 +40,7 @@ func Propose(ix *graph.Index, service string) (*policy.Policy, string) {
 	proposeConcurrent(ix, p, &g)
 	proposeBudget(ix, p, &g)
 	proposeRatchet(ix, p, &g)
+	proposeEffectRatchet(ix, p, &g)
 
 	reconcile(ix, p, &g)
 	g.closing(ix)
@@ -584,6 +586,57 @@ func proposeRatchet(ix *graph.Index, p *policy.Policy, g *guide) {
 	g.section("Blind-spot ratchet: proposed (observe-first)",
 		fmt.Sprintf("%d existing blind spot(s) are allow-listed as the baseline; NEW ones will be reported in every review from day one.\n\n"+
 			"**Tighten by**: flipping `\"gate\": true` after a clean week — new dynamic dispatch then blocks the merge until reviewed. Each baseline entry deserves an eventual real reason or removal; `groundwork exceptions` will flag any that go dead.", len(r.Allow)))
+}
+
+// proposeEffectRatchet allow-lists the external write targets that exist today,
+// observe-first — the sibling of proposeRatchet on the write surface (policy.go:
+// "the sibling of BlindSpotRatchet with the same lifecycle"). Every CLASSIFIED
+// write — a db mutation, a bus PUBLISH, a mutating outbound call — becomes a
+// baseline EffectException, so a NEW write target is reported in every review from
+// day one and a one-line `gate: true` flip makes it merge-blocking (the §10 first
+// gate). It is ALWAYS proposed, even with an empty baseline: an empty allow-list
+// arms the ratchet so the FIRST write on a read-only service is reported, the
+// highest-signal case for that shape.
+//
+// The baseline is the exact set review's newWriteTargets diffs over — both label
+// ix.Edges() through the single WriteLabel extractor — so init never reports its
+// own write surface as new (the clean-baseline invariant, the effect-ratchet analog
+// of "init passes its own gate"; guarded by the property test, since reconcile
+// re-runs only Check and the effect ratchet is a review/Gate diff invisible to it).
+//
+// Opaque db-call writes (non-constant SQL) carry no readable verb, so they are NOT
+// WriteLabels and this ratchet is structurally blind to them — only the non-gating
+// db-label-drift count moves on a new one. Disclose that frontier rather than let
+// "effect_ratchet: proposed" read as "the write surface is bounded" (self-honesty).
+func proposeEffectRatchet(ix *graph.Index, p *policy.Policy, g *guide) {
+	r := &policy.EffectRatchet{Gate: false}
+	targets := map[string]bool{}
+	unclassified := map[string]bool{}
+	for _, e := range ix.Edges() {
+		if label, ok := WriteLabel(e); ok {
+			targets[label] = true
+		}
+		if label, ok := UnclassifiedDBLabel(e); ok {
+			unclassified[label] = true
+		}
+	}
+	for _, t := range setutil.SortedKeys(targets) {
+		r.Allow = append(r.Allow, policy.EffectException{Target: t, Reason: "baseline at init — review"})
+	}
+	p.EffectRatchet = r
+
+	// The dynamic-laundering coupling rides the main body (always): a new write
+	// hidden behind dynamic dispatch collapses to an existing <dynamic> label and
+	// escapes this ratchet's label diff — blind_spot_ratchet is its only backstop,
+	// and §10's "gate effect first" is exactly the config where that backstop is
+	// still off. One sentence names the dependency; the full mechanics live in the
+	// EffectRatchet type doc.
+	body := fmt.Sprintf("%d external write target(s) — db mutations, bus publishes, mutating outbound calls — are allow-listed as the baseline; a NEW write target (a new table, topic, or peer) is reported in every review from day one.\n\n"+
+		"**Tighten by**: flipping `\"gate\": true` — a new write target then blocks the merge until reviewed. This is the §10 first gate, the highest-value catch (a seed/migration write reaching prod). A new write laundered through dynamic dispatch collapses to an existing `<dynamic>` label and is caught only by `blind_spot_ratchet` — gate both. `groundwork exceptions` flags any baseline entry that goes dead.", len(r.Allow))
+	if len(unclassified) > 0 {
+		body += "\n\n**Caution — opaque writes evade this ratchet**: " + dbCallPhrase(setutil.SortedKeys(unclassified)) + "; they are NOT classified writes, so a new opaque write is invisible here (only the non-gating db-label-drift count moves). Making the SQL constant exposes the verb and brings the write under the ratchet."
+	}
+	g.section("Write-target ratchet (effect_ratchet): proposed (observe-first)", body)
 }
 
 // reconcile is the self-verification: run the proposal against its own source

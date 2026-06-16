@@ -22,10 +22,34 @@ cd "$(dirname "$0")/../.."
 
 flowmap() { go run ./cmd/flowmap "$@"; }
 
+# flowmap stamps the build that produced the graph into the header (the `tool`
+# producer field, R11). Strip it from the committed goldens: like the --stamp code
+# identity, the producing-tool version is provenance that must NOT pollute a golden,
+# or the fixtures would churn every time a different flowmap build regenerated them.
+# Delete the key JSON-aware (pop, not a line-grep) so the strip cannot silently miss
+# the field if canonjson's formatting (indent width, key position) ever shifts, then
+# re-emit in canonjson's exact shape — 2-space indent, non-ASCII kept literal
+# (ensure_ascii=False), trailing newline — so the golden stays byte-identical to
+# `flowmap graph` output minus the one field. The round-trip preserves key order
+# (json.load/dump keep insertion order = canonjson's struct order).
+strip_tool() {
+	python3 - "$1" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    g = json.load(f)
+g.pop("tool", None)
+with open(path, "w") as f:
+    json.dump(g, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+}
+
 for svc in layeredsvc blindsvc obligsvc; do
 	dir="testdata/groundwork/$svc"
 	out="testdata/groundwork/goldens/$svc.graph.json"
 	flowmap graph "$dir" >"$out"
+	strip_tool "$out"
 	echo "wrote $out"
 done
 
@@ -35,6 +59,7 @@ done
 # outbound GET/POST. If flowmap's label format ever changes, regenerating this is
 # what makes the contract test fail instead of silently misclassifying effects.
 flowmap graph testdata/fixtures/loansvc >testdata/groundwork/goldens/loansvc.graph.json
+strip_tool testdata/groundwork/goldens/loansvc.graph.json
 echo "wrote testdata/groundwork/goldens/loansvc.graph.json"
 
 # Boundary contracts for the `diff` demo. flowmap boundary writes in-place, so we

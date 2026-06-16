@@ -38,6 +38,22 @@ func TestProposeSelfCleanOverGeneratedGraphs(t *testing.T) {
 			}
 			t.Fatalf("seed %d: init's output violates its own graph — proposer/enforcer disagree: %+v\n%s", s, f, dumpGraph(g))
 		}
+
+		// The effect-ratchet analog of the self-clean invariant: the proposed
+		// baseline must cover every current write target, so newWriteTargets(p,g,g)
+		// is empty — init never reports its own write surface as new. This needs its
+		// OWN check because reconcile re-runs Check (fitness), while the effect
+		// ratchet is a review/Gate diff invisible to Check; a proposer that missed a
+		// label would slip past the violations loop above (R12).
+		for _, e := range ix.Edges() {
+			label, ok := WriteLabel(e)
+			if !ok {
+				continue
+			}
+			if p.EffectRatchet == nil || !p.EffectRatchet.Allows(label) {
+				t.Fatalf("seed %d: write target %q is not in the effect_ratchet baseline — it would fire as new on init's own graph\n%s", s, label, dumpGraph(g))
+			}
+		}
 	}
 }
 
