@@ -339,6 +339,30 @@ type anyValue struct {
 	KvlistValue json.RawMessage `json:"kvlistValue"`
 }
 
+// intStr renders an OTLP intValue to its canonical decimal string. OTLP encodes
+// an int64 as a JSON STRING ("123"); a bare JSON number is tolerated too. A value
+// that is null or does not parse as an int64 returns "" — refused, not accepted —
+// so a malformed/garbage int can never leak into the attrs map or an op key
+// (CLAUDE.md fail-closed). json.RawMessage cannot distinguish JSON null from an
+// absent field, so the explicit ParseInt is what rejects "null"/garbage that the
+// old strings.Trim accepted verbatim.
+func intStr(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		// Not a JSON string — accept a bare JSON number, else refuse (null/garbage).
+		var n json.Number
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return ""
+		}
+		s = n.String()
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return ""
+	}
+	return strconv.FormatInt(n, 10)
+}
+
 func (v anyValue) str() string {
 	switch {
 	case v.StringValue != nil:
@@ -346,7 +370,7 @@ func (v anyValue) str() string {
 	case v.BoolValue != nil:
 		return strconv.FormatBool(*v.BoolValue)
 	case len(v.IntValue) > 0:
-		return strings.Trim(string(v.IntValue), `"`) // int64 is JSON-encoded as a string
+		return intStr(v.IntValue)
 	case v.DoubleValue != nil:
 		return strconv.FormatFloat(*v.DoubleValue, 'g', -1, 64)
 	case v.BytesValue != nil:

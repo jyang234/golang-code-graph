@@ -645,6 +645,15 @@ func writeSystemContext(dir string, flows []wholeFlow, contractDirs string, chor
 			fmt.Printf("  - contract %s: skipped: %v\n", d, err)
 			continue
 		}
+		if c.Service == "" {
+			// syscontext keys every overlay node/edge on the service name, so a
+			// contract with no service (an unnamed module) can't be attributed and
+			// addContract would drop its entire boundary surface. Disclose and skip
+			// here — like a load failure — so the "+N overlaid" count stays honest
+			// rather than counting a contract whose surface was silently omitted.
+			fmt.Printf("  - contract %s: skipped: no service name (unnamed module); its boundary surface cannot be overlaid\n", d)
+			continue
+		}
 		statics = append(statics, contractToSyscontext(c))
 	}
 

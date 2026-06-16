@@ -15,7 +15,14 @@ var siteRe = regexp.MustCompile(`^(.+\.go):(\d+)$`)
 // reviewer's eyes already are. Findings whose To is an obligation site
 // (file:line) get a physical location; graph-level findings are run-level
 // results with the FQNs in the message.
-func toSARIF(findings []fitness.Finding) ([]byte, error) {
+//
+// caveats are the provenance disclosures (substrate/algorithm mismatch, reclaim)
+// the human-readable path prints. They MUST ride the SARIF too — as
+// invocation-level toolExecutionNotifications — or a fitness pass computed on an
+// unsound substrate would annotate the PR as a clean green run, laundering an
+// unsound verdict into "no findings" (CLAUDE.md: never launder an unsound
+// substrate into a clean result).
+func toSARIF(findings []fitness.Finding, caveats []string) ([]byte, error) {
 	results := []map[string]any{}
 	for _, f := range findings {
 		level := "warning"
@@ -44,13 +51,31 @@ func toSARIF(findings []fitness.Finding) ([]byte, error) {
 		}
 		results = append(results, r)
 	}
+	run := map[string]any{
+		"tool":    map[string]any{"driver": map[string]any{"name": "groundwork", "informationUri": "https://github.com/jyang234/golang-code-graph"}},
+		"results": results,
+	}
+	if len(caveats) > 0 {
+		notes := make([]map[string]any, 0, len(caveats))
+		for _, c := range caveats {
+			notes = append(notes, map[string]any{
+				"level":   "warning",
+				"message": map[string]any{"text": c},
+			})
+		}
+		// executionSuccessful stays true — a caveat is a provenance disclosure, not
+		// a tool failure — but the warning-level notification surfaces it so the
+		// substrate the verdict rests on is visible alongside the (possibly empty)
+		// results, never silently dropped.
+		run["invocations"] = []map[string]any{{
+			"executionSuccessful":        true,
+			"toolExecutionNotifications": notes,
+		}}
+	}
 	return canonjson.Marshal(map[string]any{
 		"$schema": "https://json.schemastore.org/sarif-2.1.0.json",
 		"version": "2.1.0",
-		"runs": []map[string]any{{
-			"tool":    map[string]any{"driver": map[string]any{"name": "groundwork", "informationUri": "https://github.com/jyang234/golang-code-graph"}},
-			"results": results,
-		}},
+		"runs":    []map[string]any{run},
 	})
 }
 

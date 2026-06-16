@@ -452,8 +452,26 @@ func cmdFitness(args []string) error {
 	}
 	res := fitness.Check(p, graph.NewIndex(g))
 
+	// Provenance first: a green fitness pass is only as strong as the substrate it
+	// was computed on, so the verdict states which call-graph algorithm produced
+	// the graph it judged (R3), flags a policy-vs-graph algorithm mismatch (§9),
+	// and, when the graph was built with `--reclaim`, that the verdict leaned on
+	// edges recovered at a dispatch seam (R9). All three ride the substrate line as
+	// caveats — a disclosure, never a gate finding, so the same signal cannot leak
+	// into a review/verify finding diff (which judges over the same fitness.Check).
+	// They are computed once here and surfaced on BOTH output paths: the SARIF path
+	// carries them as notifications so an unsound-substrate pass cannot annotate a
+	// PR as a clean green run.
+	caveats := append([]string{}, g.Caveats...)
+	if mc := graph.SubstrateMismatchCaveat(p.Substrate, g.Algo); mc != "" {
+		caveats = append(caveats, mc)
+	}
+	if rc := g.ReclaimCaveat(); rc != "" {
+		caveats = append(caveats, rc)
+	}
+
 	if sarif {
-		b, err := toSARIF(res.Findings)
+		b, err := toSARIF(res.Findings, caveats)
 		if err != nil {
 			return err
 		}
@@ -462,20 +480,6 @@ func cmdFitness(args []string) error {
 			return verdictf("%d invariant violation(s)", len(res.Violations()))
 		}
 		return nil
-	}
-	// Provenance first: a green fitness pass is only as strong as the substrate it
-	// was computed on, so the verdict states which call-graph algorithm produced
-	// the graph it judged (R3), flags a policy-vs-graph algorithm mismatch (§9),
-	// and, when the graph was built with `--reclaim`, that the verdict leaned on
-	// edges recovered at a dispatch seam (R9). All three ride the substrate line as
-	// caveats — a disclosure, never a gate finding, so the same signal cannot leak
-	// into a review/verify finding diff (which judges over the same fitness.Check).
-	caveats := append([]string{}, g.Caveats...)
-	if mc := graph.SubstrateMismatchCaveat(p.Substrate, g.Algo); mc != "" {
-		caveats = append(caveats, mc)
-	}
-	if rc := g.ReclaimCaveat(); rc != "" {
-		caveats = append(caveats, rc)
 	}
 	fmt.Print(graph.ProvenanceLine(g.Algo, caveats))
 	violations, cautions := res.Violations(), res.Cautions()

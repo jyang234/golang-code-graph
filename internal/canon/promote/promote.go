@@ -86,8 +86,15 @@ func Filter(span *ir.CanonicalSpan, keep func(*ir.CanonicalSpan) bool) {
 	span.Children = out
 }
 
-// sortByOp imposes canonical-key order on race-ordered members, so a run's
-// interleaving never perturbs the snapshot.
+// sortByOp re-sorts contracted concurrent members by Op after promotion. It is a
+// STABLE sort on Op alone, which suffices ONLY because its input is already in
+// canon's full canonical order (op + subtree signature): canon.group sorts every
+// concurrent component with bySig before promote.Filter runs, and promotion only
+// splices already-canonical subtrees, so same-op ties keep that deterministic
+// bySig order here. The stable Op sort therefore preserves a run-independent
+// order; it does not by itself impose the full canonical key on a same-op tie
+// (bySig owns that upstream). Keep that dependency intact: feeding sortByOp a
+// non-bySig-ordered slice would reopen a same-op interleaving hole.
 func sortByOp(members []*ir.CanonicalSpan) {
 	sort.SliceStable(members, func(i, j int) bool { return members[i].Op < members[j].Op })
 }

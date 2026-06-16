@@ -78,13 +78,24 @@ func Delta(c *boundary.Contract, traces []*ir.CanonicalTrace) Report {
 		}
 	}
 
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Tier != out[j].Tier {
-			return out[i].Tier < out[j].Tier // most consequential first
-		}
-		return out[i].Key < out[j].Key
-	})
+	sort.SliceStable(out, func(i, j int) bool { return lessEffect(out[i], out[j]) })
 	return Report{Unexercised: out}
+}
+
+// lessEffect is the canonical order over unexercised effects: most consequential
+// (lowest tier) first, then by op key, then by category. Category is a genuine
+// tie-break, not decoration: keys are namespaced by verb prefix (PUBLISH/CONSUME/
+// HTTP/…) so a cross-category Tier+Key collision is rare, but including it makes
+// the order a TOTAL function of intrinsic fields rather than resting on the
+// build-loop append order (CLAUDE.md: break every tie deterministically).
+func lessEffect(a, b Effect) bool {
+	if a.Tier != b.Tier {
+		return a.Tier < b.Tier
+	}
+	if a.Key != b.Key {
+		return a.Key < b.Key
+	}
+	return a.Category < b.Category
 }
 
 // collectOps records every span's canonical op key in the trace subtree.
