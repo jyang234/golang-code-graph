@@ -1,8 +1,9 @@
 name: fuzz
 # The PR gate (go test) only replays each fuzz target's seed corpus. This nightly
-# job actually EXPLORES beyond the seeds, so a loader panic on novel untrusted
-# input is caught here rather than in production. A crash fails the job and the
-# offending input is uploaded for a local repro.
+# job EXPLORES beyond the seeds and accumulates its generated corpus across runs
+# (see the cache step), so coverage deepens night over night instead of restarting
+# from the seeds. A loader panic on novel untrusted input is caught here rather
+# than in production; a crash fails the job and the offending input is uploaded.
 on:
   schedule:
     - cron: "0 7 * * *" # nightly, 07:00 UTC
@@ -29,6 +30,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.11"
+          cache: false # we manage only the fuzz corpus below; the build cache isn't worth the path overlap
+      - name: locate fuzz corpus cache
+        id: fuzzcache
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+      # Accumulate the generated corpus across nights: restore the most recent
+      # prior corpus, fuzz on top of it (growing coverage), then save a new entry.
+      # The run-id key never hits, so the cache is always saved; restore-keys pulls
+      # the latest prior corpus as the starting point — the standard Go-fuzz
+      # accumulating-cache pattern. Scheduled runs use the default branch's cache
+      # scope, so the corpus persists across nights.
+      - name: restore/save fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.fuzzcache.outputs.dir }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-${{ matrix.target }}-
       - name: fuzz ${{ matrix.target }}
         run: go test ${{ matrix.pkg }} -run '^$' -fuzz '^${{ matrix.target }}$' -fuzztime 5m
       - name: upload crashers
