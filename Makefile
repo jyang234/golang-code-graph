@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt lint verify tidy fixture
+.PHONY: build test vet fmt fmt-check lint verify tidy fixture
 
 build:
 	go build ./...
@@ -11,6 +11,14 @@ vet:
 
 fmt:
 	gofmt -w .
+
+# fmt-check is the fast (<1s) pre-push gate mirroring CI's gofmt step exactly, so
+# a formatting slip fails locally instead of costing a CI round-trip. `make verify`
+# runs the same check, but only after build+vet+lint+test; this is the quick one.
+fmt-check:
+	@out=$$(gofmt -l . | grep -v '^testdata/fixtures/loansvc/' || true); \
+	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	@echo "gofmt OK"
 
 lint:
 	golangci-lint run

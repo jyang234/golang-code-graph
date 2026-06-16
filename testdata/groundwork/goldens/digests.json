@@ -1,0 +1,11 @@
+{
+  "blindsvc.graph.json": "937fdafcb6d9dea786aea6dcc681ba2e8e530841488b6f5367cd21d98eac2b5d",
+  "layeredsvc.branch-good.graph.json": "235570b50408a85f31356975485a385e505691cb305713c2117c6d051e333396",
+  "layeredsvc.branch-skip.artifact.json": "2fa432402cc7dcaaaa33fbd4784843a945828be97a972c5bddb977de3dd2d87f",
+  "layeredsvc.branch-skip.graph.json": "aac572c2e9c383a9fdd29a2fdc4eeaa06fbd04c22dc1346b6586f6f91057f7d7",
+  "layeredsvc.branch.contract.json": "f37af068503040ec69532d9e009096d4ab46a5e1db85f808a41fcdbb7d9c582a",
+  "layeredsvc.contract.json": "c726221f18df82f1511bd3a62be3544c4c5556f1a1b1f94b88ca715b8eafc41b",
+  "layeredsvc.graph.json": "8591d6a13a7c677afd3b9ec044802f0424d4dfd1dcd5624287e590dba8001d31",
+  "loansvc.graph.json": "df11d1385fc63191cb0a94c82e77fefeeca04371133a76947fdd3caa1654e8e0",
+  "obligsvc.graph.json": "cfc81a7ec97e676c18a658ae2dc3eabda1b7b888dc96d7c7acb2ced908bbe598"
+}

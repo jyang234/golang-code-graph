@@ -41,3 +41,13 @@ jobs:
       # from the committed artifact — the static currency check.
       - name: boundary currency
         run: go run ./cmd/flowmap boundary --check testdata/fixtures/loansvc
+      # Regenerate the groundwork graph/contract/branch goldens from the fixtures
+      # and fail if any drifted from the committed files. boundary --check only
+      # covers the one boundary contract; this closes the "edited a fixture (or
+      # shifted the graph schema) but forgot to regen" hole for the goldens that
+      # regen.sh owns. The section-count + content-digest ratchets (run under
+      # `go test`) cover the complementary "regen laundered a regression" hole.
+      - name: groundwork goldens currency
+        run: |
+          testdata/groundwork/regen.sh
+          git diff --exit-code testdata/groundwork/goldens
