@@ -8,8 +8,6 @@ on:
   schedule:
     - cron: "0 7 * * *" # nightly, 07:00 UTC
   workflow_dispatch:
-  push:
-    branches: [claude/max-effort-7bvuyu] # TEMP smoke-test trigger; reverted after one validating run
 
 concurrency:
   group: fuzz-${{ github.ref }}
