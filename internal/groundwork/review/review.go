@@ -72,7 +72,12 @@ func verdict(p *policy.Policy, d graphDelta, a *Artifact) Verdict {
 	// the abstain render surfaces the caution anyway (R1). Adding it to hasSignal
 	// would misreport such a change as STRUCTURALLY-CLEAR — "the graph says it's
 	// fine" — exactly where logic review matters most. Leave it out.
-	hasSignal := !d.empty() || len(a.NewCautions) > 0 || len(a.NewBlindSpots) > 0 || len(a.NewWriteTargets) > 0 || a.DBLabelDrift != nil
+	// Contract changes ARE a signal: entrypoints come from the graph's Entrypoints
+	// join, not its nodes/edges, so an additive (non-breaking) route can leave
+	// d.empty() true while a real interface disclosure exists. Omitting it would
+	// let NO-STRUCTURAL-SIGNAL's render hide that new route — the one thing the
+	// abstain verdict promises never to do. (Breaking changes already Block above.)
+	hasSignal := !d.empty() || len(a.Contract) > 0 || len(a.NewCautions) > 0 || len(a.NewBlindSpots) > 0 || len(a.NewWriteTargets) > 0 || a.DBLabelDrift != nil
 	if !hasSignal {
 		return NoStructuralSignal
 	}

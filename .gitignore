@@ -8,3 +8,6 @@ coverage.html
 # macOS
 .DS_Store
 /groundwork
+
+# stray build output from `go build ./scripts/commentdrift`
+/commentdrift

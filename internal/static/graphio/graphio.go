@@ -428,8 +428,12 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 // effect for partial-effect purposes: a bus publish or a DB mutation. Reads
 // and outbound queries are not "committed" — re-running them is safe.
 func committedEffect(label string) bool {
-	if strings.HasPrefix(label, "boundary:bus PUBLISH") {
-		return true
+	if event, ok := strings.CutPrefix(label, "boundary:bus PUBLISH "); ok {
+		// A dynamic (non-constant) event name is NOT a concretely-named committed
+		// effect — symmetric to the unreadable-SQL DB op below, it is disclosed
+		// via the dynamic/blind-spot channel rather than asserted as a definite
+		// publish of a known event.
+		return event != dynamicLabel
 	}
 	if strings.HasPrefix(label, "boundary:db ") {
 		op := strings.Fields(strings.TrimPrefix(label, "boundary:db "))

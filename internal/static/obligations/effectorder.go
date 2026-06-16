@@ -88,8 +88,8 @@ func OrderFacts(fn *ssa.Function, effects []EffectSite, baseDir string) []Effect
 	}
 
 	var out []EffectOrder
-	for _, e := range effects {
-		for _, c := range fallible {
+	for ei, e := range effects {
+		for ci, c := range fallible {
 			if e.Site == c.instr {
 				continue // a derived effect is not its own fault site either
 			}
@@ -97,12 +97,17 @@ func OrderFacts(fn *ssa.Function, effects []EffectSite, baseDir string) []Effect
 			if !can {
 				continue
 			}
+			// Pass the deterministic loop index as the site ordinal (as
+			// checkRelease/checkPrecede do): site() uses it only in the
+			// invalid-position fallback, where a hard-coded 0 would render two
+			// distinct effect/callee sites to the same "#0" string and let
+			// dedupeFacts collapse genuinely-distinct facts.
 			out = append(out, EffectOrder{
 				Fn:         fn.RelString(nil),
 				Effect:     e.Label,
-				EffectSite: site(fn, e.Site.Common().Pos(), baseDir, 0),
+				EffectSite: site(fn, e.Site.Common().Pos(), baseDir, ei),
 				Callee:     c.fqn,
-				CalleeSite: site(fn, c.instr.Common().Pos(), baseDir, 0),
+				CalleeSite: site(fn, c.instr.Common().Pos(), baseDir, ci),
 				Always:     always,
 				Via:        e.Via,
 			})

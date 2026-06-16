@@ -147,8 +147,9 @@ func Scope(spans []Span, runID string) (scoped []Span, root *Span) {
 			if root == nil {
 				root = &scoped[i]
 			} else {
-				// More than one in-scope root: ambiguous. Leave root as the
-				// first; the caller treats this as incomplete.
+				// More than one in-scope root: ambiguous. Return a nil root so the
+				// caller's `root != nil` completeness check fails closed and the
+				// ambiguous set is never snapshotted as if it had a single entry.
 				return scoped, nil
 			}
 		}

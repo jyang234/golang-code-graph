@@ -25,6 +25,11 @@ jobs:
             target: FuzzGraphLoad
           - pkg: ./internal/groundwork/contract
             target: FuzzContractLoad
+          # Determinism gate: a concurrent group's IR must be blind to the race
+          # outcome (which sibling started first). Explores the byte-identical-IR
+          # contract far beyond the hand-built fixtures.
+          - pkg: ./internal/canon
+            target: FuzzCanonConcurrentOrderInvariant
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

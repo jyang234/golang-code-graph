@@ -339,6 +339,7 @@ func TestUnclassifiedDBLabelExcludesNonMutating(t *testing.T) {
 		"boundary:db Conn":              false, // connection acquisition — excluded
 		"boundary:db Stats":             false, // pool statistics — excluded
 		"boundary:db SetMaxOpenConns":   false, // pool config — excluded
+		"boundary:db Settle":            true,  // mutating method, not a Set* pool setter — must not be swallowed by a bare SET prefix
 		"boundary:db INSERT ledger":     false, // classified write, not unclassified
 		"boundary:db SELECT applicants": false, // classified read, not unclassified
 		"boundary:bus PUBLISH topic":    false, // not a DB effect

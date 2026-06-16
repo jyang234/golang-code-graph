@@ -24,10 +24,11 @@ func TestCommittedEffect(t *testing.T) {
 	}
 
 	notCommitted := []string{
-		"boundary:db SELECT users", // read
-		"boundary:db Exec",         // dynamic SQL the labeler could not read — handled by the unclassified channel, not asserted here
-		"boundary:http GET peer",   // outbound read
-		"boundary:db call",         // opaque fallback
+		"boundary:db SELECT users",       // read
+		"boundary:db Exec",               // dynamic SQL the labeler could not read — handled by the unclassified channel, not asserted here
+		"boundary:http GET peer",         // outbound read
+		"boundary:db call",               // opaque fallback
+		"boundary:bus PUBLISH <dynamic>", // non-constant event — disclosed via the dynamic channel, not asserted as a named publish
 	}
 	for _, l := range notCommitted {
 		if committedEffect(l) {

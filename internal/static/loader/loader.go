@@ -118,6 +118,7 @@ func collectErrors(roots []*packages.Package) error {
 // only if no package reported a module.
 func moduleOf(pkgs []*packages.Package) *packages.Module {
 	var fallback *packages.Module
+	var fallbackPkg string
 	for _, p := range pkgs {
 		if p.Module == nil {
 			continue
@@ -125,8 +126,14 @@ func moduleOf(pkgs []*packages.Package) *packages.Module {
 		if p.Module.Main {
 			return p.Module
 		}
-		if fallback == nil || len(p.PkgPath) < len(fallback.Path) {
+		// Pick the module of the shortest-path package (the unit root). Compare
+		// package path against package path — not the module path, a different
+		// namespace — and break ties lexicographically so the result does not
+		// depend on the order packages.Load happened to return.
+		if fallback == nil || len(p.PkgPath) < len(fallbackPkg) ||
+			(len(p.PkgPath) == len(fallbackPkg) && p.PkgPath < fallbackPkg) {
 			fallback = p.Module
+			fallbackPkg = p.PkgPath
 		}
 	}
 	return fallback

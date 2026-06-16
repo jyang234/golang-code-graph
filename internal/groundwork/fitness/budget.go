@@ -188,7 +188,8 @@ func UnclassifiedDBLabel(e graph.Edge) (string, bool) {
 // search_path") lands here too. Matched case-insensitively to cover both the
 // method-name and constant-SQL labels.
 func nonMutatingDBControl(op string) bool {
-	switch strings.ToUpper(op) {
+	up := strings.ToUpper(op)
+	switch up {
 	case "PING", "PINGCONTEXT",
 		"BEGIN", "BEGINTX",
 		"COMMIT", "ROLLBACK",
@@ -196,7 +197,12 @@ func nonMutatingDBControl(op string) bool {
 		"PREPARE", "PREPARECONTEXT":
 		return true
 	}
-	return strings.HasPrefix(strings.ToUpper(op), "SET")
+	// The sql.DB pool/session setters are exactly SetMaxOpenConns,
+	// SetMaxIdleConns, SetConnMaxLifetime, SetConnMaxIdleTime, plus the SQL
+	// control statement "SET search_path". Match those specifically — a bare
+	// "SET" prefix would also swallow a mutating method like "Settle".
+	return up == "SET" || strings.HasPrefix(up, "SET ") ||
+		strings.HasPrefix(up, "SETMAX") || strings.HasPrefix(up, "SETCONN")
 }
 
 // WriteLabel returns the effect label (sans "boundary:") of an external write,

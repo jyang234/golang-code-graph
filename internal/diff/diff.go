@@ -187,17 +187,17 @@ func (d *differ) diffChildren(old, new *ir.CanonicalSpan) {
 	}
 
 	// Reorders: only sequential members carry behavioral happens-before order, so
-	// only they participate in reorder detection. Concurrent-group members are
-	// stored in canonical-key order, not run order (ir.ChildGroup) — including
-	// them would report a spurious reorder whenever a group's concurrency changes
-	// or a concurrent sibling's canonical position shifts; that transition is
+	// only they participate in reorder detection. Concurrent- AND unordered-group
+	// members are stored in canonical-key order, not run order (ir.ChildGroup) —
+	// including them would report a spurious reorder whenever a group's ordering
+	// changes or such a sibling's canonical position shifts; that transition is
 	// already reported as ConcurrencyChanged. Among the sequential matched pairs
 	// (in old order), members outside the longest increasing subsequence of new
 	// positions are the minimal moved set.
 	var seqIdx []int
 	var seqOrder []int
 	for i, p := range pairs {
-		if p.old.concurrent || p.new.concurrent {
+		if p.old.ordering != orderSequential || p.new.ordering != orderSequential {
 			continue
 		}
 		seqIdx = append(seqIdx, i)
@@ -212,9 +212,9 @@ func (d *differ) diffChildren(old, new *ir.CanonicalSpan) {
 
 	// Per matched pair: group-tag changes, then recurse.
 	for _, p := range pairs {
-		if p.old.concurrent != p.new.concurrent {
+		if p.old.ordering != p.new.ordering {
 			d.add(ConcurrencyChanged, PriorityStructural, p.new.span.Op,
-				human(p.new.span.Op)+": now "+concurrencyWord(p.new.concurrent))
+				human(p.new.span.Op)+": now "+p.new.ordering.word())
 		}
 		if p.old.multiplicity != p.new.multiplicity {
 			d.add(CardinalityChanged, PriorityStructural, p.new.span.Op,
@@ -233,11 +233,45 @@ func (d *differ) sortStable() {
 	})
 }
 
-// slot is one child flattened out of its group, carrying the group's concurrency
+// ordering is a group's happens-before semantics. Only orderSequential carries
+// run order; orderConcurrent (asserted parallelism) and orderUnordered (relative
+// order unestablished) both store members in canonical-key order, so neither
+// participates in reorder detection.
+type ordering int
+
+const (
+	orderSequential ordering = iota
+	orderConcurrent
+	orderUnordered
+)
+
+func groupOrdering(g ir.ChildGroup) ordering {
+	switch {
+	case g.Concurrent:
+		return orderConcurrent
+	case g.Unordered:
+		return orderUnordered
+	default:
+		return orderSequential
+	}
+}
+
+func (o ordering) word() string {
+	switch o {
+	case orderConcurrent:
+		return "concurrent"
+	case orderUnordered:
+		return "unordered"
+	default:
+		return "sequential"
+	}
+}
+
+// slot is one child flattened out of its group, carrying the group's ordering
 // and multiplicity plus its position for reorder detection.
 type slot struct {
 	span         *ir.CanonicalSpan
-	concurrent   bool
+	ordering     ordering
 	multiplicity string
 	order        int
 }
@@ -247,7 +281,7 @@ func flatten(groups []ir.ChildGroup) []slot {
 	i := 0
 	for _, g := range groups {
 		for _, m := range g.Members {
-			out = append(out, slot{span: m, concurrent: g.Concurrent, multiplicity: g.Multiplicity, order: i})
+			out = append(out, slot{span: m, ordering: groupOrdering(g), multiplicity: g.Multiplicity, order: i})
 			i++
 		}
 	}
@@ -375,13 +409,6 @@ func changedAttrKeys(a, b map[string]string) []string {
 // human strips the protocol prefix from an op for a readable change line, so
 // "HTTP GET fraud-svc /check/{id}" reads as "GET fraud-svc /check/{id}".
 func human(op string) string { return strings.TrimPrefix(op, "HTTP ") }
-
-func concurrencyWord(concurrent bool) string {
-	if concurrent {
-		return "concurrent"
-	}
-	return "sequential"
-}
 
 // asyncWord describes whether an op is reached synchronously or as an async
 // (FOLLOWS_FROM link) continuation.

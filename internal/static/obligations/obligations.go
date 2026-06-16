@@ -576,6 +576,13 @@ func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref, sums *Summaries, 
 				break
 			}
 		}
+		// Seed the acquire block as visited so a loop back-edge cannot re-enter
+		// it at index 0 and re-scan the pre-acquire instructions — that would
+		// credit a release of the *previous* iteration's resource against this
+		// acquisition (a false "covered"). Instructions from start onward and
+		// every successor are already explored by this initial walk, so the
+		// back-edge yields no genuine new witness.
+		visited[blk] = true
 		return walk(blk, start)
 	}
 

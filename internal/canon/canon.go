@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jyang234/golang-code-graph/capture"
@@ -214,7 +215,10 @@ func (c *canonicalizer) group(parentGoroutine uint64, kids []*capture.Span, chil
 		}
 		concurrent := len(members) > 1
 		if concurrent {
-			sort.SliceStable(members, func(i, j int) bool { return members[i].Op < members[j].Op })
+			// Same tie-break as the post-hoc path: op key then canonical subtree
+			// signature, so two same-op concurrent siblings are ordered
+			// run-independently and a race never perturbs the byte-identical IR.
+			bySig(members)
 		}
 		groups = append(groups, ir.ChildGroup{Concurrent: concurrent, Members: members})
 	}
@@ -283,15 +287,6 @@ func (c *canonicalizer) groupPostHoc(kids []*capture.Span, childrenOf map[string
 		comps[r] = append(comps[r], i)
 	}
 	sort.SliceStable(roots, func(i, j int) bool { return comps[roots[i]][0] < comps[roots[j]][0] })
-
-	bySig := func(ms []*ir.CanonicalSpan) {
-		sort.SliceStable(ms, func(i, j int) bool {
-			if ms[i].Op != ms[j].Op {
-				return ms[i].Op < ms[j].Op
-			}
-			return signature(ms[i]) < signature(ms[j])
-		})
-	}
 
 	units := make([]unit, 0, len(roots))
 	for _, r := range roots {
@@ -391,13 +386,16 @@ func (c *canonicalizer) collapseLoops(groups []ir.ChildGroup) []ir.ChildGroup {
 	var out []ir.ChildGroup
 	for i := 0; i < len(groups); i++ {
 		g := groups[i]
-		if g.Concurrent || len(g.Members) != 1 {
+		// Only truly sequential single-member groups form a happens-before run.
+		// An Unordered group satisfies !Concurrent but claims no sequence, so
+		// folding it here would mislabel distinct unordered effects as a loop.
+		if g.Concurrent || g.Unordered || len(g.Members) != 1 {
 			out = append(out, g)
 			continue
 		}
 		sig := signature(g.Members[0])
 		j := i + 1
-		for j < len(groups) && !groups[j].Concurrent && len(groups[j].Members) == 1 && signature(groups[j].Members[0]) == sig {
+		for j < len(groups) && !groups[j].Concurrent && !groups[j].Unordered && len(groups[j].Members) == 1 && signature(groups[j].Members[0]) == sig {
 			j++
 		}
 		if j-i > 1 {
@@ -529,6 +527,19 @@ func signature(s *ir.CanonicalSpan) string {
 	return string(b)
 }
 
+// bySig orders members by op key then canonical subtree signature. It is the
+// single ordering both the in-process and post-hoc paths apply to concurrent /
+// unordered siblings: a same-op tie is broken by subtree content, never by
+// run-dependent start time, so a race cannot perturb the byte-identical IR.
+func bySig(ms []*ir.CanonicalSpan) {
+	sort.SliceStable(ms, func(i, j int) bool {
+		if ms[i].Op != ms[j].Op {
+			return ms[i].Op < ms[j].Op
+		}
+		return signature(ms[i]) < signature(ms[j])
+	})
+}
+
 func normalizeStatus(s string) string {
 	switch s {
 	case capture.StatusOK, capture.StatusError:
@@ -555,8 +566,12 @@ func dbOperation(attrs map[string]string) string {
 }
 
 func dbEffect(op string) model.Effect {
-	switch op {
-	case "SELECT", "select":
+	// db.operation arrives in arbitrary case (raw OTel attribute), while the
+	// SQL-normalize path yields upper-case. Classify case-insensitively so a
+	// read is never mis-tiered as a mutation on casing alone — two captures of
+	// the same query differing only in case must produce identical IR.
+	switch strings.ToUpper(strings.TrimSpace(op)) {
+	case "SELECT":
 		return model.EffectRead
 	default:
 		return model.EffectMutate

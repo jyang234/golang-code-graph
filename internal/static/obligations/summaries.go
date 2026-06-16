@@ -8,9 +8,12 @@
 //     produced; value-blind like the intraprocedural walk); NEVER — no
 //     matching call is reachable in the function's transitive cone and the
 //     cone touches no frontier (sound because the call graph over-
-//     approximates); UNKNOWN — everything else: matching calls on some paths
-//     only, recursion (any cyclic SCC member), recover, a frontier in the
-//     cone, or a body the unit cannot see.
+//     approximates, and takes precedence over the cyclic guard below — a
+//     target-free closed cone cannot discharge, so NEVER survives recursion and
+//     recover); UNKNOWN — everything else: matching calls on some paths only, a
+//     cyclic SCC member whose cone DOES reach a target (no fixed point to
+//     prove ALWAYS), recover, a frontier in the cone, or a body the unit
+//     cannot see.
 //   - EntryDominated (top-down, D-CX7): has a plain call to the require
 //     target already executed on every entry into this function? ALWAYS when
 //     every call edge in is require-covered in its caller (every caller-entry
@@ -420,6 +423,9 @@ func (s *Summaries) alwaysWalk(fn *ssa.Function, key targetKey) bool {
 		}
 		return false
 	}
+	// Seed the entry as visited: every block is entered at index 0, so a
+	// back-edge to the entry only re-scans already-explored instructions.
+	visited[fn.Blocks[0]] = true
 	return !walk(fn.Blocks[0], 0)
 }
 
@@ -561,6 +567,9 @@ func (s *Summaries) entryCovered(e entryEdge, key targetKey) bool {
 		}
 		return false
 	}
+	// Seed the entry as visited: every block is entered at index 0, so a
+	// back-edge to the entry only re-scans already-explored instructions.
+	visited[caller.Blocks[0]] = true
 	return !walk(caller.Blocks[0], 0)
 }
 

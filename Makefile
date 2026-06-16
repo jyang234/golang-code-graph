@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmt-check lint verify tidy fixture cover-floor
+.PHONY: build test vet fmt fmt-check lint verify tidy fixture cover-floor hooks comment-drift
 
 build:
 	go build ./...
@@ -42,3 +42,14 @@ tidy:
 # hardening idea, Item 1). Override with COVERAGE_FLOOR to raise the bar.
 cover-floor:
 	scripts/coverage-floor.sh
+
+# hooks points git at the repo's tracked hooks (the comment-drift nudge). One-time
+# per clone; safe to re-run.
+hooks:
+	git config core.hooksPath scripts/hooks
+	@echo "git hooks installed (core.hooksPath=scripts/hooks)"
+
+# comment-drift runs the advisory nudge against the staged diff on demand. Set
+# COMMENTDRIFT_STRICT=1 to make it exit non-zero on a finding.
+comment-drift:
+	@go run ./scripts/commentdrift

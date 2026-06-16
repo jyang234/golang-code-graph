@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Advisory pre-commit nudge against comment drift (see CLAUDE.md). It flags a
+# staged function whose body changed while its asserting doc comment did not, so
+# you can confirm the comment still holds before the change lands. It is a nudge,
+# not a gate: it never blocks a commit unless you opt in with COMMENTDRIFT_STRICT.
+# Install with `make hooks` (sets core.hooksPath to this directory).
+set -euo pipefail
+
+# Resolve the repo root so the hook works regardless of where git invokes it.
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+go run ./scripts/commentdrift || true

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/config"
+	"github.com/jyang234/golang-code-graph/internal/model"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 
@@ -230,6 +231,34 @@ func TestLoopCollapseStableUnderCount(t *testing.T) {
 	}
 }
 
+// TestConcurrentSameOpDeterministicOrder pins the in-process determinism fix: two
+// concurrent siblings sharing an Op but with different subtrees must be ordered by
+// canonical subtree signature, never by run-dependent start time — so swapping
+// which one started first yields byte-identical IR (the snapshot-gate guarantee).
+func TestConcurrentSameOpDeterministicOrder(t *testing.T) {
+	build := func(aStart, bStart int) []byte {
+		spans := []capture.Span{
+			{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+				Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"}},
+			// a and b share the same Op (same INSERT) and overlap in time, so they
+			// form one concurrent group; their subtrees differ (alpha vs beta), so
+			// the Op tie must be broken by signature, not arrival order.
+			{ID: "a", ParentID: "root", Kind: ir.KindClient, Start: ms(0, aStart), End: ms(0, 90),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO items (id) VALUES (1)"}},
+			{ID: "ac", ParentID: "a", Kind: ir.KindClient, Start: ms(0, aStart+1), End: ms(0, aStart+2),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "SELECT * FROM alpha"}},
+			{ID: "b", ParentID: "root", Kind: ir.KindClient, Start: ms(0, bStart), End: ms(0, 90),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO items (id) VALUES (1)"}},
+			{ID: "bc", ParentID: "b", Kind: ir.KindClient, Start: ms(0, bStart+1), End: ms(0, bStart+2),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "SELECT * FROM beta"}},
+		}
+		return marshal(t, mustCanon(t, capture.CapturedFlow{Flow: "f", Service: "s", Spans: spans, Root: &spans[0], Complete: true}))
+	}
+	if string(build(1, 2)) != string(build(2, 1)) {
+		t.Error("same-op concurrent siblings ordered by start time, not signature — IR is run-dependent")
+	}
+}
+
 // TestRedaction replaces a configured attribute's volatile value with a
 // placeholder and records the key in the manifest.
 func TestRedaction(t *testing.T) {
@@ -344,6 +373,24 @@ func fixupRoot(cf *capture.CapturedFlow) {
 		if cf.Spans[i].ID == "root" {
 			cf.Root = &cf.Spans[i]
 			return
+		}
+	}
+}
+
+// dbEffect must classify the read verb case-insensitively: db.operation arrives
+// in arbitrary case as a raw OTel attribute, and two captures of the same query
+// differing only in case must produce identical IR (read, not mutation).
+func TestDBEffectCaseInsensitive(t *testing.T) {
+	reads := []string{"SELECT", "select", "Select", "sElEcT", " select "}
+	for _, op := range reads {
+		if got := dbEffect(op); got != model.EffectRead {
+			t.Errorf("dbEffect(%q) = %v, want EffectRead", op, got)
+		}
+	}
+	mutates := []string{"INSERT", "update", "Delete", "Exec", ""}
+	for _, op := range mutates {
+		if got := dbEffect(op); got != model.EffectMutate {
+			t.Errorf("dbEffect(%q) = %v, want EffectMutate", op, got)
 		}
 	}
 }

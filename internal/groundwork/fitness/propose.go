@@ -538,17 +538,22 @@ func proposeBudget(ix *graph.Index, p *policy.Policy, g *guide) {
 			continue
 		}
 		cone := append([]string{s}, ix.Reachable(s)...)
-		n := 0
+		// Count DISTINCT write labels, exactly as the enforcer's RouteWrites does
+		// (it compares len(routes[src].Writes), a set). Counting raw write edges
+		// here would over-set the budget — three edges to the same target would
+		// read as 3, letting the route later add two new distinct write targets
+		// and still pass.
+		writes := map[string]bool{}
 		for _, e := range ix.Effects(cone...) {
-			if IsWrite(e) {
-				n++
+			if label, ok := WriteLabel(e); ok {
+				writes[label] = true
 			}
 			if label, ok := UnclassifiedDBLabel(e); ok {
 				unclassified[label] = true
 			}
 		}
-		if n > maxWrites {
-			maxWrites = n
+		if len(writes) > maxWrites {
+			maxWrites = len(writes)
 		}
 	}
 	p.IOBudget = &policy.IOBudget{MaxWritesPerRoute: maxWrites}

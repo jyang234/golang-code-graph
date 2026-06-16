@@ -8,7 +8,13 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/features"
 )
 
-// eventLabel is the published event name, or "<dynamic>" if not constant.
+// dynamicLabel is the sentinel for a boundary argument the labeler could not read
+// off a compile-time constant. It is the single source of truth shared by the
+// label producers here and the consumers that must NOT treat an unreadable
+// boundary as a concretely-named effect (see committedEffect).
+const dynamicLabel = "<dynamic>"
+
+// eventLabel is the published event name, or dynamicLabel if not constant.
 func eventLabel(site ssa.CallInstruction) string {
 	args := features.StringArgs(site)
 	if len(args) >= 1 {
@@ -16,10 +22,10 @@ func eventLabel(site ssa.CallInstruction) string {
 			return s
 		}
 	}
-	return "<dynamic>"
+	return dynamicLabel
 }
 
-// httpLabel is "peer method route" for a constant outbound call, else "<dynamic>".
+// httpLabel is "peer method route" for a constant outbound call, else dynamicLabel.
 func httpLabel(site ssa.CallInstruction) string {
 	args := features.StringArgs(site)
 	if len(args) >= 3 {
@@ -30,7 +36,7 @@ func httpLabel(site ssa.CallInstruction) string {
 			return p + " " + m + " " + r
 		}
 	}
-	return "<dynamic>"
+	return dynamicLabel
 }
 
 // dbLabel is the SQL operation and table ("SELECT applicants"), derived from the
