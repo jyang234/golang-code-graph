@@ -140,6 +140,15 @@ on *different* algorithms, the mismatch is disclosed as a caveat (a delta across
 substrates can move for the analyzer's reasons, not the code's). A graph from a
 pre-provenance flowmap reads `substrate: unrecorded`.
 
+The graph also records which flowmap build *produced* it (the `tool` field —
+where `--stamp` is the caller-supplied identity of the *code*, `tool` is the
+identity of the *producer*). "Same code → same graph" holds only within one tool
+version, so when a `review`/`verify` base and branch were produced by *different*
+flowmap builds, the producer mismatch is disclosed on the same line — a diff may
+then be a tool artifact (a relabeled effect, an SSA-order shift), not a code
+change. Committed goldens are generated `tool`-free, the same convention as
+`--stamp`, so they stay byte-identical across producing builds.
+
 A graph built with `flowmap graph --reclaim` carries edges recovered at a
 framework dispatch seam (the oapi strict-server `wrapper→$1` hop), each tagged with
 the reclaimer in a `via` field. groundwork consumes that field and adds a
@@ -730,8 +739,9 @@ The cold-start answer: `groundwork init graph.json --out policy.json --guide
 POLICY-GUIDE.md` derives a baseline policy from the service's measured facts —
 layers from the package call DAG, a waypoint that already guards every
 entrypoint-to-DB-write path, read-only invariants for routes that write
-nothing today, the write budget at the current maximum, and the existing
-blind spots allow-listed observe-first. **Everything is a ratchet of current
+nothing today, the write budget at the current maximum, the existing
+blind spots allow-listed observe-first, and the current external write
+targets allow-listed observe-first (the effect ratchet). **Everything is a ratchet of current
 truth, self-verified clean against the graph it came from**; where the
 inference is already violated by current code, the rule is relaxed with a
 `baseline at init` allow entry and the guide reports it as a latent finding —
@@ -1155,8 +1165,11 @@ encodes a deliberate honesty or determinism decision, not just a name.
 - **blind_spot_ratchet** — stops dynamic-dispatch blind spots from growing
   change-over-change (`gate: true` to enforce); the anti-erosion lock on the
   graph everything else depends on.
-- **effect_ratchet** — stops the unclassified-DB / `<dynamic>` fraction from
-  growing: a guard on the graph's *fidelity*, not just its shape.
+- **effect_ratchet** — stops the external *write surface* from growing
+  unreviewed: a new write target (a new table, topic, or peer) base→branch
+  needs an `allow` entry (`gate: true` to enforce). (The growth of the
+  unclassified-DB / `<dynamic>` *fidelity* fraction is a separate, non-gating
+  disclosure — `db_label_drift` — not this ratchet.)
 - **require_proof** — on a reach/waypoint rule, upgrades "the static graph found
   no path" to "and the path is fully resolvable." Fails closed through a blind
   spot instead of passing vacuously.

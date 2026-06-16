@@ -200,7 +200,7 @@ The policy vocabulary (every family optional; unknown keys fail closed):
 | Concurrency | `no_concurrent_reach` | "no DB write from a goroutine" |
 | I/O budget | `io_budget.max_writes_per_route` | a route's write surface stays bounded |
 | Blind-spot ratchet | `blind_spot_ratchet` | dynamic dispatch can't silently erode the graph (`gate: true` to enforce) |
-| Effect ratchet | `effect_ratchet` | the unclassified-DB / `<dynamic>` fraction can't grow |
+| Effect ratchet | `effect_ratchet` | no new external write target (table/topic/peer) base→branch without an `allow` entry (`gate: true` to enforce) |
 
 Set `require_proof: true` on a reach/waypoint rule to turn "the static graph
 found no path" into "and the path is fully resolvable" — it then fails closed

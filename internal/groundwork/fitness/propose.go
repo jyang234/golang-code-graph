@@ -16,8 +16,9 @@ import (
 // an aspiration: layers from the package call DAG, waypoints that already
 // guard every entrypoint-to-DB path, read-only invariants for routes that
 // already write nothing, the write budget at today's maximum, current blind
-// spots allow-listed observe-first. The tool proposes from facts; a
-// CODEOWNER reviews, tightens, and commits — the trust model is unchanged.
+// spots allow-listed observe-first, and the current external write targets
+// allow-listed observe-first (the effect ratchet). The tool proposes from
+// facts; a CODEOWNER reviews, tightens, and commits — the trust model is unchanged.
 //
 // Self-verification is the load-bearing property: before returning, the
 // proposal is checked against the very graph it was derived from, and
