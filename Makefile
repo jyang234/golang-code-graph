@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt fmt-check lint verify tidy fixture
+.PHONY: build test vet fmt fmt-check lint verify tidy fixture cover-floor
 
 build:
 	go build ./...
@@ -37,3 +37,8 @@ verify: build vet lint test fixture
 
 tidy:
 	go mod tidy
+
+# cover-floor asserts the non-regressing total-coverage floor (front-end-test-
+# hardening idea, Item 1). Override with COVERAGE_FLOOR to raise the bar.
+cover-floor:
+	scripts/coverage-floor.sh

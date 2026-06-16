@@ -42,6 +42,22 @@ jobs:
       - name: behavioral gate (fixture flow goldens)
         run: cd testdata/fixtures/loansvc && go build ./... && go test -race ./...
 
+  # coverage-floor — the engines are the best-covered code, but every verdict is
+  # only as sound as the graph the static front-end hands them, and a front-end
+  # bug corrupts that graph silently rather than crashing. This floor stops the
+  # front-end (loader/analyze/signatures) eroding while the engines stay green
+  # (docs/design/ideas/front-end-test-hardening.md).
+  coverage-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.11"
+      - name: total coverage floor
+        run: make cover-floor
+
   currency-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 15

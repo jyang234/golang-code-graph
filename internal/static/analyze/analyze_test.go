@@ -31,6 +31,24 @@ func TestServiceNameFallsBackToModule(t *testing.T) {
 	}
 }
 
+// TestServiceNameFromConfig pins the config-takes-precedence branch of
+// ServiceName: an explicit `service:` overrides the module-last-segment fallback.
+func TestServiceNameFromConfig(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module example.com/widgets\n\ngo 1.24\n")
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+	writeFile(t, dir, ".flowmap.yaml", "service: billing\n")
+
+	res, err := analyze.Analyze(dir)
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if got := res.ServiceName(); got != "billing" {
+		t.Errorf("ServiceName = %q, want billing (from config, overriding module)", got)
+	}
+}
+
 // TestRegistrarsFromConfig checks bus-consumer hints become consumer registrars.
 func TestRegistrarsFromConfig(t *testing.T) {
 	cfg := mustConfig(t, "classify:\n  busConsume: [\"x/bus#Subscribe\"]\n")

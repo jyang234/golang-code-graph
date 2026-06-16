@@ -1,13 +1,13 @@
 # Idea: harden the static-analysis front-end against silent regressions
 
-> **`ACTIVE`** · deferred testing investment, not yet scheduled · _reviewed 2026-06-16_
+> **`SHIPPED`** · both deferred items implemented as a focused testing PR · _reviewed 2026-06-16_
 
 **Status:** captured from a regression-hygiene assessment (2026-06-16) of the
 production codebase. The near-term, additive safety-net items from that
 assessment — the golden drift gate, the content-digest ratchet, loader fuzzing,
-and a local gofmt gate — have shipped. This document holds the two items that
-were deliberately deferred because they are larger, evidence-/understanding-gated
-efforts rather than additive guards. Pick them up as a focused testing PR.
+and a local gofmt gate — had already shipped. This document held the two items
+that were deliberately deferred because they are larger, evidence-/understanding-
+gated efforts rather than additive guards; both are now done (see _Shipped_ below).
 
 Related reading: the three-leg verification model in
 [`path-obligations.md`](./path-obligations.md) (the "buy" leg is the generic
@@ -82,3 +82,35 @@ same package focus); bundle them.
   and edge paths and asserts the loader's load-failure contract.
 - A CI coverage floor that fails below ~82% total.
 - A front-end run-twice determinism test.
+
+## Shipped
+
+All three acceptance items landed as additive tests + CI plumbing (no
+production-code behavior change):
+
+- **Error/edge-path coverage.** `signatures` 50 → 100%, `loader` 56 → 89%,
+  `analyze` 61 → 84%.
+  - `signatures/signatures_edge_test.go`: variadics, unnamed results, generic
+    declaration vs. instantiation, promoted-method wrappers, and both
+    synthetic-function fallbacks of `Of` (objectless → `TypeString`; bare → `""`),
+    built from inline SSA so the fixture goldens are untouched.
+  - `loader/errorpaths_test.go`: pins the fail-loudly contract — a type-check
+    error aborts the load, a broken first-party dependency aborts from the closure,
+    the `>10`-error summary truncates+sorts deterministically, a test-only / empty
+    module is rejected, and the main module is selected.
+  - `analyze/registrars_test.go` + `analyze_test.go`: the config-router branch
+    (custom `routeArg`/`handlerArg`, method-name uppercasing), the built-in
+    HTTP + go-chi set, the `busConsume`-without-`#symbol` skip, and the
+    config-overrides-module `ServiceName` branch.
+- **Front-end determinism test.** `analyze/determinism_test.go` renders the
+  front-end IR (packages + roots + per-root signatures) to a canonical dump and
+  asserts run-twice byte-equality, so a map-order leak in
+  `loader`/`analyze`/`signatures` fails at its source rather than as a downstream
+  golden diff.
+- **CI coverage floor.** `scripts/coverage-floor.sh` (floor 82%, overridable via
+  `COVERAGE_FLOOR`), a `make cover-floor` target, and a dedicated `coverage-floor`
+  job in `.github/workflows/gates.yml`.
+
+The one named hot-spot left partly uncovered is `loader.moduleOf`'s non-main
+fallback branch: it is structurally unreachable through `Load`, which always
+loads the main module via `./...`, so it is defensive-only.
