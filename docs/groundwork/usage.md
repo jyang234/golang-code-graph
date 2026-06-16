@@ -63,6 +63,10 @@ digest meaningful, a gate reproducible, and a disagreement debuggable. It is
 also the acceptance bar for every feature in this toolset: anything heuristic
 or sampled lives outside the verdict path, by design.
 
+Every other term used in this guide — substrate, frontier, waypoint, obligation,
+reclaimer, hunt space, and the rest — is defined in the [Glossary](#glossary) at
+the end.
+
 ---
 
 ## How groundwork and flowmap fit together
@@ -1021,3 +1025,281 @@ it. Top-level sections:
 Decode strictly (groundwork uses `DisallowUnknownFields`): a schema change you
 have not been taught about should fail loudly, not drop fields silently.
 Producer and judge deploy in lockstep — that is a feature.
+
+---
+
+## Glossary
+
+The vocabulary of the toolset, grouped so related terms teach each other. The
+[concepts-in-five-minutes](#the-concepts-in-five-minutes) section is the mental
+model; this is the comprehensive reference. Each entry says what the term *is*
+and, where it matters, *why it exists* — because in this toolset a term usually
+encodes a deliberate honesty or determinism decision, not just a name.
+
+### The substrate — what the tools reason over
+
+- **flowmap** — the *producer*. Compiles a service (`go/packages → go/ssa →
+  go/callgraph`) and emits facts as canonical JSON: the call graph, the boundary
+  contract, and the CFG-derived disclosure sections. Runs the analysis; renders
+  no verdict.
+- **groundwork** — the *judge*. Only ever *reads* flowmap's JSON and renders
+  verdicts against a human-authored policy. Never runs flowmap — keeping them
+  separate binaries is what lets CI own graph generation (see **trust boundary**).
+- **call graph** — the map of what your code *can* do: every node a function,
+  every edge one possible call. Computed from source, with no tests run and no
+  instrumentation. The substrate everything else composes from.
+- **node** — one first-party function in the graph, carrying `fqn`, `sig`,
+  `tier`, and `fallible`.
+- **edge** — one possible caller→callee call, optionally flagged `boundary`
+  (touches the outside world), `concurrent` (crosses a goroutine spawn), or
+  `via` (recovered by a reclaimer).
+- **FQN (fully-qualified name)** — a function's canonical identity, e.g.
+  `(*example.com/svc/internal/store.Store).Tx`. The stable key every diff,
+  matcher, and card resolves on — never a line number or arrival order.
+- **signature (`sig`)** — the function's Go type signature, carried for display.
+- **fallible** — a node whose Go signature returns an `error`. Lets the tools
+  trace which error paths reach an entrypoint; it says nothing about whether the
+  error is *handled* well.
+- **boundary effect** — a typed edge where code touches the world:
+  `boundary:db UPDATE users`, `boundary:bus PUBLISH loan.approved`,
+  `boundary:credit-bureau GET /score/{id}`. Turns "this function changed" into
+  "these routes can now write that table."
+- **op key** — the canonical string for one boundary effect or flow exit —
+  `PUBLISH loan.approved`, `DB postgres INSERT ledger`,
+  `HTTP GET credit-bureau /score/{id}`. One spelling, defined once (see the
+  `opkey` parity guard), so the same effect never reads two ways.
+- **boundary contract** — the gated inter-service surface: routes served, events
+  published/consumed, external dependencies. A pure function of the code, so CI
+  regenerates and diffs it (the **currency gate**).
+- **canonical IR / canonicalization** — the byte-deterministic normal form every
+  artifact is written through (sorted keys, no wall-clock, no map-iteration
+  order). The property that makes a digest meaningful and a gate reproducible.
+
+### Reachability and structure
+
+- **entrypoint** — a function nobody calls, where requests enter: an HTTP
+  handler, a bus consumer, `main`. The roots of every backward walk.
+- **reachability** — walking edges. *Backward* from a function gives the
+  entrypoints it is live behind (its **blast radius**); *forward* gives
+  everything it can touch. Most surfaces are compositions of these two walks.
+- **blast radius** — the transitive set of callers of a function: who breaks if
+  it changes. Read it as an upper bound where it crosses a blind spot.
+- **route / topic (event)** — an HTTP route (`POST /loans/{id}`) or a bus
+  topic/event name; the human-facing names an alert speaks in.
+- **entrypoints join** — the resolved `route/topic → handler` mapping, so a
+  symptom phrased as a route lands on a function. Names are registration-site
+  literals, matched segment-wise (mount prefixes and path IDs tolerated), never
+  exactly-or-nothing.
+- **tier / salience** — every node and edge carries a tier 1–4 (1 = most
+  consequential: publishes, writes, inbound routes; 4 = noise). Keeps cards and
+  snapshots focused on what matters.
+- **layer / layering** — named package groups (`handler → app → store`) and the
+  rule that a call may not skip one. Your architecture's spine, declared in the
+  policy and enforced as a gate.
+
+### Precision and the soundness frontier
+
+- **over-approximation** — the graph may include edges that can't actually fire,
+  never omit ones that can. This asymmetry is deliberate: it keeps a *proof of
+  absence* sound (if the graph shows no path, none exists, outside blind spots).
+- **substrate / algorithm (`--algo`)** — which call-graph algorithm built the
+  graph: **RTA** (Rapid Type Analysis, the default — precise enough, cheap),
+  **VTA** (Variable Type Analysis, RTA-seeded — refines interface-dense dispatch,
+  a *blessed* proof substrate), **CHA** (Class Hierarchy Analysis, rootless —
+  fallback for a library with no entry points). All three are sound
+  over-approximations modulo reflection/unsafe; the graph self-certifies which on
+  a `substrate:` line.
+- **HighFanOut** — a dynamic-dispatch site with more callees than the threshold
+  (default 8): the analyzer pairs every caller with every callee, inflating
+  reach. A precision limit, not blindness — disclosed, and tightened by VTA.
+- **blind spot** — a place static analysis genuinely cannot see: reflection,
+  `unsafe`, dynamic dispatch, a non-constant value. Recorded in `blind_spots[]`,
+  and every verdict crossing one says so. The honesty discipline: you always
+  know where the map stops being trustworthy.
+- **`<dynamic>`** — a boundary label whose target is unresolvable at compile time
+  (a topic computed at runtime). The marker is the disclosure — the tool knows a
+  publish *happens*, not *to where*.
+- **frontier** — the classified set of every place reachability stops, emitted by
+  `flowmap frontier` as *measurement, not a gate*. Each marker is binned: **A**
+  truly dynamic, **B** reclaimable structure (a severed dispatch seam), **B2**
+  consumer-reclaimable (opaque only because the source is non-constant), **C**
+  over-approximation (HighFanOut). The point is to distinguish what is *genuinely*
+  dynamic from what only *looks* dynamic and can be recovered.
+- **attribution loss** — the fraction of entrypoints the frontier confirms are
+  severed from their effects. A **lower bound, not a proof**: a 0 is kept honest
+  by a third "unconfirmed" state, never read as "nothing severed."
+- **reclaimer (`--reclaim`, `via`)** — an opt-in, *sound* pass that recovers
+  edges lost at a framework dispatch seam (the oapi strict-server `wrapper→$1`
+  hop), each tagged with `via`. Adds only real edges, so a proof of absence over
+  a reclaimed graph is at least as strong; the tag lets a *reachable* verdict
+  that leaned on a reclaimed edge be audited as such.
+
+### The policy and its checks
+
+- **policy (`policy.json`)** — the single, human-authored, CODEOWNERS-gated
+  source of architectural truth. Declarative, validated strictly on load. If the
+  agent under review could author it, it would grade its own homework.
+- **fitness function** — a deterministic assertion about graph shape that fails
+  closed in CI. The unifying primitive: it converts an architectural fact from
+  "held in someone's head" to "re-checked on every change." The families:
+- **layering** — no call skips a declared layer.
+- **must_not_reach** — a negative reachability invariant: "an unauthenticated
+  route never reaches the charge API," proven over *all* paths.
+- **must_pass_through (waypoint)** — every path from `from` to `to` must cross a
+  `through` node: "every entrypoint→DB path goes through the auth check."
+- **no_concurrent_reach** — a target must not be reachable across a `concurrent`
+  edge: "no DB write from a goroutine."
+- **io_budget (write budget)** — a route's write count stays under
+  `max_writes_per_route`. Reads as a **lower bound** where the SQL verb is
+  unreadable (non-constant SQL) — the check cautions rather than passing falsely.
+- **blind_spot_ratchet** — stops dynamic-dispatch blind spots from growing
+  change-over-change (`gate: true` to enforce); the anti-erosion lock on the
+  graph everything else depends on.
+- **effect_ratchet** — stops the unclassified-DB / `<dynamic>` fraction from
+  growing: a guard on the graph's *fidelity*, not just its shape.
+- **require_proof** — on a reach/waypoint rule, upgrades "the static graph found
+  no path" to "and the path is fully resolvable." Fails closed through a blind
+  spot instead of passing vacuously.
+- **allow-list / exception** — a blessed deviation (`{from, to, reason}`) — real
+  layered code has legitimate ones (everything calls `Error()`). Review once,
+  suppress forever, fail only on *new* violations.
+- **exceptions audit / dead entry** — `groundwork exceptions` flags allow-list
+  entries that no longer excuse anything, so a blessed exception can't quietly
+  rot into a permanent blind spot. Liveness is per-graph.
+- **brokers** — declared messaging-channel semantics (delivery `at-least-once` /
+  `exactly-once`, ordering, idempotency). A *human warrant* (`signed_by`), since
+  the graph can't observe a broker's guarantees.
+
+### Path obligations and partial effects
+
+- **path obligation** — a domain lifecycle rule proven over *every* CFG path by
+  flowmap (which holds each function's control-flow graph). Rules live in
+  `.flowmap.yaml`, not the policy.
+- **acquire / release (must-release)** — "after `BeginTx`, every path commits or
+  rolls back." `acquire` opens the obligation; any `release` discharges it.
+- **require / before (must-precede)** — "the audit write must precede the
+  publish." An ordering obligation over all paths.
+- **obligation statuses** — **SATISFIED** (a universal proof no test suite can
+  produce — silent), **VIOLATED** (names the leaking exit as witness),
+  **CANT-PROVE** (the claim would be unsound — resource escapes the function, or
+  `recover` is present — disclosed, not passed), **UNMATCHED** (the anchor binds
+  no call site — an inert rule, surfaced as a caution).
+- **dominance** — graph-theoretic "happens on every path to here." How a
+  partial-effect fact distinguishes *certainly* from *possibly*.
+- **effect_order / partial-effect facts** — within one function, whether a
+  boundary effect *certainly* (dominating) or *possibly* (branch-arm) precedes a
+  fallible call. The incident question "what's already irreversibly done if this
+  faulted?" — answered from CFG dominance, not log spelunking. **Same-function
+  only**, disclosed on every fault card.
+
+### Verdicts and three-valued honesty
+
+- **three-valued verdict** — nothing answers only pass/fail. The third value —
+  *cannot-prove*, *abstain*, *no-signal* — is load-bearing: a tool that cannot
+  prove something *says so* instead of passing silently. Green means proven,
+  never "nothing noticed."
+- **BLOCK / STRUCTURALLY-CLEAR / NO-STRUCTURAL-SIGNAL** — the `review`/`verify`
+  verdicts: an invariant or contract broke / shape preserved (*not* a logic
+  sign-off) / body-only change the graph abstains on (exits 0, but *not* a clean
+  bill of health — send attention to logic).
+- **witness** — the concrete evidence a violation prints (the bypassing edge, the
+  leaking exit by line). A verdict you can act on without re-deriving it.
+- **fail closed / abstain** — when input is incomplete, ambiguous, or
+  unverifiable, refuse rather than guess. A surfaced UNKNOWN beats a plausible
+  wrong pole.
+- **soundness asymmetry** — a *proof* (covered, absent) may only be emitted when
+  actually proven; a *negative* follows only from over-approximated reachability
+  and holds only outside the blind spots. Everything else is UNKNOWN.
+- **scope creep** — a change reaching further than declared (new packages/effects
+  beyond a `--scope`). `verify` flags it even when no invariant broke.
+
+### The review artifact and its integrity
+
+- **review artifact** — the computed MR review: verdict, shape, *newly-introduced*
+  findings (diffed by canonical identity against base, so old debt is excluded),
+  contract movement, I/O effects, reach. Computed *from* the graphs, so the
+  author can't embellish it.
+- **shape** — the artifact's first-triage label: body-only / localized /
+  cross-package / broad. Tells the reviewer how hard to look before opening the
+  diff.
+- **digest** — `sha256` over the artifact's canonical structural content. Catches
+  accidental edits and staleness — but it is **not** the trust anchor (see
+  **code-correspondence**).
+- **code-correspondence** — the real guarantee: a verifier *recomputes* the
+  artifact from the trusted base/branch graphs and compares. This is what catches
+  a **re-signed forgery** (body edited *and* digest recomputed) — the digest
+  alone cannot.
+- **tampered vs stale** — `verify-artifact`'s two failures: **tampered** (body no
+  longer hashes to its digest) vs **stale** (digest no longer matches the code's
+  recomputation).
+
+### Identity, determinism, and trust
+
+- **determinism / byte-determinism** — every output is a pure function of its
+  inputs, byte-identical on any machine. The acceptance bar for every feature:
+  anything heuristic or sampled lives *outside* the verdict path, by design.
+- **stamp (`--stamp`) / `--expect`** — `flowmap graph --stamp <sha>` records a
+  caller-supplied identity in the graph; the gate commands take `--expect <sha>`
+  to bind a verdict to the exact code, so a stale graph can't gate the wrong
+  code. `GROUNDWORK_REQUIRE_STAMP=1` makes the binding mandatory in CI.
+- **trust boundary** — the single load-bearing condition: graphs MUST be
+  generated by trusted CI from checked-out source, **never accepted from the
+  author/agent under review.** An agent that supplies its own graph forges a pass
+  by omitting an edge — groundwork cannot detect that and does not try.
+- **human-as-oracle / CODEOWNERS** — a machine verifies everything mechanical; a
+  human is the only judge of *intent*. CODEOWNERS routes every gated artifact,
+  the policy, and `.flowmap.yaml` to that human, so a rule/contract/golden change
+  is unbypassable.
+
+### The lifecycle surfaces
+
+- **reach** — blast radius + entrypoint cover + effects for one function.
+- **ground / grounding card** — the pre-edit card: which rules *bind* the
+  function you're about to touch, derived with the *same matchers* as the merge
+  gate, plus a **`trust: reliable | verify`** flag that fires where the graph is
+  unreliable. Prevention before generation.
+- **triage / fault card** — the incident front door. Takes the alert's own words
+  (**symptom kinds**: `--route`, `--frame`, `--table`, `--event`, `--peer`) and
+  returns a bounded suspect set, implicated entrypoints, and (with `--fail`) the
+  partial-effect answer. Measured at 10/10 recall, median 8% **hunt space**.
+- **hunt space / recall** — triage's two effectiveness measures: the fraction of
+  the graph a responder must examine (smaller is better), and whether the true
+  culprit is ever outside the suspect set (must be 100%). Both are committed test
+  assertions (`drills.md`).
+- **verify / review / diff** — the pre-flight gate (new violations, scope creep,
+  breaking contract) / the reviewer's computed artifact / the boundary-contract
+  diff.
+- **init** — proposes a baseline policy from measured facts, allow-listing latent
+  violations so the gate fails only on *new* ones. The measure-then-enforce
+  on-ramp.
+- **chains (CX-5)** — cross-service effect-chain cards (publisher→consumer across
+  services). Observational, not a gate.
+- **mcp / fleet / fleet-events / transcript** — `groundwork mcp` serves the
+  lenses as MCP tools to an agent (stdio or shared HTTP); a **fleet** is several
+  services in one server, **fleet-events** the publisher→consumer join across
+  them, and `transcript` summarizes a `--log` of a session (sessions, tool mix,
+  cross-service hops).
+
+### The behavioral pipeline
+
+- **OpenTelemetry (OTel) / OTLP / span** — the tracing standard flowmap reads.
+  Spans (with semantic-convention attributes) are the raw behavioral input; OTLP
+  is the wire format for a captured trace export.
+- **flow test** — an in-process test that drives a real request through the real
+  OTel pipeline and asserts its boundary exits with `Expect`/`ExpectExactlyOnce`.
+- **golden / golden snapshot** — the committed canonical record of a flow's
+  observed effects (`*.golden.json` + rendered `*.flow.md`). A stale golden fails
+  the suite (the **snapshot gate**).
+- **determinism self-test** — `Run` re-drives a flow 3× (varying goroutine
+  scheduling) and canonicalizes, so a snapshot that varies run-to-run fails
+  *before* it's committed.
+- **coverage** — the boundary effects no committed flow exercises: the delta
+  between what the code *can* do and what the tests *prove* it does.
+  Informational — a gap means "write a flow," not "fail the build."
+- **post-hoc ingestion** — `flowmap behavior ingest` maps a captured OTLP trace
+  (e.g. an incident's) to boundary effects, to locate where a run diverged from
+  known-good *inside* the suspect set the graph bounded.
+- **the three gates** — **currency** (boundary contract is regenerated and
+  diffed), **snapshot** (goldens ride `go test`), **structural** (CI regenerates
+  base/branch graphs and runs `verify`). Unified only by CODEOWNERS routing and
+  the human-as-oracle — no AI in any of them.
