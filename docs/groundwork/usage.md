@@ -943,7 +943,10 @@ the what-if framing and partial-effect answers), and `exceptions` (allow-list
 audit). The intended loop is **ground → edit → verify**: the same rule set
 that will gate the merge, surfaced before the edit is made. Tool failures
 come back as readable tool results the agent can correct from, never protocol
-errors.
+errors. For how an agent should *orchestrate* these tools — the loop, reading
+the three-valued verdict, one-symptom triage, the staleness flag — see the
+harness-neutral [`agent-workflow.md`](agent-workflow.md) (Claude Code users
+also get it as the bundled `groundwork-workflow` skill).
 
 When the agent works across a service boundary (a publisher in one repo, the
 consumer in another), serve both maps from one server with `--service` and
