@@ -120,8 +120,13 @@ func Decode(r io.Reader) ([]capture.Span, error) {
 	}
 
 	var out []capture.Span
+	sawEnvelope := false
 	for _, req := range reqs {
-		for _, rs := range req.ResourceSpans {
+		rss := req.resourceSpans()
+		if rss != nil {
+			sawEnvelope = true
+		}
+		for _, rs := range rss {
 			service := resourceService(rs.Resource.Attributes)
 			scopes := rs.ScopeSpans
 			if len(scopes) == 0 {
@@ -136,8 +141,9 @@ func Decode(r io.Reader) ([]capture.Span, error) {
 	}
 	// Distinguish a legitimately-empty OTLP export ({"resourceSpans":[]}, which
 	// carries the field) from a non-OTLP JSON file that happens to match a *.json
-	// glob (an effect golden, config, …), which does not.
-	if len(out) == 0 && !bytes.Contains(data, []byte("resourceSpans")) && !bytes.Contains(data, []byte("resource_spans")) {
+	// glob (an effect golden, config, …), which does not. Decided structurally on
+	// whether the envelope field was present, not by scanning the raw bytes.
+	if len(out) == 0 && !sawEnvelope {
 		return nil, errNotOTLP
 	}
 	return out, nil
@@ -231,7 +237,21 @@ func resourceService(kvs []keyValue) string {
 // --- the OTLP/JSON wire shapes (only the fields flowmap reads) ---
 
 type exportReq struct {
-	ResourceSpans []resourceSpans `json:"resourceSpans"`
+	ResourceSpans      []resourceSpans `json:"resourceSpans"`
+	ResourceSpansSnake []resourceSpans `json:"resource_spans"` // pre-1.0 / proto-JSON spelling
+}
+
+// resourceSpans returns the trace envelope under either the camelCase (OTLP/JSON
+// canonical) or snake_case spelling. It is non-nil iff the file actually carried
+// the field — even when empty ([] decodes to a non-nil empty slice, an absent
+// key leaves it nil). That presence is what distinguishes a legitimately-empty
+// export from a non-OTLP JSON, so it is tested structurally rather than by
+// scanning raw bytes for a substring any unrelated JSON might contain.
+func (r exportReq) resourceSpans() []resourceSpans {
+	if r.ResourceSpans != nil {
+		return r.ResourceSpans
+	}
+	return r.ResourceSpansSnake
 }
 
 type resourceSpans struct {

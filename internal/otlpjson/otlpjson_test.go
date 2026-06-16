@@ -229,6 +229,17 @@ func TestDecodeRejectsNonOTLP(t *testing.T) {
 	if spans, err := Decode(strings.NewReader(`{"resourceSpans":[]}`)); err != nil || len(spans) != 0 {
 		t.Fatalf("empty OTLP envelope: got spans=%d err=%v, want 0,nil", len(spans), err)
 	}
+	// the snake_case spelling is also a valid (empty) envelope.
+	if spans, err := Decode(strings.NewReader(`{"resource_spans":[]}`)); err != nil || len(spans) != 0 {
+		t.Fatalf("empty snake_case envelope: got spans=%d err=%v, want 0,nil", len(spans), err)
+	}
+	// a non-OTLP JSON that merely MENTIONS the field name in a value must still be
+	// errNotOTLP — detection is structural (was the field present?), not a raw
+	// substring scan that any unrelated JSON could trip.
+	mentions := `{"note":"this file is not resourceSpans, it is an effect golden","resource_spans_count":0}`
+	if _, err := Decode(strings.NewReader(mentions)); !errors.Is(err, errNotOTLP) {
+		t.Fatalf("non-OTLP JSON mentioning the field name should be errNotOTLP, got %v", err)
+	}
 
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "a.effects.json"), notOTLP)

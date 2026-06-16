@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jyang234/golang-code-graph/capture"
@@ -391,13 +392,16 @@ func (c *canonicalizer) collapseLoops(groups []ir.ChildGroup) []ir.ChildGroup {
 	var out []ir.ChildGroup
 	for i := 0; i < len(groups); i++ {
 		g := groups[i]
-		if g.Concurrent || len(g.Members) != 1 {
+		// Only truly sequential single-member groups form a happens-before run.
+		// An Unordered group satisfies !Concurrent but claims no sequence, so
+		// folding it here would mislabel distinct unordered effects as a loop.
+		if g.Concurrent || g.Unordered || len(g.Members) != 1 {
 			out = append(out, g)
 			continue
 		}
 		sig := signature(g.Members[0])
 		j := i + 1
-		for j < len(groups) && !groups[j].Concurrent && len(groups[j].Members) == 1 && signature(groups[j].Members[0]) == sig {
+		for j < len(groups) && !groups[j].Concurrent && !groups[j].Unordered && len(groups[j].Members) == 1 && signature(groups[j].Members[0]) == sig {
 			j++
 		}
 		if j-i > 1 {
@@ -555,8 +559,12 @@ func dbOperation(attrs map[string]string) string {
 }
 
 func dbEffect(op string) model.Effect {
-	switch op {
-	case "SELECT", "select":
+	// db.operation arrives in arbitrary case (raw OTel attribute), while the
+	// SQL-normalize path yields upper-case. Classify case-insensitively so a
+	// read is never mis-tiered as a mutation on casing alone — two captures of
+	// the same query differing only in case must produce identical IR.
+	switch strings.ToUpper(strings.TrimSpace(op)) {
+	case "SELECT":
 		return model.EffectRead
 	default:
 		return model.EffectMutate

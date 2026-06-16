@@ -420,6 +420,9 @@ func (s *Summaries) alwaysWalk(fn *ssa.Function, key targetKey) bool {
 		}
 		return false
 	}
+	// Seed the entry as visited: every block is entered at index 0, so a
+	// back-edge to the entry only re-scans already-explored instructions.
+	visited[fn.Blocks[0]] = true
 	return !walk(fn.Blocks[0], 0)
 }
 
@@ -561,6 +564,9 @@ func (s *Summaries) entryCovered(e entryEdge, key targetKey) bool {
 		}
 		return false
 	}
+	// Seed the entry as visited: every block is entered at index 0, so a
+	// back-edge to the entry only re-scans already-explored instructions.
+	visited[caller.Blocks[0]] = true
 	return !walk(caller.Blocks[0], 0)
 }
 

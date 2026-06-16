@@ -8,6 +8,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/capture"
 	"github.com/jyang234/golang-code-graph/internal/config"
+	"github.com/jyang234/golang-code-graph/internal/model"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 
@@ -344,6 +345,24 @@ func fixupRoot(cf *capture.CapturedFlow) {
 		if cf.Spans[i].ID == "root" {
 			cf.Root = &cf.Spans[i]
 			return
+		}
+	}
+}
+
+// dbEffect must classify the read verb case-insensitively: db.operation arrives
+// in arbitrary case as a raw OTel attribute, and two captures of the same query
+// differing only in case must produce identical IR (read, not mutation).
+func TestDBEffectCaseInsensitive(t *testing.T) {
+	reads := []string{"SELECT", "select", "Select", "sElEcT", " select "}
+	for _, op := range reads {
+		if got := dbEffect(op); got != model.EffectRead {
+			t.Errorf("dbEffect(%q) = %v, want EffectRead", op, got)
+		}
+	}
+	mutates := []string{"INSERT", "update", "Delete", "Exec", ""}
+	for _, op := range mutates {
+		if got := dbEffect(op); got != model.EffectMutate {
+			t.Errorf("dbEffect(%q) = %v, want EffectMutate", op, got)
 		}
 	}
 }
