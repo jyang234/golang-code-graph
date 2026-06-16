@@ -256,6 +256,22 @@ func SubstrateMismatchCaveat(policyAlgo, graphAlgo string) string {
 	return fmt.Sprintf("substrate mismatch: policy proposed on %s, graph built on %s — the algorithms differ in precision, so a reachability finding may be an analyzer artifact, not a regression; build the gate graph with `flowmap graph --algo %s`, or re-init the policy on this graph", policyAlgo, graphAlgo, policyAlgo)
 }
 
+// AlgoMismatchCaveat returns a disclosure when the base and branch graphs were
+// built on different call-graph algorithms, or "" when there is nothing to flag
+// (either side is unrecorded, or they agree). The algorithms are all sound but
+// differ in precision, so a delta computed across substrates can move for the
+// analyzer's reasons, not the code's (R3). It is the base↔branch sibling of
+// SubstrateMismatchCaveat (policy substrate vs graph) and ToolMismatchCaveat
+// (producer vs producer) — all three are helpers so review and verify word the
+// provenance-mismatch family identically (one source of truth), rather than one
+// living inline at the call site.
+func AlgoMismatchCaveat(baseAlgo, branchAlgo string) string {
+	if baseAlgo == "" || branchAlgo == "" || baseAlgo == branchAlgo {
+		return ""
+	}
+	return fmt.Sprintf("base graph built on %s, branch on %s — substrate differs; a delta may be the analyzer's, not the code's", baseAlgo, branchAlgo)
+}
+
 // ToolMismatchCaveat returns a disclosure when the base and branch graphs were
 // produced by two different flowmap builds, or "" when there is nothing to flag
 // (either side is unrecorded, or they agree). flowmap's "same code → same graph"

@@ -26,9 +26,24 @@ flowmap() { go run ./cmd/flowmap "$@"; }
 # producer field, R11). Strip it from the committed goldens: like the --stamp code
 # identity, the producing-tool version is provenance that must NOT pollute a golden,
 # or the fixtures would churn every time a different flowmap build regenerated them.
-# Removing the lone top-level "tool" line keeps the canonical formatting byte-for-byte
-# — the same unstamped-golden convention, extended to the one derived header field.
-strip_tool() { grep -v '^  "tool": ' "$1" >"$1.tmp" && mv "$1.tmp" "$1"; }
+# Delete the key JSON-aware (pop, not a line-grep) so the strip cannot silently miss
+# the field if canonjson's formatting (indent width, key position) ever shifts, then
+# re-emit in canonjson's exact shape — 2-space indent, non-ASCII kept literal
+# (ensure_ascii=False), trailing newline — so the golden stays byte-identical to
+# `flowmap graph` output minus the one field. The round-trip preserves key order
+# (json.load/dump keep insertion order = canonjson's struct order).
+strip_tool() {
+	python3 - "$1" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    g = json.load(f)
+g.pop("tool", None)
+with open(path, "w") as f:
+    json.dump(g, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+}
 
 for svc in layeredsvc blindsvc obligsvc; do
 	dir="testdata/groundwork/$svc"

@@ -1,8 +1,6 @@
 package review
 
 import (
-	"fmt"
-
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 )
 
@@ -15,8 +13,8 @@ import (
 // provenance (graphs from a pre-provenance flowmap).
 func provenanceCaveats(policyAlgo string, base, branch *graph.Graph) []string {
 	var out []string
-	if base.Algo != "" && branch.Algo != "" && base.Algo != branch.Algo {
-		out = append(out, fmt.Sprintf("base graph built on %s, branch on %s — substrate differs; a delta may be the analyzer's, not the code's", base.Algo, branch.Algo))
+	if ac := graph.AlgoMismatchCaveat(base.Algo, branch.Algo); ac != "" {
+		out = append(out, ac)
 	}
 	// Same class as the algo mismatch, one dimension over: a base built by one
 	// flowmap build and a branch by another can diff on a pure tool artifact (a
