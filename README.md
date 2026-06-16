@@ -127,7 +127,7 @@ threaded through every output.
 |---|---|
 | Understand the concepts and every groundwork surface | [`docs/groundwork/usage.md`](docs/groundwork/usage.md) — the practical guide, primer included |
 | See how it changes the day-to-day — responder, developer, reviewer, each before/after with Claude Code | [`docs/groundwork/personas.md`](docs/groundwork/personas.md) |
-| Wire flowmap into a service (OTel → contract → flow tests → CI) | [`docs/guides/adopting-flowmap.md`](docs/guides/adopting-flowmap.md) |
+| Adopt the toolchain in a service across the lifecycle (flowmap facts → groundwork policy → design/build/review/triage → CI) | [`docs/guides/adopting-flowmap.md`](docs/guides/adopting-flowmap.md) |
 | Understand *why* it is built this way (thesis, failure modes, pressure tests) | [`docs/groundwork/README.md`](docs/groundwork/README.md) and [`docs/groundwork/distilled-learnings.md`](docs/groundwork/distilled-learnings.md) |
 | See the component specifications (the source of truth) | `docs/specs/*.md` (tier map, static extractor, canonicalization, capture harness, golden diff, scope & guarantees) |
 | Follow the feature plans and their validation criteria | `docs/design/*-plan.md` |

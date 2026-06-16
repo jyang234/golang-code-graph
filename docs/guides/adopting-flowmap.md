@@ -1,15 +1,26 @@
-# Adopting flowmap in a service
+# Adopting flowmap + groundwork in a service
 
-> **`ACTIVE`** · adoption guide · _reviewed 2026-06-13_
+> **`ACTIVE`** · adoption guide · _reviewed 2026-06-16_
 
-flowmap verifies what your service does to the world — the events it
-publishes/consumes and the services it calls — and gates unintended changes to a
-human reviewer. This is the end-to-end recipe for wiring it into a Go service.
+This is the end-to-end recipe for wiring the toolchain into a Go service and into
+your engineering lifecycle. The two tools split cleanly:
 
-The fixture under `testdata/fixtures/loansvc` is a complete, working example of
-everything below.
+- **flowmap** *produces facts* — the static call graph with typed boundary
+  effects, the gated boundary contract, path-obligation verdicts, and behavioral
+  golden snapshots. It verifies what your service does to the world (events
+  published/consumed, services called) and gates unintended changes to a human.
+- **groundwork** *judges those facts* against a human-authored `policy.json` and
+  puts them in front of every seat in the lifecycle — **design, build, review,
+  triage** — without ever putting an AI in a verdict.
+
+**Part 1** wires in flowmap (the producer). **Part 2** wires in groundwork (the
+judge) and shows the lifecycle loop. The fixture under
+`testdata/fixtures/loansvc`, plus the policy fixtures under `testdata/groundwork/`,
+is a complete working example of everything below.
 
 ---
+
+# Part 1 — flowmap: producing the facts
 
 ## 1. Instrument the service with OpenTelemetry
 
@@ -150,6 +161,222 @@ gin's per-method router works the same way — its handler is variadic, and the
 final handler in `r.GET(path, mw…, h)` is the one rooted. The one shape this
 does **not** cover is gorilla/mux, where the method comes from a chained
 `.Methods("GET")` call rather than the function name or route string.
+
+---
+
+# Part 2 — groundwork: judging the facts across the lifecycle
+
+groundwork only ever **reads** flowmap's graph; it never produces it. Every
+verdict is a pure function of `(graph, policy)`, byte-deterministic, and
+three-valued — proven, violated-with-a-witness, or abstained-with-a-reason.
+Silence is never a silent pass.
+
+## 7. Author a baseline policy
+
+Don't hand-write the policy from scratch, and don't assert invariants you haven't
+measured — derive them from the real graph, then enforce only what holds today:
+
+```sh
+flowmap graph . > graph.json
+groundwork init graph.json --name mysvc --guide policy-guide.md > policy.json
+groundwork policy-check policy.json        # load + validate
+```
+
+`init` proposes layers from the package structure and, crucially, **allow-lists
+every latent layering violation it finds** with a `"baseline at init — latent
+violation, review"` reason. That encodes the load-bearing adoption rule: **fail
+only on _new_ violations, never on five-year-old debt.** Walk the generated
+allow-list with your team — each entry is a real "refactor or bless" decision —
+and delete the ones you intend to fix. From then on the gate ratchets: the
+baseline can only shrink.
+
+The policy vocabulary (every family optional; unknown keys fail closed):
+
+| Family | JSON key | Proves |
+|---|---|---|
+| Layering | `layers` + `layering` | no call skips a layer (handler→app→store); `allow[]` blesses exceptions |
+| Reachability (negative) | `must_not_reach` | "an unauthenticated route never reaches the charge API" — over *all* paths |
+| Waypoint | `must_pass_through` | "every entrypoint→DB path goes through the auth check" (`from`/`through`/`to`) |
+| Concurrency | `no_concurrent_reach` | "no DB write from a goroutine" |
+| I/O budget | `io_budget.max_writes_per_route` | a route's write surface stays bounded |
+| Blind-spot ratchet | `blind_spot_ratchet` | dynamic dispatch can't silently erode the graph (`gate: true` to enforce) |
+| Effect ratchet | `effect_ratchet` | the unclassified-DB / `<dynamic>` fraction can't grow |
+
+Set `require_proof: true` on a reach/waypoint rule to turn "the static graph
+found no path" into "and the path is fully resolvable" — it then fails closed
+through a blind spot instead of passing vacuously.
+
+**Domain lifecycle rules live in `.flowmap.yaml`, not the policy** (flowmap holds
+the per-function CFG that proves them):
+
+```yaml
+obligations:
+  - name: tx-must-close
+    acquire: "example.com/mysvc/internal/store#BeginTx"
+    release: ["example.com/mysvc/internal/store#Commit",
+              "example.com/mysvc/internal/store#Rollback"]
+  - name: audit-before-publish
+    require: "example.com/mysvc/internal/audit#Write"
+    before:  "example.com/mysvc/internal/eventbus#Publish"
+```
+
+A SATISFIED obligation is a universal proof no test suite can produce; a later
+SATISFIED→VIOLATED flip surfaces in `review`/`verify` as a *new* violation.
+
+## 8. The lifecycle loop
+
+The same policy is consulted at all four seats, so quality doesn't depend on
+which agent ran or how it was prompted:
+
+| Phase | Command(s) | What it hands you | Oracle |
+|---|---|---|---|
+| **Design** | `ground`, `reach`, `triage --fail` | which rules bind the code you'll touch; blast radius; "what's irreversibly done if X faults" | engineer |
+| **Build** | `ground` → edit → `verify` | new violations / scope creep / breaking contract, each naming the exact edge | the gate |
+| **Review** | `review` + `verify-artifact` | three-valued verdict, shape, only newly-introduced findings, contract + I/O movement | human (intent) |
+| **Triage** | `triage --route/--frame/--table/--event/--peer`, `flowmap behavior ingest` | bounded suspect set + partial-effect answers, from the alert's own words | responder |
+
+### Design — constraints become requirements *before* generation
+
+```sh
+groundwork ground graph.json '<fqn>' --policy policy.json    # what binds this fn
+groundwork reach  graph.json '<fqn>'                         # blast radius
+groundwork triage --fail --peer credit-bureau graph.json     # what-if a peer faults
+```
+
+The `ground` card is derived with the **same matchers as the merge gate**, so it
+never promises a guardrail that won't bind. A good plan includes its own *rule
+changes* — a new `must_pass_through` or obligation — reviewed like code, encoding
+the lesson at the feature's birth.
+
+### Build — deterministic prevention replaces deterministic rejection
+
+The loop is **ground → edit → verify**. Before pushing, self-check locally
+against the same gate CI will run:
+
+```sh
+flowmap graph . > branch.graph.json
+groundwork verify policy.json base.graph.json branch.graph.json
+```
+
+Every classic agent mistake fails with a witness: the layering skip names the
+bypass path, the missing rollback names the leaking exit by line, "make it async"
+trips `no_concurrent_reach`, reaching for reflection trips the blind-spot
+ratchet. Iteration happens against a judge that consumes zero human attention.
+
+### Review — a computed artifact, not author-written prose
+
+```sh
+groundwork review policy.json base.graph.json branch.graph.json   # BLOCK exits non-zero
+groundwork diff   base.contract.json branch.contract.json        # boundary-contract movement
+```
+
+The verdict is three-valued and the silence is legible:
+
+- **BLOCK** — a structural invariant or the contract broke (exits non-zero).
+- **STRUCTURALLY-CLEAR** — shape preserved; explicitly *not* a logic sign-off.
+- **NO-STRUCTURAL-SIGNAL** — body-only change; the graph abstains and says so
+  (exits 0, but is *not* a clean bill of health — send full attention to logic).
+
+Anyone — reviewer or CI — recomputes the digest to prove the artifact is
+authentic (catches a tampered *or* re-signed-forgery artifact):
+
+```sh
+groundwork verify-artifact artifact.json policy.json base.graph.json branch.graph.json
+```
+
+### Triage — the alert's own words are the inputs
+
+```sh
+groundwork triage --route "POST /api/v1/loans/{id}" graph.json   # mount prefixes / IDs tolerated
+groundwork triage --table loans --fail graph.json                # + the partial-effect answer
+flowmap behavior ingest <incident.otlp.json> …                   # locate the divergence in-set
+```
+
+Measured on the dogfood fixture at 10/10 recall, median 8% hunt space
+(`docs/groundwork/drills.md`). Causes outside the code (config, infra, data) are
+out of scope, and every fault card says so.
+
+## 9. Wire the structural gate into CI — and the one trust boundary
+
+**The load-bearing condition:** the graphs MUST be generated by trusted CI from
+the checked-out source, **never accepted from the author/agent under review.** An
+agent that supplies its own branch graph forges a pass trivially by omitting the
+offending edge — groundwork cannot detect that and does not try. flowmap
+execution must sit inside the CI trust boundary; the agent may *read* graphs but
+never *supply* the one it is judged against.
+
+Add a `structural-gate` job alongside the currency/snapshot gates in
+`.github/workflows/gates.yml`:
+
+```yaml
+  structural-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }            # need the base ref for the diff
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25.11" }     # pin: the graph is SSA-deterministic per toolchain
+      - run: go install ./cmd/flowmap ./cmd/groundwork   # or a pinned release; producer + judge in lockstep
+      # Branch graph from the code under review, stamped to its commit.
+      - run: flowmap graph --stamp "$GITHUB_SHA" . > branch.graph.json
+      # Base graph from the merge target — same trusted CI, never the PR.
+      - run: |
+          git worktree add /tmp/base "origin/${{ github.base_ref }}"
+          flowmap graph /tmp/base > base.graph.json
+      - name: pre-flight gate
+        env: { GROUNDWORK_REQUIRE_STAMP: "1" }   # a forgotten --expect fails, never silently skips
+        run: groundwork verify policy.json base.graph.json branch.graph.json --expect "$GITHUB_SHA"
+      - name: reviewer artifact
+        if: always()
+        run: groundwork review policy.json base.graph.json branch.graph.json --expect "$GITHUB_SHA" | tee mr-review.txt
+```
+
+`--stamp`/`--expect` bind the verdict to the exact commit, so a stale graph can't
+gate the wrong code; `GROUNDWORK_REQUIRE_STAMP=1` makes the binding mandatory.
+Producer and judge are deployed in lockstep — the graph JSON is decoded strictly,
+so unknown fields fail loudly — so pin both to the same release.
+
+## 10. Route the policy through CODEOWNERS
+
+`policy.json` and the obligation rules in `.flowmap.yaml` are architectural truth:
+a change to them is unbypassable and routes to a human, exactly like the gated
+artifacts in Part 1.
+
+```
+**/policy.json        @your-team     # the invariants + the allow-list
+**/.flowmap.yaml      @your-team     # classification + obligation rules
+```
+
+`groundwork exceptions policy.json graph.json` audits the allow-list and flags
+entries that no longer excuse anything — so a blessed exception can't quietly rot
+into a permanent blind spot.
+
+## 11. Serve it to agents over MCP (optional, high-leverage)
+
+`groundwork mcp` exposes triage/reach/ground/exceptions as MCP tools so a coding
+agent runs the **ground → edit → verify** loop itself:
+
+```sh
+groundwork mcp graph.json --policy policy.json                       # stdio, one service
+groundwork mcp --service pay=pay.json --service ledger=ledger.json   # the neighborhood's maps
+groundwork mcp pay.json --http 127.0.0.1:8137 --token "$T"           # team-shared (token required off loopback)
+```
+
+The graph the server reads is still CI-generated — the agent reads it, never
+writes it. Run with `--log calls.jsonl` and read `groundwork transcript
+calls.jsonl` to see whether sessions actually cite card facts.
+
+## What groundwork does *not* verify — state this up front
+
+A green structural verdict certifies exactly one proposition: *the change did not
+alter the declared structural shape of the system.* It does **not** catch logic
+bugs inside an unchanged shape, data/value correctness (the `<dynamic>` topic on
+a publish), duplicated helpers / "reinventing the wheel" (no rule means no
+signal), or sins of omission (a validation the agent should have added leaves no
+edge to flag). Those stay with tests, types, and the human reviewer. The unique
+value is the **anti-drift ratchet** and **all-paths safety invariants** — the
+global properties a self-correcting agent loop and its own (correlated) tests
+structurally cannot self-enforce.
 
 ---
 
