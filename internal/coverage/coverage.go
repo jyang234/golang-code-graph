@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/canon/opkey"
 	"github.com/jyang234/golang-code-graph/internal/static/boundary"
 	"github.com/jyang234/golang-code-graph/ir"
 )
@@ -61,12 +62,12 @@ func Delta(c *boundary.Contract, traces []*ir.CanonicalTrace) Report {
 
 	var out []Effect
 	for _, e := range c.Published {
-		if k := "PUBLISH " + e.Event; !seen[k] {
+		if k := opkey.PublishPrefix + e.Event; !seen[k] {
 			out = append(out, Effect{Publish, k, e.Tier})
 		}
 	}
 	for _, e := range c.Consumed {
-		if k := "CONSUME " + e.Event; !seen[k] {
+		if k := opkey.ConsumePrefix + e.Event; !seen[k] {
 			out = append(out, Effect{Consume, k, e.Tier})
 		}
 	}
@@ -125,7 +126,7 @@ func externalKey(d boundary.ExternalDep, op string) string {
 		}
 		return strings.Join(parts, " ")
 	case "rpc", "grpc":
-		return "RPC " + op
+		return opkey.RPCPrefix + op
 	default:
 		return strings.ToUpper(d.Kind) + " " + d.Peer + " " + op
 	}

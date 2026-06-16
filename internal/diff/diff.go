@@ -410,7 +410,7 @@ func changedAttrKeys(a, b map[string]string) []string {
 
 // human strips the protocol prefix from an op for a readable change line, so
 // "HTTP GET fraud-svc /check/{id}" reads as "GET fraud-svc /check/{id}".
-func human(op string) string { return strings.TrimPrefix(op, "HTTP ") }
+func human(op string) string { return strings.TrimPrefix(op, opkey.HTTPPrefix) }
 
 // asyncWord describes whether an op is reached synchronously or as an async
 // (FOLLOWS_FROM link) continuation.
