@@ -131,6 +131,10 @@ func Exceptions(p *policy.Policy, ix *graph.Index) []ExceptionStatus {
 		}
 	}
 
+	// Total order: ratchet entries carry empty From/To, so Site, Kind and Reason
+	// are the only distinguishers. Without Kind/Reason in the key, two
+	// blind_spot_ratchet entries at one Site differing only in Kind tie on every
+	// key and the unstable sort.Slice reorders them run-to-run.
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Source != b.Source {
@@ -142,7 +146,13 @@ func Exceptions(p *policy.Policy, ix *graph.Index) []ExceptionStatus {
 		if a.To != b.To {
 			return a.To < b.To
 		}
-		return a.Site < b.Site
+		if a.Site != b.Site {
+			return a.Site < b.Site
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Reason < b.Reason
 	})
 	return out
 }

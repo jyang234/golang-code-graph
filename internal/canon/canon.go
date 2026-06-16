@@ -522,8 +522,20 @@ func (c *canonicalizer) discards() ir.DiscardManifest {
 // signature renders a span subtree to its canonical bytes for equality testing
 // (loop detection). It excludes nothing volatile because the tree is already
 // normalized at this point.
+// signature is the canonical subtree key used to order same-op concurrent and
+// unordered siblings run-independently (bySig) and to fold identical adjacent
+// groups into loops. canonjson.Marshal is deterministic and only fails on a value
+// it cannot represent (a channel/func/complex field); a CanonicalSpan never
+// carries one, so a failure here means the IR is corrupt. Fail closed by panicking
+// rather than returning "": a swallowed error would collapse EVERY signature to the
+// empty string, silently degrading the tie-break to op-only and letting a race
+// perturb the "canonical" output — the confidently-wrong, nondeterministic result
+// this package exists to prevent, which is strictly worse than a crash.
 func signature(s *ir.CanonicalSpan) string {
-	b, _ := canonjson.Marshal(s)
+	b, err := canonjson.Marshal(s)
+	if err != nil {
+		panic(fmt.Sprintf("canon: signature marshal failed on a span this package assumes is always representable (corrupt IR): %v", err))
+	}
 	return string(b)
 }
 

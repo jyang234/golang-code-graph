@@ -198,6 +198,27 @@ func TestPassRuleAllowed(t *testing.T) {
 	if r.Allowed("pkg.Other", "boundary:db DELETE users") {
 		t.Error("unrelated pair matched")
 	}
+
+	// Identifier-boundary matching, not bare strings.HasPrefix: an allow for a
+	// write to "users" must NOT silently suppress a bypass writing a different
+	// table whose label merely shares that prefix ("users_audit"). A bare prefix
+	// here is a false SATISFIED on the must_pass_through gate.
+	rb := &PassRule{Allow: []Exception{
+		{From: "svc/app.GetUser", To: "boundary:db INSERT users"},
+	}}
+	if !rb.Allowed("svc/app.GetUser", "boundary:db INSERT users") {
+		t.Error("exact allow did not match itself")
+	}
+	if rb.Allowed("svc/app.GetUserAvatar", "boundary:db INSERT users") {
+		t.Error("source prefix split an identifier: GetUserAvatar must not match an allow for GetUser")
+	}
+	if rb.Allowed("svc/app.GetUser", "boundary:db INSERT users_audit") {
+		t.Error("target prefix split an identifier: users_audit must not match an allow for users")
+	}
+	// A true boundary extension (a member under the allowed prefix) still binds.
+	if !rb.Allowed("svc/app.GetUser", "boundary:db INSERT users WHERE id=$1") {
+		t.Error("identifier-boundary extension of the allowed target should still match")
+	}
 }
 
 func TestBlindSpotRatchetAllows(t *testing.T) {

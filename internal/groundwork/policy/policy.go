@@ -153,12 +153,14 @@ type ConcurrentRule struct {
 const EntrypointSelector = "entrypoint:*"
 
 // Allowed reports whether a (source, target) bypass pair is covered by the
-// rule's allow-list. An exception side matches exactly or by prefix; an empty
-// side matches anything (an entry must declare at least one side — validated on
-// load).
+// rule's allow-list. An exception side matches exactly or by an identifier-
+// boundary prefix (MatchPrefix — never bare strings.HasPrefix, which would let
+// an allow for "boundary:db INSERT users" silently also suppress a real bypass
+// writing "boundary:db INSERT users_audit"); an empty side matches anything (an
+// entry must declare at least one side — validated on load).
 func (r *PassRule) Allowed(source, target string) bool {
 	match := func(s, pat string) bool {
-		return pat == "" || s == pat || strings.HasPrefix(s, pat)
+		return pat == "" || MatchPrefix(s, pat)
 	}
 	for _, a := range r.Allow {
 		if match(source, a.From) && match(target, a.To) {

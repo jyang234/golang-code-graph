@@ -141,7 +141,7 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 						Detail: "outbound peer/method/route is not a string constant; the dependency cannot be named statically",
 					})
 				}
-			case pkgPathOf(callee) == "reflect":
+			case features.PkgPath(callee) == "reflect":
 				out = append(out, BlindSpot{
 					Kind:   Reflect,
 					Site:   site,
@@ -246,13 +246,6 @@ func constStrings(site ssa.CallInstruction, n int) bool {
 		}
 	}
 	return true
-}
-
-func pkgPathOf(fn *ssa.Function) string {
-	if fn == nil || fn.Pkg == nil || fn.Pkg.Pkg == nil {
-		return ""
-	}
-	return fn.Pkg.Pkg.Path()
 }
 
 func dedupSort(in []BlindSpot) []BlindSpot {

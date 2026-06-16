@@ -242,16 +242,24 @@ type exportReq struct {
 }
 
 // resourceSpans returns the trace envelope under either the camelCase (OTLP/JSON
-// canonical) or snake_case spelling. It is non-nil iff the file actually carried
-// the field — even when empty ([] decodes to a non-nil empty slice, an absent
-// key leaves it nil). That presence is what distinguishes a legitimately-empty
-// export from a non-OTLP JSON, so it is tested structurally rather than by
-// scanning raw bytes for a substring any unrelated JSON might contain.
+// canonical) or snake_case spelling. The populated spelling wins, so a file that
+// carries an empty "resourceSpans": [] alongside a populated "resource_spans":
+// [...] yields the real spans instead of silently dropping them. When neither
+// carries spans it still returns whichever key was present (a non-nil empty
+// slice) so the presence test distinguishes a legitimately-empty export from a
+// non-OTLP JSON — tested structurally rather than by scanning raw bytes for a
+// substring any unrelated JSON might contain.
 func (r exportReq) resourceSpans() []resourceSpans {
-	if r.ResourceSpans != nil {
+	switch {
+	case len(r.ResourceSpans) > 0:
 		return r.ResourceSpans
+	case len(r.ResourceSpansSnake) > 0:
+		return r.ResourceSpansSnake
+	case r.ResourceSpans != nil:
+		return r.ResourceSpans
+	default:
+		return r.ResourceSpansSnake
 	}
-	return r.ResourceSpansSnake
 }
 
 type resourceSpans struct {

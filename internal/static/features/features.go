@@ -93,11 +93,11 @@ func (e *Extractor) External(identity string) model.Features {
 
 // origin classifies where callee lives relative to caller and the module.
 func (e *Extractor) origin(caller, callee *ssa.Function) model.Origin {
-	cp := pkgPathOf(callee)
+	cp := PkgPath(callee)
 	if cp == "" {
 		return model.OriginUnknown
 	}
-	if pkgPathOf(caller) == cp {
+	if PkgPath(caller) == cp {
 		return model.OriginSamePackage
 	}
 	if e.isFirstParty(cp) {
@@ -111,7 +111,7 @@ func (e *Extractor) origin(caller, callee *ssa.Function) model.Origin {
 
 // structural classifies a non-boundary call by package relationship.
 func (e *Extractor) structural(caller, callee *ssa.Function) model.Boundary {
-	if pkgPathOf(caller) == pkgPathOf(callee) {
+	if PkgPath(caller) == PkgPath(callee) {
 		return model.BoundaryInternal
 	}
 	return model.BoundaryCrossPackage
@@ -165,8 +165,11 @@ func returnsError(sig *types.Signature) bool {
 
 var errorType = types.Universe.Lookup("error").Type()
 
-// pkgPathOf returns callee's defining package path, or "" for synthetic functions.
-func pkgPathOf(fn *ssa.Function) string {
+// PkgPath returns fn's defining package path, or "" for a synthetic function
+// (nil ssa Pkg). It is the single source of truth for package attribution shared
+// by blindspots and obligations — a fn==nil/Pkg==nil/Pkg.Pkg==nil guard so no
+// caller has to re-derive (and drift on) the nil cases.
+func PkgPath(fn *ssa.Function) string {
 	if fn == nil || fn.Pkg == nil || fn.Pkg.Pkg == nil {
 		return ""
 	}

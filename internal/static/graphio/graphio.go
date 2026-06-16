@@ -14,6 +14,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/jyang234/golang-code-graph/internal/canonjson"
+	"github.com/jyang234/golang-code-graph/internal/sqlverb"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	cg "github.com/jyang234/golang-code-graph/internal/static/callgraph"
@@ -443,20 +444,15 @@ func committedEffect(label string) bool {
 }
 
 // mutatingSQLOp reports whether a SQL verb the labeler read off a constant
-// statement commits a row mutation. The set is kept in parity with
-// fitness.IsWrite (budget.go) — INSERT/UPDATE/DELETE/UPSERT/MERGE/REPLACE — so
-// the partial-effect disclosure here and the I/O-budget write surface there agree
-// on what counts as a committed write. A DB op the labeler could NOT read (a
-// dynamic statement that fell back to the driver method name, e.g. "Exec") is
-// deliberately NOT treated as committed here: it flows through the separate
-// unclassified-DB-label caution channel instead of being silently asserted as a
-// definite write.
+// statement commits a row mutation. The verb set lives in sqlverb (the single
+// source of truth shared with fitness.IsWrite), so the partial-effect disclosure
+// here and the I/O-budget write surface there cannot drift. A DB op the labeler
+// could NOT read (a dynamic statement that fell back to the driver method name,
+// e.g. "Exec") is deliberately NOT treated as committed here: it flows through
+// the separate unclassified-DB-label caution channel instead of being silently
+// asserted as a definite write.
 func mutatingSQLOp(op string) bool {
-	switch op {
-	case "INSERT", "UPDATE", "DELETE", "UPSERT", "MERGE", "REPLACE":
-		return true
-	}
-	return false
+	return sqlverb.Mutating(op)
 }
 
 // nodeTier ranks a function by what it does, not by what it is. A root is its

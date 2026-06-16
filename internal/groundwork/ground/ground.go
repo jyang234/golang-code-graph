@@ -82,7 +82,9 @@ func For(ix *graph.Index, p *policy.Policy, fqn string) (Card, error) {
 	traversed := append(append([]string{}, cone...), reaching...)
 	seen := map[string]bool{}
 	addBlind := func(b graph.BlindSpot) {
-		k := b.Kind + "\x00" + b.Site
+		// Detail is part of the identity: distinct DynamicEffect labels at one site
+		// are distinct disclosures (parity with impact.addBlind).
+		k := b.Kind + "\x00" + b.Site + "\x00" + b.Detail
 		if !seen[k] {
 			seen[k] = true
 			c.BlindSpots = append(c.BlindSpots, b)

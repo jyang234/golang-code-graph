@@ -7,6 +7,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
+	"github.com/jyang234/golang-code-graph/internal/sqlverb"
 )
 
 // checkIOBudget caps the external *write* effects reachable from a single route
@@ -162,8 +163,7 @@ func UnclassifiedDBLabel(e graph.Edge) (string, bool) {
 	if len(f) < 2 || f[0] != "db" {
 		return "", false
 	}
-	switch strings.ToUpper(f[1]) {
-	case "INSERT", "UPDATE", "DELETE", "UPSERT", "MERGE", "REPLACE", "SELECT":
+	if op := strings.ToUpper(f[1]); sqlverb.Mutating(op) || op == "SELECT" {
 		return "", false // a verb the labeler read and IsWrite can classify
 	}
 	if nonMutatingDBControl(f[1]) {
@@ -231,12 +231,7 @@ func IsWrite(e graph.Edge) bool {
 	op := strings.ToUpper(f[1])
 	switch f[0] {
 	case "db":
-		switch op {
-		case "INSERT", "UPDATE", "DELETE", "UPSERT", "MERGE", "REPLACE":
-			return true
-		default: // SELECT and other reads
-			return false
-		}
+		return sqlverb.Mutating(op) // SELECT and other reads are not writes
 	case "bus":
 		return op == "PUBLISH"
 	default: // outbound HTTP: "<peer> <METHOD> <route>"

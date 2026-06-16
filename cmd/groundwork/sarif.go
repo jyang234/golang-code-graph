@@ -2,6 +2,7 @@ package main
 
 import (
 	"regexp"
+	"strconv"
 
 	"github.com/jyang234/golang-code-graph/internal/canonjson"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
@@ -53,10 +54,13 @@ func toSARIF(findings []fitness.Finding) ([]byte, error) {
 	})
 }
 
+// atoiSafe parses a SARIF line number, degrading to line 1 on a malformed or
+// out-of-range value (SARIF region.startLine is 1-based) rather than silently
+// wrapping to a negative number via unchecked n*10 multiplication.
 func atoiSafe(s string) int {
-	n := 0
-	for _, c := range s {
-		n = n*10 + int(c-'0')
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 1
 	}
 	return n
 }

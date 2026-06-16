@@ -15,6 +15,7 @@ package impact
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -76,6 +77,13 @@ func ForFault(ix *graph.Index, fqns []string) Card {
 			possibly[entry] = true
 		}
 	}
+	// Certainly dominates possibly: an effect proven committed before the fault on
+	// one path must not also be listed as merely possible. Two effect_order facts
+	// for the same effect/site/fn differing only in Always would otherwise place
+	// the identical entry string in both buckets — a self-contradicting card.
+	for entry := range certainly {
+		delete(possibly, entry)
+	}
 	c.PossiblyCommitted = setutil.SortedKeys(possibly)
 	c.CertainlyCommitted = setutil.SortedKeys(certainly)
 	return c
@@ -123,7 +131,10 @@ func ForNodes(ix *graph.Index, fqns []string) Card {
 	seen := map[string]bool{}
 	addBlind := func(bs []graph.BlindSpot) {
 		for _, b := range bs {
-			k := b.Kind + "\x00" + b.Site
+			// Detail is part of the identity: two DynamicEffect blind spots at the
+			// same site with different effect labels are distinct disclosures and
+			// must not collapse to one row (Detail is rendered on the card).
+			k := b.Kind + "\x00" + b.Site + "\x00" + b.Detail
 			if !seen[k] {
 				seen[k] = true
 				blind = append(blind, b)
@@ -136,7 +147,10 @@ func ForNodes(ix *graph.Index, fqns []string) Card {
 	}
 	for _, e := range coneEffects {
 		if e.IsDynamic() {
-			addBlind([]graph.BlindSpot{{Kind: "DynamicEffect", Site: e.From, Detail: e.To}})
+			// Detail without the internal "boundary:" prefix — the same human-
+			// readable form ground.go emits, so the triage and ground surfaces
+			// render (and diff) the identical blind spot the same way.
+			addBlind([]graph.BlindSpot{{Kind: "DynamicEffect", Site: e.From, Detail: strings.TrimPrefix(e.To, "boundary:")}})
 		}
 	}
 	sort.Slice(blind, func(i, j int) bool {

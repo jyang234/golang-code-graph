@@ -35,7 +35,7 @@ func parseHints(ss []string) []hint {
 }
 
 func (h hint) matches(fn *ssa.Function) bool {
-	p := pkgPathOf(fn)
+	p := PkgPath(fn)
 	if p == "" || p != h.pkgPath {
 		return false
 	}

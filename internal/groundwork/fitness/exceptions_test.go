@@ -51,6 +51,29 @@ func TestExceptionsPassThroughLiveness(t *testing.T) {
 	}
 }
 
+// Two blind_spot_ratchet entries at the same Site differing only in Kind carry
+// empty From/To, so without Kind in the sort key they tie on every key and the
+// unstable sort flaps run-to-run. The output must be ordered totally and
+// deterministically (Kind ascending here): "Alpha" before "Zeta".
+func TestExceptionsSortIsTotalOrderOnKind(t *testing.T) {
+	ix := graph.NewIndex(&graph.Graph{})
+	p := &policy.Policy{Service: "svc", Version: 1, BlindSpotRatchet: &policy.BlindSpotRatchet{
+		Allow: []policy.BlindSpotException{
+			{Kind: "Zeta", Site: "pkg/x", Reason: "z"},
+			{Kind: "Alpha", Site: "pkg/x", Reason: "a"},
+		},
+	}}
+	for i := 0; i < 64; i++ {
+		xs := Exceptions(p, ix)
+		if len(xs) != 2 {
+			t.Fatalf("want 2 entries, got %d: %+v", len(xs), xs)
+		}
+		if xs[0].Kind != "Alpha" || xs[1].Kind != "Zeta" {
+			t.Fatalf("non-deterministic / non-total order on Kind: got [%q, %q]", xs[0].Kind, xs[1].Kind)
+		}
+	}
+}
+
 func TestExceptionsBlindSpotLiveness(t *testing.T) {
 	blind := graph.NewIndex(loadGraph(t, "blindsvc.graph.json"))
 	spot := blind.BlindSpots()[0]

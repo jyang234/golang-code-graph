@@ -45,6 +45,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/jyang234/golang-code-graph/internal/config"
+	"github.com/jyang234/golang-code-graph/internal/static/features"
 )
 
 // Status is the verdict for one anchored site (or, for Unmatched, one rule).
@@ -172,12 +173,21 @@ func anyRef(rs []ref, c ssa.CallInstruction) bool {
 	return false
 }
 
+// pkgPathOf returns fn's defining package path. It delegates to features.PkgPath
+// for the common case (one source of truth, nil-safe) and adds a types.Object
+// fallback that the shared helper deliberately omits: an obligation FQN still
+// needs a package path for a synthetic function (a wrapper/instantiation whose
+// ssa Pkg is nil but whose Object resolves), whereas blindspots/features must
+// stay "" for synthetics. Keeping the fallback here — and only here — names that
+// divergence instead of silently re-deriving the nil cases.
 func pkgPathOf(fn *ssa.Function) string {
-	if fn.Pkg != nil {
-		return fn.Pkg.Pkg.Path()
+	if p := features.PkgPath(fn); p != "" {
+		return p
 	}
-	if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		return obj.Pkg().Path()
+	if fn != nil {
+		if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+			return obj.Pkg().Path()
+		}
 	}
 	return ""
 }
