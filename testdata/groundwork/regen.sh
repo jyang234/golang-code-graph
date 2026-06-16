@@ -22,10 +22,19 @@ cd "$(dirname "$0")/../.."
 
 flowmap() { go run ./cmd/flowmap "$@"; }
 
+# flowmap stamps the build that produced the graph into the header (the `tool`
+# producer field, R11). Strip it from the committed goldens: like the --stamp code
+# identity, the producing-tool version is provenance that must NOT pollute a golden,
+# or the fixtures would churn every time a different flowmap build regenerated them.
+# Removing the lone top-level "tool" line keeps the canonical formatting byte-for-byte
+# — the same unstamped-golden convention, extended to the one derived header field.
+strip_tool() { grep -v '^  "tool": ' "$1" >"$1.tmp" && mv "$1.tmp" "$1"; }
+
 for svc in layeredsvc blindsvc obligsvc; do
 	dir="testdata/groundwork/$svc"
 	out="testdata/groundwork/goldens/$svc.graph.json"
 	flowmap graph "$dir" >"$out"
+	strip_tool "$out"
 	echo "wrote $out"
 done
 
@@ -35,6 +44,7 @@ done
 # outbound GET/POST. If flowmap's label format ever changes, regenerating this is
 # what makes the contract test fail instead of silently misclassifying effects.
 flowmap graph testdata/fixtures/loansvc >testdata/groundwork/goldens/loansvc.graph.json
+strip_tool testdata/groundwork/goldens/loansvc.graph.json
 echo "wrote testdata/groundwork/goldens/loansvc.graph.json"
 
 # Boundary contracts for the `diff` demo. flowmap boundary writes in-place, so we

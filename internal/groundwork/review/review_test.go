@@ -157,6 +157,48 @@ func TestReviewRecordsSubstrateAndMismatch(t *testing.T) {
 	}
 }
 
+// A base/branch built by two different flowmap builds is disclosed as a producer-
+// mismatch caveat: "same code → same graph" determinism holds only WITHIN one tool
+// version, so a pure tool bump can surface a phantom delta — name it so it reads as
+// a tool artifact, not a code change (R11). Matched (or unrecorded) tools are silent.
+func TestReviewRecordsProducerMismatch(t *testing.T) {
+	mk := func(tool string) *graph.Graph {
+		return &graph.Graph{
+			Algo:  "rta",
+			Tool:  tool,
+			Nodes: []graph.Node{{FQN: "(*svc.S).Do", Sig: "func()", Tier: 1}},
+		}
+	}
+	p := &policy.Policy{Service: "svc", Version: 1}
+
+	has := func(cs []string) bool {
+		for _, c := range cs {
+			if strings.Contains(c, "producer mismatch") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Same tool on both sides: no producer-mismatch caveat (this is the dogfood
+	// case — one pinned binary builds both base and branch).
+	if a := Review(p, mk("flowmap-1.0"), mk("flowmap-1.0")); has(a.Caveats) {
+		t.Errorf("matched producers must not synthesize a mismatch caveat; got %v", a.Caveats)
+	}
+	// One side unrecorded (a pre-Tool flowmap): silent, never guessed as a mismatch.
+	if a := Review(p, mk(""), mk("flowmap-1.0")); has(a.Caveats) {
+		t.Errorf("an unrecorded producer must not be read as a mismatch; got %v", a.Caveats)
+	}
+	// Two different builds, same code/stamp/algo: the phantom-delta footgun — disclose.
+	m := Review(p, mk("flowmap-1.0"), mk("flowmap-2.0"))
+	if !has(m.Caveats) {
+		t.Errorf("a base/branch producer mismatch must be disclosed as a caveat; got %v", m.Caveats)
+	}
+	if !strings.Contains(m.Render(), "producer mismatch") {
+		t.Errorf("the render must echo the producer mismatch; got:\n%s", m.Render())
+	}
+}
+
 // The entrypoint contract delta is keyed on the ROUTE NAME, not the handler FQN,
 // so it must distinguish three cases:
 //   - an inline-closure route handler renumbered by an extract-function refactor

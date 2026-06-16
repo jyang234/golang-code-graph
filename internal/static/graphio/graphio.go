@@ -35,7 +35,21 @@ type Graph struct {
 	// CI built from). It is an argument, never derived, so determinism holds:
 	// the graph stays a pure function of its inputs, and goldens are generated
 	// unstamped. groundwork's triage/mcp verify it via --expect.
-	Stamp      string `json:"stamp,omitempty"`
+	Stamp string `json:"stamp,omitempty"`
+
+	// Tool is the flowmap build that PRODUCED this graph (buildinfo.Version of
+	// the binary). Unlike Stamp — which is the caller-supplied identity of the
+	// CODE — Tool is the identity of the PRODUCER, and the one provenance dimension
+	// the consumer cannot supply: only the binary knows which build it is. It is
+	// DERIVED (from the running binary), so it is set by the CLI layer, never by
+	// Build — Build stays a pure function of its inputs, so the determinism test
+	// and any golden built through Build are byte-identical regardless of which
+	// flowmap built them. It travels as PROVENANCE beside Stamp/Algo so groundwork
+	// can round-trip it and flag a base↔branch producer mismatch: "same code → same
+	// graph" holds only WITHIN one tool version, and a pure tool-version bump can
+	// otherwise surface as a phantom code delta (R11). Empty means unrecorded (a
+	// pre-Tool flowmap, or a golden deliberately built tool-free), never "same tool".
+	Tool       string `json:"tool,omitempty"`
 	Entrypoint string `json:"entrypoint,omitempty"`
 
 	// Algo is the call-graph construction algorithm this graph was built on

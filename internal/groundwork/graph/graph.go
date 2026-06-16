@@ -38,7 +38,18 @@ type Graph struct {
 	// commit SHA). Consumers pass --expect to verify they hold the graph for
 	// the code they think they do — a stale map mis-triages. Opt-in at both
 	// ends: an absent stamp is only an error when verification was asked for.
-	Stamp      string `json:"stamp,omitempty"`
+	Stamp string `json:"stamp,omitempty"`
+
+	// Tool is the flowmap build that produced this graph (flowmap's buildinfo
+	// version). Where Stamp identifies the CODE, Tool identifies the PRODUCER —
+	// provenance the consumer round-trips and verify/review compare across the
+	// base/branch pair, because "same code → same graph" determinism holds only
+	// within one tool version. A base built by tool A and a branch by tool B (same
+	// code, same stamp, same algo) can diff on a pure tool artifact — a relabeled
+	// effect, an SSA-order shift — so a base↔branch Tool mismatch is disclosed as a
+	// caveat (R11), the Algo/Caveats provenance discipline extended to the producer.
+	// Absent means unrecorded (a pre-Tool flowmap) — never silently "same tool".
+	Tool       string `json:"tool,omitempty"`
 	Entrypoint string `json:"entrypoint,omitempty"`
 
 	// Algo is the call-graph construction algorithm flowmap built this graph on
@@ -243,6 +254,24 @@ func SubstrateMismatchCaveat(policyAlgo, graphAlgo string) string {
 		return ""
 	}
 	return fmt.Sprintf("substrate mismatch: policy proposed on %s, graph built on %s — the algorithms differ in precision, so a reachability finding may be an analyzer artifact, not a regression; build the gate graph with `flowmap graph --algo %s`, or re-init the policy on this graph", policyAlgo, graphAlgo, policyAlgo)
+}
+
+// ToolMismatchCaveat returns a disclosure when the base and branch graphs were
+// produced by two different flowmap builds, or "" when there is nothing to flag
+// (either side is unrecorded, or they agree). flowmap's "same code → same graph"
+// determinism holds only WITHIN one tool version: a base built by build A and a
+// branch by build B — same code, same stamp, same algo — can still diff on a pure
+// tool artifact (a relabeled effect, an SSA-order shift). Naming the producer skew
+// lets a reader treat such a delta as a tool artifact, not a code change (R11). It
+// is the producer dimension of the Stamp/Algo provenance family — the code identity
+// is bound at the gate via --expect and the algo via SubstrateMismatchCaveat; this
+// closes the last comparable-inputs dimension. Shared so review and verify word it
+// identically (one source of truth).
+func ToolMismatchCaveat(baseTool, branchTool string) string {
+	if baseTool == "" || branchTool == "" || baseTool == branchTool {
+		return ""
+	}
+	return fmt.Sprintf("producer mismatch: base graph built by flowmap %s, branch by %s — graphs were built by different tool versions, so a diff may be a tool artifact, not a code change; rebuild both sides with one flowmap build", baseTool, branchTool)
 }
 
 // IsBoundary reports whether the edge targets an external sink rather than a

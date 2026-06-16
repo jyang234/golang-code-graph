@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/jyang234/golang-code-graph/internal/buildinfo"
 	"github.com/jyang234/golang-code-graph/internal/ingest"
 )
 
@@ -108,6 +110,31 @@ func TestRunGraph(t *testing.T) {
 	if err := run([]string{"graph", "--entry", "POST /loan-application", fixtureDir()}); err != nil {
 		t.Fatalf("graph: %v", err)
 	}
+}
+
+// The graph header carries the PRODUCER version (the `tool` field, R11): flowmap
+// stamps its own buildinfo.Version so groundwork can flag a base/branch built by
+// two flowmap builds. It is derived at the CLI boundary, not in graphio.Build, so
+// the field is present in CLI output but absent from a Build-only graph (which must
+// stay a pure function of its inputs — the determinism test and goldens depend on it).
+func TestRunGraphStampsToolVersion(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := run([]string{"graph", fixtureDir()}); err != nil {
+			t.Fatalf("graph: %v", err)
+		}
+	})
+	want := `"tool": ` + strconv.Quote(buildinfo.Version(version))
+	if !strings.Contains(out, want) {
+		t.Errorf("graph output must carry the producer version %s; got header:\n%s", want, firstLines(out, 6))
+	}
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.SplitN(s, "\n", n+1)
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // TestRunGraphAlgo: --algo selects the call-graph algorithm. rta/vta/cha all
