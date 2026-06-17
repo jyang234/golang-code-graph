@@ -1,8 +1,15 @@
 # Static × behavioral impeachment — finding counterexamples to the analyzer's own negatives
 
-> **`PROPOSAL`** · exploratory, designed-not-built · _drafted 2026-06-17_
+> **`IN PROGRESS`** · Phases 0–1 landed, 2–5 designed-not-built · _drafted
+> 2026-06-17, updated 2026-06-17_
 
-**Status:** **none of this is implemented.** It is the design record of a single
+**Status:** **Phases 0–1 are implemented** (`internal/impeach`): the read-only
+`observed × unreachable` join + witness report (Phase 0) and the five-rung
+downgrade ladder that classifies a candidate into IMPEACHMENT vs the four benign
+downgrades (Phase 1). Both are disclosure-only and carry **zero substrate/gate
+risk** — the natural resting point (§10). **Phases 2–5** (severance localization,
+the span↔node map + `canonFQN`, the discovery loop, verdict integration) remain a
+plan. It is the design record of a single
 extended exploration: how to combine the static call graph with captured runtime
 behavior so that each covers the other's blind spot, *without* risking the prime
 directive. The load-bearing idea — the **impeachment cell** (§3) — is a
@@ -14,8 +21,8 @@ surfaced — most importantly that a witnessed policy breach is a `VIOLATED`, no
 downgrade, and that a gate may consume only the committed corpus — are folded back
 into §6–§9. The one shipped prerequisite
 it leans on is the producer/code-identity provenance (`--stamp` / `--expect` /
-`tool`, see `internal/groundwork/graph` and `cmd/flowmap`); everything else here is
-a plan. Companion docs:
+`tool`, see `internal/groundwork/graph` and `cmd/flowmap`); everything beyond
+Phases 0–1 here is a plan. Companion docs:
 [`frontier-instrumentation-plan.md`](frontier-instrumentation-plan.md) (the static
 frontier this reuses),
 [`post-hoc-behavioral-ingestion.md`](post-hoc-behavioral-ingestion.md) (the trace
@@ -432,8 +439,8 @@ independently shippable and valuable; the plan is a set of off-ramps.
 
 | Phase | Ships | Stop-value | Go/no-go gate |
 |---|---|---|---|
-| **0 — spine** | **(prereq, §14-A) DB boundary effects in the corpus** — extend capture (`otelsql`) + `ingest`/`coverage` so the join's effect vocabulary includes `db <verb>` writes, not only the otelaws bus/dep surface; then witness types + the `observed × unreachable` join (fold in `coverage.Delta` for the other direction); `Verdict: CANDIDATE`, disclosure-only | coverage-calibrated behavioral view **that can see the marquee `db DELETE` case** | run on real corpora; ~zero candidates ⇒ analyzer already sound, **stop** |
-| **1 — ladder** | the five rungs → candidates classified IMPEACHMENT vs the four downgrades | a trustworthy counterexample finder (over exercised paths), **zero substrate/gate risk** — the natural resting point | measure the rung distribution; *mostly downgrades, rare impeachments* = healthy; mostly IMPEACHMENT = too credulous, fix before proceeding |
+| **0 — spine** ✅ **LANDED** | **(prereq, §14-A) DB boundary effects in the corpus** — extend capture (`otelsql`) + `ingest`/`coverage` so the join's effect vocabulary includes `db <verb>` writes, not only the otelaws bus/dep surface; then witness types + the `observed × unreachable` join (fold in `coverage.Delta` for the other direction); `Verdict: CANDIDATE`, disclosure-only | coverage-calibrated behavioral view **that can see the marquee `db DELETE` case** | run on real corpora; ~zero candidates ⇒ analyzer already sound, **stop** — **measured:** 0 candidates on loansvc/obligsvc/blindsvc (sound), and the cell fires on a genuine *undisclosed missed root* (the impeachsvc fixture); the real candidate justified proceeding to Phase 1 |
+| **1 — ladder** ✅ **LANDED** | the five rungs (`internal/impeach/ladder.go`) → candidates classified IMPEACHMENT vs the four downgrades (`NOT-A-CONTRADICTION`/`VERSION-SKEW`/`LABEL-MISMATCH`/`CROSS-SERVICE`/`CAPTURE-UNTRUSTED`); ladder recorded **whole**, verdict = first failing rung | a trustworthy counterexample finder (over exercised paths), **zero substrate/gate risk** — the natural resting point | measure the rung distribution; *mostly downgrades, rare impeachments* = healthy; mostly IMPEACHMENT = too credulous, fix before proceeding — **measured:** downgrade-dominated, **0 IMPEACHMENT without attested provenance** (no commit stamp on the corpus today ⇒ `VERSION-SKEW`, §14-D); the genuine impeachsvc candidate promotes to IMPEACHMENT only under a stamped graph + matching production capture — healthy |
 | **2 — severance L0** | coarse `Site` (entry+effect anchors) + the proof obligation | impeachments carry a coarse location + known/unknown sort | proof obligation holds; spot-check Sites |
 | **3 — map + `canonFQN`** | the map, `canonFQN` + parity test, L1 tags; precise Sites | precise localization, sharp `absent-from-graph` | parity test green + self-extinguish **dry run** |
 | **4 — loop** | propose → human-ratify → blind-spot/reclaimer; durable record | findings resolve instead of re-firing | per-repair self-extinguish test |
@@ -452,6 +459,15 @@ doesn't already exist and the probe that tells you whether any of the rest is wo
 doing; but fed only by the existing otelaws-only effect vocabulary it would abstain
 on exactly the highest-value target (a false-`NEVER` on `db DELETE`), so the corpus
 must carry DB effects before the probe is meaningful.
+
+**Next (Phases 0–1 done):** the read-only detector and the ladder are both
+landed and measured healthy, so the read-only floor is in. Phase 2 (severance L0)
+is the next build. The **standing prerequisite** for a Phase-1 impeachment to be
+*meaningful* on a real corpus — rather than always capping at `VERSION-SKEW` — is
+the capture-side code-identity stamp (§12.1, §14-D): the ladder's `code-identity`
+rung consumes it, and the trace model carries no commit stamp today. Until it
+ships, impeachments are demonstrable only under caller-supplied provenance (as in
+the impeachsvc promotion test), never minted from production capture.
 
 ---
 
