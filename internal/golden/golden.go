@@ -109,6 +109,14 @@ func changeSet(want, got *ir.CanonicalTrace, wantBytes, gotBytes string) string 
 // equal — the snapshot gate is about behavior, the impeach corpusDigest is where
 // the grade is part of identity. A marshal failure must propagate: swallowed, both
 // sides would serialize to "" and the gate would vacuously pass.
+//
+// Do NOT "fix" this by folding the grade back into equality: that would fail a
+// legitimate same-behavior re-drive at a different grade, defeating behavior-purity.
+// The grade is still a load-bearing impeach-gating input, but it cannot drift
+// silently — because stampless WRITES it, a -update that changes the grade changes
+// the committed golden's bytes, so it shows up in the file's git diff and is
+// CODEOWNERS-routed for review exactly like any other golden rebase. The mechanical
+// guard on the grade is that committed-golden review, not snapshot equality.
 func canonicalBytes(t *ir.CanonicalTrace) ([]byte, error) {
 	cp := stampless(t)
 	cp.Discards = ir.DiscardManifest{}

@@ -151,37 +151,36 @@ type Edge struct {
 }
 
 // mergeDeclaredBlindSpots appends the config's human-ratified seams (§8 enactment)
-// to the auto-detected graph blind spots, deterministically — deduped by (kind,
-// site) and sorted through the one canonical comparator (blindspots.SortBlindSpots),
-// so the result is byte-identical regardless of declaration order. A declared seam
-// makes static abstain at its site (the safe direction: it can only weaken proofs,
-// never hide a violation). The default kind is ImpeachmentSeam (the
-// behaviorally-discovered category); an explicit kind is kept verbatim but MUST name
-// a recognized blindspots.Kind — an unknown kind is a config error (returned), never
-// a silent passthrough that would let a typo'd kind ride the gated artifact. An entry
-// with no site is skipped (nothing to blind; config.validate already rejects this on
-// load, so the skip is belt-and-suspenders for callers that build a Config directly).
+// to the auto-detected graph blind spots, deterministically — sorted through the one
+// canonical comparator (blindspots.SortBlindSpots), so the result is byte-identical
+// regardless of declaration order. A declared seam makes static abstain at its site
+// (the safe direction: it can only weaken proofs, never hide a violation). The
+// default kind is ImpeachmentSeam (the behaviorally-discovered category); an explicit
+// kind is kept verbatim but MUST name a recognized blindspots.Kind — an unknown kind
+// is a config error (returned), never a silent passthrough that would let a typo'd
+// kind ride the gated artifact. An entry with no site is skipped (nothing to blind;
+// config.validate already rejects this on load, so the skip is belt-and-suspenders
+// for callers that build a Config directly).
 //
-// On a (kind, site) collision the kept Detail is the lexically-smallest of the
-// colliding entries, NOT the first by arrival: the tie-break is intrinsic to the
-// data, so the merged manifest is identical no matter the order detection or config
-// presented the duplicates (CLAUDE.md determinism: never break a tie on arrival
-// order).
+// The DETECTED spots pass through VERBATIM — they are already full-struct-deduped by
+// blindspots.Detect, and two detected spots that share (kind, site) but differ in
+// Detail are DISTINCT disclosures (e.g. two over-threshold dispatch sites in one
+// function, each with its own callee count), so collapsing them would silently drop a
+// disclosed blind spot — the fail-OPEN direction. Only the DECLARED seams are
+// collapsed: among themselves by (kind, site) keeping the lexically-smallest Detail (an
+// intrinsic tie-break, never arrival order, per CLAUDE.md determinism), and a declared
+// seam whose (kind, site) is already detected is dropped as redundant (the detected
+// disclosure already forces abstention there, and it is the authoritative text).
 func mergeDeclaredBlindSpots(detected []blindspots.BlindSpot, cfg *config.Config) ([]blindspots.BlindSpot, error) {
 	if cfg == nil || len(cfg.Static.DeclaredBlindSpots) == 0 {
 		return detected, nil
 	}
-	// Collapse to one entry per (kind, site), keeping the lexically-smallest Detail.
-	byKey := map[[2]string]blindspots.BlindSpot{}
-	add := func(b blindspots.BlindSpot) {
-		key := [2]string{string(b.Kind), b.Site}
-		if cur, ok := byKey[key]; !ok || b.Detail < cur.Detail {
-			byKey[key] = b
-		}
-	}
+	detectedKeys := map[[2]string]bool{}
 	for _, b := range detected {
-		add(b)
+		detectedKeys[[2]string{string(b.Kind), b.Site}] = true
 	}
+	// Collapse DECLARED seams among themselves, keeping the lexically-smallest Detail.
+	declaredByKey := map[[2]string]blindspots.BlindSpot{}
 	for i, d := range cfg.Static.DeclaredBlindSpots {
 		kind := d.Kind
 		if kind == "" {
@@ -190,13 +189,17 @@ func mergeDeclaredBlindSpots(detected []blindspots.BlindSpot, cfg *config.Config
 		if !blindspots.Recognized(blindspots.Kind(kind)) {
 			return nil, fmt.Errorf("flowmap config: static.declaredBlindSpots[%d] (%s): kind %q is not a recognized blind-spot category", i, d.Site, kind)
 		}
-		if d.Site == "" {
-			continue
+		key := [2]string{kind, d.Site}
+		if d.Site == "" || detectedKeys[key] {
+			continue // nothing to blind, or already a detected disclosure (detected wins)
 		}
-		add(blindspots.BlindSpot{Kind: blindspots.Kind(kind), Site: d.Site, Detail: d.Reason})
+		cand := blindspots.BlindSpot{Kind: blindspots.Kind(kind), Site: d.Site, Detail: d.Reason}
+		if cur, ok := declaredByKey[key]; !ok || cand.Detail < cur.Detail {
+			declaredByKey[key] = cand
+		}
 	}
-	out := make([]blindspots.BlindSpot, 0, len(byKey))
-	for _, b := range byKey {
+	out := append([]blindspots.BlindSpot(nil), detected...)
+	for _, b := range declaredByKey {
 		out = append(out, b)
 	}
 	blindspots.SortBlindSpots(out)

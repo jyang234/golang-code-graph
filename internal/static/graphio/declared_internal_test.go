@@ -109,6 +109,63 @@ func TestMergeDeclaredBlindSpotsDedupTieBreakIsIntrinsic(t *testing.T) {
 	}
 }
 
+// TestMergeDeclaredBlindSpotsPreservesDistinctDetected guards against collapsing two
+// DISTINCT auto-detected blind spots that share (kind, site) but differ in Detail —
+// e.g. two over-threshold dispatch sites in one function, each a separate HighFanOut
+// disclosure with its own callee count. The presence of an unrelated config-declared
+// seam must NOT drop one of them (the fail-OPEN regression a review caught): detected
+// spots pass through verbatim, only declared seams dedup among themselves.
+func TestMergeDeclaredBlindSpotsPreservesDistinctDetected(t *testing.T) {
+	detected := []blindspots.BlindSpot{
+		{Kind: blindspots.HighFanOut, Site: "ex.com/svc.Handle", Detail: "resolves to 5 candidate callees"},
+		{Kind: blindspots.HighFanOut, Site: "ex.com/svc.Handle", Detail: "resolves to 7 candidate callees"},
+	}
+	cfg := &config.Config{}
+	cfg.Static.DeclaredBlindSpots = []config.DeclaredBlindSpot{
+		{Site: "ex.com/svc.Other", Reason: "ratified seam elsewhere"},
+	}
+	got, err := mergeDeclaredBlindSpots(detected, cfg)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	// Both detected HighFanOut rows must survive (2) plus the unrelated declared seam (1).
+	highFanOut := 0
+	for _, b := range got {
+		if b.Kind == blindspots.HighFanOut && b.Site == "ex.com/svc.Handle" {
+			highFanOut++
+		}
+	}
+	if highFanOut != 2 {
+		t.Fatalf("distinct detected blind spots collapsed: %d HighFanOut rows survived, want 2: %+v", highFanOut, got)
+	}
+	if len(got) != 3 {
+		t.Errorf("want 2 detected + 1 declared = 3, got %d: %+v", len(got), got)
+	}
+}
+
+// TestMergeDeclaredBlindSpotsRedundantSeamYieldsToDetected pins that a declared seam
+// at a (kind, site) ALREADY auto-detected is dropped as redundant — the authoritative
+// detected disclosure text wins, and the declaration adds no second row.
+func TestMergeDeclaredBlindSpotsRedundantSeamYieldsToDetected(t *testing.T) {
+	detected := []blindspots.BlindSpot{
+		{Kind: blindspots.Reflect, Site: "ex.com/svc.Decode", Detail: "reflective call; downstream edges are invisible to the static call graph"},
+	}
+	cfg := &config.Config{}
+	cfg.Static.DeclaredBlindSpots = []config.DeclaredBlindSpot{
+		{Site: "ex.com/svc.Decode", Kind: "reflect", Reason: "AAA ratified"}, // sorts lexically smaller, must NOT win
+	}
+	got, err := mergeDeclaredBlindSpots(detected, cfg)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("redundant declared seam added a row: %+v", got)
+	}
+	if got[0].Detail != "reflective call; downstream edges are invisible to the static call graph" {
+		t.Errorf("declared reason overrode the authoritative detected Detail: %q", got[0].Detail)
+	}
+}
+
 // TestMergeDeclaredBlindSpotsRejectsUnknownKind pins the validation (#7): a seam
 // declared with a Kind outside the recognized set is a config error, never a silent
 // passthrough of an unknown category onto the gated artifact.

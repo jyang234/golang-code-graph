@@ -112,30 +112,36 @@ func TestFQNEmptyTagDoesNotKeep(t *testing.T) {
 
 // twoTaggedWaypointFlow has TWO tagged tier-3 waypoints whose canonical op is
 // IDENTICAL ("evaluate"), each wrapping a distinct DB effect and carrying a distinct
-// flowmap.fqn. They tie on the primary ordering key, forcing canon's deterministic
-// tie-break — the case a single-waypoint flow never exercises.
+// flowmap.fqn. Their intervals OVERLAP (wpA [1,40], wpB [10,50]) with no goroutine
+// signal, so capture.Concurrent falls back to interval overlap and joins them into a
+// single CONCURRENT group. Within that group they tie on the canonical op key
+// ("evaluate"), forcing canon's bySig tie-break to the canonical subtree signature —
+// the content-intrinsic ordering a sequential (non-overlapping) pair would never
+// reach (it would sort by start time instead).
 func twoTaggedWaypointFlow() capture.CapturedFlow {
 	spans := []capture.Span{
 		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
 			Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x", capture.CorrelationKey: "run"}},
 
-		{ID: "wpA", ParentID: "root", Kind: ir.KindInternal, Name: "evaluate", Start: ms(0, 1), End: ms(0, 20),
+		{ID: "wpA", ParentID: "root", Kind: ir.KindInternal, Name: "evaluate", Start: ms(0, 1), End: ms(0, 40),
 			Attrs: map[string]string{capture.FQNTagKey: "example.com/svc/internal/a.(*A).Eval", capture.CorrelationKey: "run"}},
 		{ID: "delA", ParentID: "wpA", Kind: ir.KindClient, Start: ms(0, 2), End: ms(0, 10),
 			Attrs: map[string]string{"db.system": "postgres", "db.statement": "DELETE FROM ledger WHERE id = 1", capture.CorrelationKey: "run"}},
 
-		{ID: "wpB", ParentID: "root", Kind: ir.KindInternal, Name: "evaluate", Start: ms(0, 30), End: ms(0, 50),
+		{ID: "wpB", ParentID: "root", Kind: ir.KindInternal, Name: "evaluate", Start: ms(0, 10), End: ms(0, 50),
 			Attrs: map[string]string{capture.FQNTagKey: "example.com/svc/internal/b.(*B).Eval", capture.CorrelationKey: "run"}},
-		{ID: "insB", ParentID: "wpB", Kind: ir.KindClient, Start: ms(0, 31), End: ms(0, 40),
+		{ID: "insB", ParentID: "wpB", Kind: ir.KindClient, Start: ms(0, 12), End: ms(0, 40),
 			Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO audit (id) VALUES (1)", capture.CorrelationKey: "run"}},
 	}
 	return capture.CapturedFlow{Flow: "POST /x", Service: "svc", Spans: spans, Root: &spans[0], Complete: true}
 }
 
-// TestFQNTwoTaggedWaypointsTieDeterministic pins the tie case: two kept waypoints
-// that tie on the canonical ordering key must (a) both survive the keep, and (b)
-// order byte-identically regardless of input arrival order — the tie-break resolves
-// on intrinsic content, never on arrival (CLAUDE.md determinism).
+// TestFQNTwoTaggedWaypointsTieDeterministic pins the tie case: two kept waypoints in
+// one concurrent group that tie on the canonical op key must (a) both survive the
+// keep, (b) be grouped CONCURRENT (so the bySig path is actually exercised, not the
+// sequential start-time sort), and (c) order byte-identically regardless of input
+// arrival order — the tie-break resolves on intrinsic content (the subtree
+// signature), never on arrival (CLAUDE.md determinism).
 func TestFQNTwoTaggedWaypointsTieDeterministic(t *testing.T) {
 	tr := mustCanon(t, twoTaggedWaypointFlow())
 	var ops []string
@@ -144,6 +150,24 @@ func TestFQNTwoTaggedWaypointsTieDeterministic(t *testing.T) {
 	// Both effects (hence both waypoints' subtrees) survive.
 	if !strings.Contains(joined, "DB postgres DELETE ledger") || !strings.Contains(joined, "DB postgres INSERT audit") {
 		t.Fatalf("a tied tagged waypoint's effect was lost; ops:\n%s", joined)
+	}
+	// The two op-key-tied waypoints must land in ONE concurrent group, or the
+	// signature tie-break is never reached and this test would pass for the wrong
+	// reason (sequential start-time ordering).
+	var concurrentEvals bool
+	for _, g := range tr.Root.Children {
+		evals := 0
+		for _, m := range g.Members {
+			if m.Op == "evaluate" {
+				evals++
+			}
+		}
+		if g.Concurrent && evals == 2 {
+			concurrentEvals = true
+		}
+	}
+	if !concurrentEvals {
+		t.Fatalf("the two 'evaluate' waypoints did not form a concurrent group, so bySig was not exercised; tree:\n%s", marshal(t, tr))
 	}
 	want := marshal(t, tr)
 	for i := 0; i < 8; i++ {

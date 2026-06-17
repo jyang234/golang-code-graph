@@ -214,7 +214,7 @@ func Classify(in *Input) *Result {
 	// dynamism. Its kind is still mapped by blindSpotBin (kept whole for the
 	// exhaustiveness guard); it just does not enter the marker set.
 	for _, bs := range in.BlindSpots {
-		if bs.Kind == string(blindspots.ImpeachmentSeam) {
+		if blindspots.Kind(bs.Kind).Ratified() {
 			continue
 		}
 		bin, _ := blindSpotBin(bs.Kind)

@@ -77,6 +77,19 @@ func Recognized(k Kind) bool {
 	return false
 }
 
+// Ratified reports whether a blind spot was DECLARED by a human (config-ratified),
+// rather than auto-detected from code. The one such kind is ImpeachmentSeam (the
+// behavioral-impeachment enactment, declared in static.declaredBlindSpots). It is the
+// single predicate every "this is a reviewed declaration, not undisclosed drift"
+// branch consults — the blind-spot ratchet (review.newBlindSpots) and the frontier
+// reclaim markers (frontier.Classify) both exclude a ratified kind, so a ratified
+// seam neither re-blocks the change that ratified it nor churns the reclaim ratios.
+// Centralizing it here (paralleling Boundary) means a future declared kind is covered
+// in ONE edit, instead of two hand-kept literal compares with divergent spellings.
+func (k Kind) Ratified() bool {
+	return k == ImpeachmentSeam
+}
+
 // Boundary reports whether a blind spot belongs to the GATED boundary subset.
 // Only the categories that describe an inter-service boundary surface gate: a
 // dynamically-named boundary effect and an unresolved entry-point registration.
