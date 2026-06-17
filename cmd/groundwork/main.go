@@ -28,6 +28,8 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/review"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/transcript"
+	"github.com/jyang234/golang-code-graph/internal/impeach"
+	"github.com/jyang234/golang-code-graph/ir"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...". When
@@ -615,9 +617,11 @@ func cmdReview(args []string) error {
 func cmdVerify(args []string) error {
 	scopeArg, _, rest := takeValueFlag(args, "--scope", "-scope")
 	expect, hasExpect, rest := takeValueFlag(rest, "--expect", "-expect")
+	corpusDir, hasCorpus, rest := takeValueFlag(rest, "--corpus", "-corpus")
+	captureArg, _, rest := takeValueFlag(rest, "--capture", "-capture")
 	asJSON, rest := takeFlag(rest, "--json", "-json")
 	if len(rest) != 3 {
-		return fmt.Errorf("usage: groundwork verify <policy.json> <base-graph.json> <branch-graph.json> [--scope pkg,pkg] [--expect <sha>] [--json]")
+		return fmt.Errorf("usage: groundwork verify <policy.json> <base-graph.json> <branch-graph.json> [--scope pkg,pkg] [--expect <sha>] [--corpus <dir> [--capture production|integration]] [--json]")
 	}
 	scope := splitComma(scopeArg)
 	p, base, branch, err := loadReviewInputs(rest[0], rest[1], rest[2])
@@ -627,7 +631,22 @@ func cmdVerify(args []string) error {
 	if err := verifyGateStamp(branch, expect, hasExpect); err != nil {
 		return err
 	}
-	g := review.Gate(p, base, branch, scope)
+
+	// A committed behavioral corpus (the *.golden.json snapshots, §14-B) optionally
+	// feeds the impeachment gate (§9). It is COMMITTED by construction here —
+	// loaded from versioned files, byte-identical run-to-run — so OriginCommitted is
+	// sound; a live corpus is never a verify input (it would make the gate
+	// non-deterministic, §13 crack #2). Disclosed always; blocks only under
+	// impeachment_gate.gate (observe-first).
+	var opts []review.GateOption
+	if hasCorpus {
+		blockers, err := committedImpeachmentBlockers(p, branch, corpusDir, captureArg)
+		if err != nil {
+			return err
+		}
+		opts = append(opts, review.WithImpeachment(blockers))
+	}
+	g := review.Gate(p, base, branch, scope, opts...)
 
 	if asJSON {
 		b, err := g.Marshal()
@@ -792,6 +811,54 @@ func loadReviewInputs(policyPath, basePath, branchPath string) (*policy.Policy, 
 		return nil, nil, nil, err
 	}
 	return p, base, branch, nil
+}
+
+// committedImpeachmentBlockers audits the branch graph against a committed
+// behavioral corpus and returns the gate-blocking impeachments (§9). The corpus is
+// stampless (committed), so its code identity is the GATED commit — the branch
+// graph's own stamp (§14-E: "the committed corpus takes the gated SHA"). The
+// capture fidelity is the trusted-pipeline assertion (§12.6, the one
+// human-asserted rung): only production/integration can promote a candidate to a
+// gating impeachment, so the honest default (an empty/synthetic capture) caps every
+// candidate at CAPTURE-UNTRUSTED and an unasserted corpus never blocks. GateBlockers
+// additionally fences to a committed corpus, so a live trace can never reach here.
+func committedImpeachmentBlockers(p *policy.Policy, branch *graph.Graph, dir, capture string) ([]impeach.GateFinding, error) {
+	traces, err := loadCommittedCorpus(dir)
+	if err != nil {
+		return nil, err
+	}
+	ix := graph.NewIndex(branch)
+	prov := impeach.Provenance{TraceIdentity: branch.Stamp, Capture: capture}
+	r := impeach.Audit(p.Service, ix, traces, prov)
+	res := impeach.Resolve(r, ix, p.MustNotReach, impeach.OriginCommitted)
+	return res.GateBlockers(), nil
+}
+
+// loadCommittedCorpus reads every committed canonical-trace golden (*.golden.json)
+// under dir. It fails CLOSED: a malformed golden is an error, never a silently
+// skipped trace (a dropped trace could hide an impeachment). filepath.Glob returns
+// sorted paths; the corpus digest is order-independent regardless (§5).
+func loadCommittedCorpus(dir string) ([]*ir.CanonicalTrace, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.golden.json"))
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no *.golden.json traces found in %s", dir)
+	}
+	traces := make([]*ir.CanonicalTrace, 0, len(paths))
+	for _, path := range paths {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		t, err := ir.Load(b)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		traces = append(traces, t)
+	}
+	return traces, nil
 }
 
 // cmdExceptions audits the policy's allow-lists against a graph: every active

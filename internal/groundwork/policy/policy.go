@@ -42,7 +42,21 @@ type Policy struct {
 	IOBudget          *IOBudget         `json:"io_budget,omitempty"`
 	BlindSpotRatchet  *BlindSpotRatchet `json:"blind_spot_ratchet,omitempty"`
 	EffectRatchet     *EffectRatchet    `json:"effect_ratchet,omitempty"`
+	ImpeachmentGate   *ImpeachmentGate  `json:"impeachment_gate,omitempty"`
 	Brokers           map[string]Broker `json:"brokers,omitempty"`
+}
+
+// ImpeachmentGate is the opt-in for behavioral impeachment to MOVE the pre-flight
+// gate (the behavioral-impeachment plan, §9/§10). Default OFF — observe-first: a
+// behaviorally-confirmed must_not_reach breach (VIOLATED) or a require_proof proof
+// downgraded to CANT-PROVE is DISCLOSED in the gate output from day one, but blocks
+// the merge only once Gate is flipped true, and only ever from a COMMITTED corpus
+// (the impeach layer fences live traffic out by construction, §13 crack #2). It is
+// the latest, most-gated step in the plan's risk-ascending order, so the opt-in is
+// the explicit ratification that the analyzer-unsoundness signal is trusted enough
+// to block on.
+type ImpeachmentGate struct {
+	Gate bool `json:"gate,omitempty"`
 }
 
 // Broker is a declared message-broker guarantee, keyed by bus name (e.g. "bus").
@@ -269,6 +283,13 @@ func (r *EffectRatchet) Allows(label string) bool {
 // GatesEffects reports whether new write targets block the pre-flight gate.
 func (p *Policy) GatesEffects() bool {
 	return p.EffectRatchet != nil && p.EffectRatchet.Gate
+}
+
+// GatesImpeachment reports whether behaviorally-confirmed impeachments block the
+// pre-flight gate. Default false (nil opt-in) — disclosed but never blocking until
+// explicitly ratified (§9/§10 observe-first).
+func (p *Policy) GatesImpeachment() bool {
+	return p.ImpeachmentGate != nil && p.ImpeachmentGate.Gate
 }
 
 // EffectRatchetCouplingCaution returns a disclosure when the policy gates the
