@@ -1002,5 +1002,11 @@ func cmdPolicyCheck(args []string) error {
 		}
 		fmt.Printf("  effect_ratchet: %s, %d allow-listed target(s)\n", mode, len(r.Allow))
 	}
+	// Disclose the one ratchet config whose soundness backstop is off — gating the
+	// effect ratchet without gating blind_spot_ratchet leaves the dynamic-laundering
+	// escape open. Advisory (exit 0); same wording as fitness via the shared helper.
+	if c := p.EffectRatchetCouplingCaution(); c != "" {
+		fmt.Printf("  ⚠ %s\n", c)
+	}
 	return nil
 }

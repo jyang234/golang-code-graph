@@ -271,6 +271,25 @@ func (p *Policy) GatesEffects() bool {
 	return p.EffectRatchet != nil && p.EffectRatchet.Gate
 }
 
+// EffectRatchetCouplingCaution returns a disclosure when the policy gates the
+// effect ratchet but NOT the blind-spot ratchet — the one configuration where the
+// effect ratchet's soundness backstop is off. A new write laundered through dynamic
+// dispatch collapses to an existing "<dynamic>" label and escapes the effect
+// ratchet's label diff; blind_spot_ratchet (which fires on the new dispatch site)
+// is its only backstop, and the "gate the effect ratchet first" rollout advice
+// lands exactly here. "" when there is nothing to flag.
+//
+// This is the SINGLE SOURCE of both the predicate and the wording: policy-check and
+// fitness both call it, so the two surfaces cannot disagree (one source of truth).
+// The EffectRatchet type doc states the soundness dependency in prose; this makes it
+// self-checking. It is advisory by construction — a Caution, never a gate flip.
+func (p *Policy) EffectRatchetCouplingCaution() string {
+	if p.GatesEffects() && !p.GatesBlindSpots() {
+		return "effect_ratchet gates but blind_spot_ratchet does not — a new write laundered through dynamic dispatch collapses to an existing <dynamic> label and escapes the effect ratchet; gate blind_spot_ratchet too to close the escape"
+	}
+	return ""
+}
+
 // Load decodes and validates a policy from JSON. Unknown fields are rejected so a
 // typo'd or stale key is a load error, not a silently-ignored rule.
 func Load(path string) (*Policy, error) {

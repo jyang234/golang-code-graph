@@ -18,6 +18,7 @@ func Check(p *policy.Policy, ix *graph.Index) Result {
 	checkNoConcurrentReach(p, ix, &r)
 	checkIOBudget(p, ix, &r)
 	checkObligations(p, ix, &r)
+	checkRatchetCoupling(p, &r)
 	r.sort()
 	return r
 }
