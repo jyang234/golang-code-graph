@@ -33,7 +33,7 @@ func impeachServer(t *testing.T) *mcpServer {
 	if err != nil {
 		t.Fatalf("load corpus: %v", err)
 	}
-	srv := &mcpServer{path: stampedImpeachGraph(t), p: p, corpus: traces}
+	srv := &mcpServer{path: stampedImpeachGraph(t), p: p, corpus: traces, corpusDir: corpusDir}
 	if err := srv.load(); err != nil { // sets ix + mtime exactly as cmdMCP does
 		t.Fatalf("load server: %v", err)
 	}
@@ -69,6 +69,11 @@ func TestMCPImpeachDisclosesWitnessNeverGates(t *testing.T) {
 	}
 	if !strings.Contains(text, "verify --corpus") {
 		t.Errorf("impeach did not point to the real merge gate (verify --corpus):\n%s", text)
+	}
+	// The load-once contract is disclosed so corpus freshness is legible, not silent:
+	// the source dir, the golden count, and the restart-to-refresh boundary.
+	if !strings.Contains(text, corpusDir) || !strings.Contains(text, "loaded at startup") || !strings.Contains(text, "restart to refresh") {
+		t.Errorf("impeach did not disclose the load-once corpus contract (dir + restart-to-refresh):\n%s", text)
 	}
 }
 

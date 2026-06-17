@@ -797,6 +797,14 @@ and is reconciled against the grade the corpus self-describes — it requires
 `--corpus`, and a contradiction fails closed (the candidate caps below
 IMPEACHMENT) rather than laundering a test corpus into a trusted one.
 
+The corpus is a **load-once startup input** (like `--policy`): only the graph is
+staleness-tracked and reloadable, because the graph is the one input CI rewrites
+under a running server (on redeploy), whereas a committed corpus changes only on a
+git action in the checkout — restart to refresh it. The lens discloses this
+contract on the card (the source dir and golden count), and the `corpus <digest>`
+it prints is the agent's own integrity check: recompute it over the directory to
+detect drift since the server loaded it.
+
 A graph file that changes on disk is flagged on every response —
 the server never reloads silently; `reload` re-verifies the stamp. `--log`
 writes a deterministic transcript (the E4 measurement apparatus): one JSON

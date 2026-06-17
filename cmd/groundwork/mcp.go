@@ -172,6 +172,7 @@ func cmdMCP(args []string) error {
 			return err
 		}
 		srv.corpus = traces
+		srv.corpusDir = dir
 	}
 	// A capture grade asserted against a service with no corpus is a dangling trust
 	// claim — fail closed rather than accept it as a silent no-op.
@@ -301,11 +302,16 @@ type mcpServer struct {
 
 	// corpus is the committed behavioral corpus the impeach lens audits the graph
 	// against — loaded ONCE at startup, exactly like p (policy): a load-once input,
-	// not staleness-tracked (only the graph is, via reload). capture is the optional
-	// human-asserted capture-fidelity grade reconciled against the corpus's own
-	// self-declared grade (§12.6); empty means "take the corpus's grade verbatim".
-	corpus  []*ir.CanonicalTrace
-	capture string
+	// not staleness-tracked (only the graph is, via reload — it alone changes under a
+	// running server by design, on redeploy; a committed corpus changes only on a git
+	// action in the checkout, where a restart is the natural refresh). The impeach
+	// card discloses this load-once contract (corpusDir + count) so the freshness
+	// boundary is legible rather than silent. capture is the optional human-asserted
+	// capture-fidelity grade reconciled against the corpus's own self-declared grade
+	// (§12.6); empty means "take the corpus's grade verbatim".
+	corpus    []*ir.CanonicalTrace
+	corpusDir string
+	capture   string
 }
 
 func (s *mcpServer) load() error {
@@ -909,6 +915,13 @@ func (s *mcpServer) impeachCard(p *policy.Policy) string {
 	}
 	if len(res.Caveats) > 0 {
 		b.WriteString("\n")
+	}
+	// Disclose the load-once contract so corpus freshness is legible, not silent
+	// (the graph alone is staleness-tracked; a committed corpus is a startup input).
+	// CorpusDigest above IS the agent's integrity check: recompute over the dir to
+	// detect drift since this server loaded it.
+	if s.corpusDir != "" {
+		fmt.Fprintf(&b, "\ncorpus: %d golden(s) under %s, loaded at startup — restart to refresh (the digest above pins the exact set audited)\n", len(s.corpus), s.corpusDir)
 	}
 	b.WriteString("\nThis lens DISCLOSES; it does not gate. The deterministic merge gate is `groundwork verify --corpus` over CI-built base/branch graphs.\n")
 	return b.String()
