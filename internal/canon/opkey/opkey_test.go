@@ -127,6 +127,30 @@ func TestDBKey(t *testing.T) {
 	}
 }
 
+// TestParseDBKeyRoundTrips pins ParseDBKey as the exact inverse of dbKey at the
+// format's owner: whatever Of emits for a DB span, ParseDBKey must recover the
+// same operation and table. This is the local guard that keeps the
+// behavioral-impeachment join's structured DB identity in lockstep with the
+// "DB <system> <OP> <table>" grammar — if dbKey's layout ever shifts, this fails
+// here, before any consumer mis-parses.
+func TestParseDBKeyRoundTrips(t *testing.T) {
+	op, _ := Of(ir.KindClient, map[string]string{
+		"db.system":    "postgresql",
+		"db.statement": "DELETE FROM ledger WHERE id = $1",
+	}, "")
+	system, operation, table, ok := ParseDBKey(op)
+	if !ok {
+		t.Fatalf("ParseDBKey(%q) ok=false", op)
+	}
+	if system != "postgresql" || operation != "DELETE" || table != "ledger" {
+		t.Errorf("ParseDBKey(%q) = (%q, %q, %q), want (postgresql, DELETE, ledger)", op, system, operation, table)
+	}
+	// A non-DB key is rejected, not coerced.
+	if _, _, _, ok := ParseDBKey("PUBLISH loan.approved"); ok {
+		t.Error("ParseDBKey accepted a non-DB op key")
+	}
+}
+
 // TestDBPeerSplitsByNamespace: two databases of the same system render as
 // distinct lifelines, keyed on db.namespace (the logical database), while the op
 // key — the gated effect identity — is unchanged.

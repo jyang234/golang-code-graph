@@ -198,3 +198,31 @@ func TestBusEffects(t *testing.T) {
 		t.Error("a dynamic effect must be counted, never named as an event")
 	}
 }
+
+// TestDBEffectsDecodesAndTalliesOpaque pins the static DB decoder: a readable
+// "boundary:db <OP> <table>" label becomes a structured DBEffect carrying its
+// emitter, while an opaque single-field label (dynamic SQL the labeler could not
+// resolve) is TALLIED as unreadable, never fabricated into an effect with a
+// guessed table. This is the static half of the impeachment join's DB parity.
+func TestDBEffectsDecodesAndTalliesOpaque(t *testing.T) {
+	ix := NewIndex(&Graph{Edges: []Edge{
+		{From: "svc.del", To: "boundary:db DELETE ledger", Boundary: "outbound-sync"},
+		{From: "svc.read", To: "boundary:db SELECT users", Boundary: "outbound-sync"},
+		{From: "svc.dyn", To: "boundary:db Exec", Boundary: "outbound-sync"},
+		{From: "svc.pub", To: "boundary:bus PUBLISH loan.approved", Boundary: "outbound-async"},
+	}})
+	effs, unreadable := ix.DBEffects()
+	if unreadable != 1 {
+		t.Errorf("unreadable = %d, want 1 (the opaque Exec)", unreadable)
+	}
+	got := map[string]string{}
+	for _, e := range effs {
+		got[e.Op+" "+e.Table] = e.From
+	}
+	if len(got) != 2 {
+		t.Fatalf("DBEffects = %v, want 2 readable effects", got)
+	}
+	if got["DELETE ledger"] != "svc.del" || got["SELECT users"] != "svc.read" {
+		t.Errorf("DBEffects mis-decoded: %v", got)
+	}
+}

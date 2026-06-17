@@ -277,6 +277,35 @@ func dbKey(system string, attrs map[string]string) string {
 	return strings.Join(parts, " ")
 }
 
+// ParseDBKey is the inverse of dbKey: it splits a canonical database op key
+// ("DB <system> <OP> <table>") back into its parts. Kept here, beside dbKey, so
+// the format has ONE owner — a consumer that needs the structured DB identity of
+// an already-canonicalized span (the behavioral-impeachment join, which reconciles
+// this against the static "boundary:db <OP> <table>" label) parses through this
+// rather than re-splitting the string itself and drifting from dbKey's grammar.
+// ok is false for any op that is not a DB key. operation/table are "" when the
+// underlying statement was too opaque for dbKey to name them (it omits absent
+// parts), so a caller must treat an empty operation as unreadable, never a write.
+func ParseDBKey(op string) (system, operation, table string, ok bool) {
+	rest, found := strings.CutPrefix(op, DBPrefix)
+	if !found {
+		return "", "", "", false
+	}
+	f := strings.Fields(rest)
+	switch len(f) {
+	case 0:
+		return "", "", "", false
+	case 1:
+		return f[0], "", "", true
+	case 2:
+		return f[0], f[1], "", true
+	default:
+		// table identifiers do not carry spaces, but join defensively so a
+		// surprising multi-token tail round-trips rather than being truncated.
+		return f[0], f[1], strings.Join(f[2:], " "), true
+	}
+}
+
 // rpcKey assembles "RPC <service>/<method>".
 func rpcKey(attrs map[string]string) string {
 	svc := first(attrs, "rpc.service")
