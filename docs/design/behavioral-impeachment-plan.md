@@ -1,14 +1,22 @@
 # Static × behavioral impeachment — finding counterexamples to the analyzer's own negatives
 
-> **`IN PROGRESS`** · Phases 0–1 landed, 2–5 designed-not-built · _drafted
+> **`IN PROGRESS`** · Phases 0–3 landed, 4–5 designed-not-built · _drafted
 > 2026-06-17, updated 2026-06-17_
 
-**Status:** **Phases 0–1 are implemented** (`internal/impeach`): the read-only
-`observed × unreachable` join + witness report (Phase 0) and the five-rung
-downgrade ladder that classifies a candidate into IMPEACHMENT vs the four benign
-downgrades (Phase 1). Both are disclosure-only and carry **zero substrate/gate
-risk** — the natural resting point (§10). **Phases 2–5** (severance localization,
-the span↔node map + `canonFQN`, the discovery loop, verdict integration) remain a
+**Status:** **Phases 0–3 are implemented** (`internal/impeach`): the read-only
+`observed × unreachable` join + witness report (Phase 0), the five-rung downgrade
+ladder that classifies a candidate into IMPEACHMENT vs the four benign downgrades
+(Phase 1), the **L0 severance localization** (`severance.go`) that records WHERE
+static lost the effect — `Site`, flavor, known/unknown sort, the proof obligation
+(Phase 2, §6) — and now the **span↔node map + `canonFQN`** (`canonfqn.go`,
+`spanmap.go`): the total, pure `canonFQN` reconciler (with a fixture parity test
+**and** a passing ⊥-symmetry fuzz, §12.5), the internal-span map's four outcomes
+(mapped / absent-from-graph / untagged / ambiguous), and an **L1-precise severance
+walk** that resolves the `Site` to the exact severed node on the observed causal
+path when `flowmap.fqn` tags are present (falling back to a sound L0 otherwise) —
+the node `Site` a `blind_spot` repair self-extinguishes (Phase 3, §6/§7). All four
+are disclosure-only and carry **zero substrate/gate risk** — the natural resting
+point (§10). **Phases 4–5** (the discovery loop, verdict integration) remain a
 plan. It is the design record of a single
 extended exploration: how to combine the static call graph with captured runtime
 behavior so that each covers the other's blind spot, *without* risking the prime
@@ -441,8 +449,8 @@ independently shippable and valuable; the plan is a set of off-ramps.
 |---|---|---|---|
 | **0 — spine** ✅ **LANDED** | **(prereq, §14-A) DB boundary effects in the corpus** — extend capture (`otelsql`) + `ingest`/`coverage` so the join's effect vocabulary includes `db <verb>` writes, not only the otelaws bus/dep surface; then witness types + the `observed × unreachable` join (fold in `coverage.Delta` for the other direction); `Verdict: CANDIDATE`, disclosure-only | coverage-calibrated behavioral view **that can see the marquee `db DELETE` case** | run on real corpora; ~zero candidates ⇒ analyzer already sound, **stop** — **measured:** 0 candidates on loansvc/obligsvc/blindsvc (sound), and the cell fires on a genuine *undisclosed missed root* (the impeachsvc fixture); the real candidate justified proceeding to Phase 1 |
 | **1 — ladder** ✅ **LANDED** | the five rungs (`internal/impeach/ladder.go`) → candidates classified IMPEACHMENT vs the four downgrades (`NOT-A-CONTRADICTION`/`VERSION-SKEW`/`LABEL-MISMATCH`/`CROSS-SERVICE`/`CAPTURE-UNTRUSTED`); ladder recorded **whole**, verdict = first failing rung | a trustworthy counterexample finder (over exercised paths), **zero substrate/gate risk** — the natural resting point | measure the rung distribution; *mostly downgrades, rare impeachments* = healthy; mostly IMPEACHMENT = too credulous, fix before proceeding — **measured:** downgrade-dominated, **0 IMPEACHMENT without attested provenance** (no commit stamp on the corpus today ⇒ `VERSION-SKEW`, §14-D); the genuine impeachsvc candidate promotes to IMPEACHMENT only under a stamped graph + matching production capture — healthy |
-| **2 — severance L0** | coarse `Site` (entry+effect anchors) + the proof obligation | impeachments carry a coarse location + known/unknown sort | proof obligation holds; spot-check Sites |
-| **3 — map + `canonFQN`** | the map, `canonFQN` + parity test, L1 tags; precise Sites | precise localization, sharp `absent-from-graph` | parity test green + self-extinguish **dry run** |
+| **2 — severance L0** ✅ **LANDED** | coarse `Site` (entry+effect anchors) + the proof obligation (`internal/impeach/severance.go`): the entrypoint join maps the observed entry, `staticEmitters` the effect, and the L0 walk classifies the break (missed-root / severed-emitter / unmodeled-effect) + sorts it known/unknown via the frontier section; a reproducible effect localizes to `SeveranceNone` (the proof obligation, disclosed in a caveat, never a fabricated seam) | impeachments carry a coarse location + known/unknown sort | proof obligation holds; spot-check Sites — **measured:** the impeachsvc missed root localizes to its entry registration literal, sorted UNDISCLOSED; the synthetic severed-emitter/unmodeled/absent-missed-root flavors localize as designed; determinism preserved (severance rides the byte-identical digest) |
+| **3 — map + `canonFQN`** ✅ **LANDED** | the span↔node map (`spanmap.go`: node reverse-index by `FQNKey`, the four internal-span outcomes), `canonFQN` + `FQNKey` (`canonfqn.go`: total, pure, ⊥-with-reason) + the fixture **parity test** and the **⊥-symmetry fuzz** (`FuzzCanonFQNSymmetry`) the sharp `absent-from-graph` needs, and the L1-precise walk (`walkL1`: the first severed path node carrying the effect → a node `Site`, with the `absent-from-graph` hint riding beside it as a weak-at-L1 signal); the Kind and the proof obligation are ONE shared mechanism for both levels (the level is a precision dial, not a fork), so a tagged and an untagged corpus classify a candidate identically; causal-path (FQN tags folded into its signature) threaded into the witness; untagged corpora fall back to L0 | precise localization, sharp `absent-from-graph` | parity test green + self-extinguish **dry run** — **measured:** parity + symmetry fuzz green (the fuzz surfaced and pinned a dotted-final-segment asymmetry as the documented L2-only carve-out, and a leaky-key regression now fixed); the L1 walk localizes the severed-node `Site`, and the self-extinguish dry run confirms a `blind_spot` there extinguishes the target while creating no new candidate (monotonic) |
 | **4 — loop** | propose → human-ratify → blind-spot/reclaimer; durable record | findings resolve instead of re-firing | per-repair self-extinguish test |
 | **5 — verdict** | witnessed policy breach → `VIOLATED`; bare impeachment → dependent PROVEN → CANT-PROVE; **committed corpus only** (§9) | gating on analyzer-unsoundness and on witnessed breaches | observe-first: disclosed before it fails a gate |
 
@@ -468,7 +476,15 @@ Phase-1 impeachment is meaningful on real captured behavior rather than only und
 a caller assertion. A committed corpus stays stampless and takes the gated
 identity at audit time. **Phase 2 (severance L0) is the next build.** The remaining
 stamp-adjacent gap is the base-vs-branch *gate* identity (§12.2), which only binds
-at Phase 5.
+at Phase 5. **Phases 2–3 are now landed** — every candidate carries a `Site` (coarse
+L0, or precise L1 when the corpus is FQN-tagged) with the known/unknown sort, the
+proof obligation fail-closed, and `canonFQN`'s ⊥-symmetry fuzz green over the
+realistic domain — so **Phase 4 (the discovery loop: propose → human-ratify →
+blind-spot/reclaimer, with the per-repair self-extinguish gate) is the next
+build**. The L1 `absent-from-graph` signal stays a weak hint until the symmetry
+fuzz is promoted to gate L1 trust (§12.5); the capture-side `flowmap.fqn` tags
+(§14-D) and `CaptureProvenance` (rung 5) remain the absent substrate Phase 4+
+budgets honestly.
 
 ---
 
@@ -537,7 +553,16 @@ The risk is admitted in exactly the order it can be retired.**
    missing-node signal is sound only if `canonFQN` succeeds-or-fails identically on a
    function's ssa and runtime spellings. A fixture parity test under-covers it; a fuzz
    over generated FQNs is needed before L1 may trust `absent-from-graph` (until then,
-   L2-only).
+   L2-only). **PARTIALLY RESOLVED (Phase 3)** — `FuzzCanonFQNSymmetry`
+   (`internal/impeach/canonfqn_fuzz_test.go`) now generates matching ssa/runtime
+   spellings of each reconcilable class and asserts canonFQN agrees; it is **green
+   over the realistic domain** (clean-identifier final package segment). It pinned
+   the one **STANDING** gap: a dotted-final-segment import path (`gopkg.in/yaml.v3`)
+   can split asymmetrically, because the value-method-vs-package-func boundary is
+   only recoverable from a clean final segment — so `absent-from-graph` stays a
+   weak L1 hint / L2-only until that carve-out is closed or proven irrelevant to
+   first-party code. Methods reconcile symmetrically regardless (the receiver path
+   splits at its last `.`).
 6. **Capture-provenance attestation (§4/§13).** `capture-fidelity` is the one
    human-asserted rung; whether it can be mechanically attested (or mock-shaped spans
    detected structurally) decides whether a live-mislabeled capture can ever produce a

@@ -70,11 +70,18 @@ type Report struct {
 
 // Witness is one candidate: an effect observed where static did not place it.
 type Witness struct {
-	Effect   string      `json:"effect"`   // the canonical join key (the §7 key space)
-	Claim    Claim       `json:"claim"`    // the static negative under test
-	Observed Observation `json:"observed"` // the runtime counterexample
-	Rungs    []Rung      `json:"rungs"`    // the FULL ordered downgrade ladder (§4), recorded whole
-	Verdict  string      `json:"verdict"`  // IMPEACHMENT | <downgrade> — the first failing rung's disclosure
+	Effect    string      `json:"effect"`              // the canonical join key (the §7 key space)
+	Claim     Claim       `json:"claim"`               // the static negative under test
+	Observed  Observation `json:"observed"`            // the runtime counterexample
+	Severance *Severance  `json:"severance,omitempty"` // the localization of WHERE static lost it (§6, Phase 2/3)
+	Rungs     []Rung      `json:"rungs"`               // the FULL ordered downgrade ladder (§4), recorded whole
+	Verdict   string      `json:"verdict"`             // IMPEACHMENT | <downgrade> — the first failing rung's disclosure
+
+	// chain is the causal span chain the L1 localizer walks (§6/§7). Unexported, so
+	// it never serializes or perturbs the digest — the spans' canonical ops already
+	// ride into Observation.CausalPath; this carries the Attrs (the FQN tags) the
+	// walk needs and that the serialized form deliberately omits.
+	chain []*ir.CanonicalSpan
 }
 
 // Claim is the static side of the contradiction.
@@ -90,7 +97,16 @@ type Observation struct {
 	Flow    string `json:"flow"`
 	Service string `json:"service,omitempty"`
 	Entry   string `json:"entry,omitempty"`
-	Op      string `json:"op"`
+	// EntryDiscovered records whether the graph modeled Entry as a root (§5): the
+	// missed-root vs missed-edge distinction the severance walk turns on (§6). Set
+	// during localization, so it is the same entrypoint join Severance is derived
+	// from, not a second guess.
+	EntryDiscovered bool `json:"entry_discovered"`
+	// CausalPath is the canonical op chain entry→effect (no ids, no timestamps,
+	// §5) — the run-independent evidence the L1 severance walk projects onto the
+	// graph. Disclosure of WHAT was observed, distinct from the localized Site.
+	CausalPath []string `json:"causal_path,omitempty"`
+	Op         string   `json:"op"`
 }
 
 // Audit joins a stamped graph against a canonical trace corpus and returns the
@@ -185,6 +201,29 @@ func Audit(service string, ix *graph.Index, traces []*ir.CanonicalTrace, prov Pr
 	sort.Strings(gaps)
 	r.CoverageGaps = gaps
 
+	// Localize each candidate (Phase 2, §6): project its coarse (entry → effect)
+	// anchors onto the graph and record WHERE static lost the effect (the Site) plus
+	// the known/unknown frontier sort. The proof obligation is folded in — a
+	// candidate whose effect turns out to be statically reproducible (Kind
+	// SeveranceNone) is a self-inconsistency, disclosed in a caveat, never a
+	// fabricated seam. Done before classify so EntryDiscovered is set when the
+	// ladder reads the witness, and before the sort/digest so the localization is
+	// part of the byte-identical artifact.
+	lz := newLocalizer(ix)
+	selfInconsistent := 0
+	for i := range r.Candidates {
+		sev, discovered, ok := lz.localize(r.Candidates[i])
+		s := sev
+		r.Candidates[i].Severance = &s
+		r.Candidates[i].Observed.EntryDiscovered = discovered
+		if !ok {
+			selfInconsistent++
+		}
+	}
+	if selfInconsistent > 0 {
+		caveats = append(caveats, plural(selfInconsistent, "candidate")+" is self-inconsistent (the effect is statically reproducible along the observed anchors): localized to no severance, never impeached (§6 proof obligation)")
+	}
+
 	// Classify each candidate through the downgrade ladder (§4): CANDIDATE becomes
 	// IMPEACHMENT or a specific downgrade, with the full ordered ladder recorded.
 	// Done before the sort/digest so the ladder is part of the byte-identical
@@ -221,15 +260,7 @@ func staticEffectSets(ix *graph.Index) (named, reachable, blind map[string]bool,
 	reachable = map[string]bool{}
 	blind = map[string]bool{}
 
-	var entrySeeds []string
-	for _, ep := range ix.Entrypoints() {
-		if ep.Fn != "" {
-			entrySeeds = append(entrySeeds, ep.Fn)
-		}
-	}
-	if len(entrySeeds) == 0 {
-		entrySeeds = ix.Sources()
-	}
+	entrySeeds := entrySeedsOf(ix)
 	reachSet := reachSetOf(ix, entrySeeds)
 
 	// The disclosed seams: every site/owner the graph itself admits it cannot
@@ -287,13 +318,44 @@ func reachSetOf(ix *graph.Index, seeds []string) map[string]bool {
 	return m
 }
 
+// entrySeedsOf is the single source of truth for "the discovered roots": the
+// named entrypoints' handler functions, falling back to the graph's structural
+// sources when the graph names no entrypoint. Shared by staticEffectSets (which
+// computes the reachable cone) and rootReachOf (which the localizer walks against),
+// so the two never drift on what counts as a root.
+func entrySeedsOf(ix *graph.Index) []string {
+	var seeds []string
+	for _, ep := range ix.Entrypoints() {
+		if ep.Fn != "" {
+			seeds = append(seeds, ep.Fn)
+		}
+	}
+	if len(seeds) == 0 {
+		seeds = ix.Sources()
+	}
+	return seeds
+}
+
+// rootReachOf is the set of functions reachable from any discovered root (the
+// roots included) — the SOUND cone the L1 severance walk tests a path node
+// against: a node OUTSIDE it is severed from every root, the seam's downstream
+// side (§6).
+func rootReachOf(ix *graph.Index) map[string]bool {
+	return reachSetOf(ix, entrySeedsOf(ix))
+}
+
 // observedEffect is one behavioral boundary effect reduced to the join key space.
+// path is the causal span chain root→effect (inclusive), the L1 severance walk's
+// input (§6/§7); it is intrinsic evidence, not serialized directly — the witness
+// projects it to Observation.CausalPath (ops) and the localizer maps its internal
+// spans to graph nodes.
 type observedEffect struct {
 	key     string // the canonical join key
 	op      string // the raw observed op (enrichment the key drops)
 	flow    string
 	service string
 	entry   string
+	path    []*ir.CanonicalSpan
 }
 
 // observedEffects walks the corpus and returns every bus/DB boundary effect as a
@@ -307,20 +369,28 @@ func observedEffects(traces []*ir.CanonicalTrace) []observedEffect {
 			continue
 		}
 		entry := t.Root.Op
+		// stack is the ancestor chain root→current, so an effect span records the
+		// full causal path it sits on (the L1 walk's input, §6).
+		var stack []*ir.CanonicalSpan
 		var walk func(*ir.CanonicalSpan)
 		walk = func(s *ir.CanonicalSpan) {
 			if s == nil {
 				return
 			}
+			stack = append(stack, s)
 			if key, ok := observedKey(s); ok {
 				svc := s.Service
 				if svc == "" {
 					svc = t.Service
 				}
-				dedup := key + "\x00" + t.Flow + "\x00" + svc + "\x00" + entry + "\x00" + s.Op
+				path := append([]*ir.CanonicalSpan(nil), stack...)
+				// The causal path is part of identity: two paths to the same effect
+				// are distinct witnesses, ordered deterministically by their op chain,
+				// so a path never reaches the output by trace arrival order (§5).
+				dedup := key + "\x00" + t.Flow + "\x00" + svc + "\x00" + entry + "\x00" + s.Op + "\x00" + pathSig(path)
 				if !seen[dedup] {
 					seen[dedup] = true
-					out = append(out, observedEffect{key: key, op: s.Op, flow: t.Flow, service: svc, entry: entry})
+					out = append(out, observedEffect{key: key, op: s.Op, flow: t.Flow, service: svc, entry: entry, path: path})
 				}
 			}
 			for _, g := range s.Children {
@@ -328,11 +398,40 @@ func observedEffects(traces []*ir.CanonicalTrace) []observedEffect {
 					walk(m)
 				}
 			}
+			stack = stack[:len(stack)-1]
 		}
 		walk(t.Root)
 	}
 	sort.Slice(out, func(i, j int) bool { return lessObserved(out[i], out[j]) })
 	return out
+}
+
+// pathSig is the intrinsic signature of a causal span chain — each span's op AND
+// its `flowmap.fqn` tag, joined in order — used to key and order observations so
+// the chain never reaches the output by arrival order (determinism, §5/§10). The
+// FQN tag is folded in because it is part of the path's IDENTITY at L1: two paths
+// with the same op chain but different tags traverse different functions and
+// localize to different Sites, so collapsing them on op alone would drop one path's
+// distinct severance (and make WHICH survives depend on trace arrival order).
+func pathSig(path []*ir.CanonicalSpan) string {
+	parts := make([]string, len(path))
+	for i, s := range path {
+		parts[i] = s.Op
+		if tag := s.Attrs[FQNTagKey]; tag != "" {
+			parts[i] += "\x1e" + tag
+		}
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+// causalOps projects a causal span chain to its ordered op list — the disclosed
+// CausalPath (§5): canonical span sigs, entry→effect, no ids, no timestamps.
+func causalOps(path []*ir.CanonicalSpan) []string {
+	ops := make([]string, 0, len(path))
+	for _, s := range path {
+		ops = append(ops, s.Op)
+	}
+	return ops
 }
 
 // observedKey reduces a span to the canonical join key, or ok=false when the span
@@ -359,8 +458,9 @@ func witness(o observedEffect, reach string) Witness {
 	return Witness{
 		Effect:   o.key,
 		Claim:    Claim{Reachability: reach},
-		Observed: Observation{Flow: o.flow, Service: o.service, Entry: o.entry, Op: o.op},
+		Observed: Observation{Flow: o.flow, Service: o.service, Entry: o.entry, Op: o.op, CausalPath: causalOps(o.path)},
 		Verdict:  VerdictCandidate,
+		chain:    o.path,
 	}
 }
 
@@ -371,8 +471,13 @@ func isBusKey(k string) bool {
 func isDBKey(k string) bool { return strings.HasPrefix(k, "db ") }
 
 // lessWitness is the total intrinsic order over candidates (plan §5: sorted by
-// Effect, Flow, Entry, …). Op is the final tie-break so two observations of one
-// effect from one flow/entry that differ only in enrichment still order stably.
+// Effect, Flow, Entry, …). The causal path is the FINAL tie-break: since Phase 3
+// makes two paths to one effect DISTINCT witnesses (the dedup keys on pathSig),
+// two candidates can share (Effect, Flow, Service, Entry, Op) yet differ only in
+// path — so the order must break on pathSig here too, exactly as lessObserved
+// does, or the non-stable candidate sort would order them on arrival. The chain
+// carries the FQN tags pathSig folds in (Observation.CausalPath drops them), so the
+// tie-break is over the full path identity.
 func lessWitness(a, b Witness) bool {
 	if a.Effect != b.Effect {
 		return a.Effect < b.Effect
@@ -386,7 +491,10 @@ func lessWitness(a, b Witness) bool {
 	if a.Observed.Entry != b.Observed.Entry {
 		return a.Observed.Entry < b.Observed.Entry
 	}
-	return a.Observed.Op < b.Observed.Op
+	if a.Observed.Op != b.Observed.Op {
+		return a.Observed.Op < b.Observed.Op
+	}
+	return pathSig(a.chain) < pathSig(b.chain)
 }
 
 func lessObserved(a, b observedEffect) bool {
@@ -402,7 +510,12 @@ func lessObserved(a, b observedEffect) bool {
 	if a.entry != b.entry {
 		return a.entry < b.entry
 	}
-	return a.op < b.op
+	if a.op != b.op {
+		return a.op < b.op
+	}
+	// Two observations of one effect from one flow/entry/op that differ only in
+	// causal path order stably by the path signature (determinism, §5).
+	return pathSig(a.path) < pathSig(b.path)
 }
 
 // corpusDigest pins the audited trace corpus as a SET: the sorted, deduped
