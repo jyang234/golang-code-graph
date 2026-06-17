@@ -8,6 +8,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
+	"github.com/jyang234/golang-code-graph/internal/impeach"
 )
 
 // Review computes the MR review artifact from the base and branch graphs under a
@@ -87,6 +88,16 @@ func verdict(p *policy.Policy, d graphDelta, a *Artifact) Verdict {
 // newBlindSpots returns the branch's blind spots absent from the base and not
 // covered by the policy's allow-list — the blind-spot ratchet's drift. Identity
 // is (kind, site); Detail is carried for display but never keys the diff.
+//
+// An ImpeachmentSeam is excluded here by construction: it is not detected drift
+// but a CODEOWNER-gated config declaration (config.static.declaredBlindSpots,
+// merged in graphio.mergeDeclaredBlindSpots). It exists only because a human
+// already reviewed and ratified the seam, so treating its appearance on the
+// branch as undisclosed-dynamism drift would make the impeachment enactment
+// self-defeating — every ratified seam would immediately re-block the very change
+// that ratified it. The seam's behavioral meaning is surfaced on the impeachment
+// path (the audit report and verdict), not the blind-spot ratchet; this section
+// is strictly the drift channel, and a reviewed seam is not drift.
 func newBlindSpots(p *policy.Policy, base, branch *graph.Graph) []BlindSpotDelta {
 	key := func(kind, site string) string { return kind + "\x00" + site }
 	baseKeys := map[string]bool{}
@@ -97,7 +108,7 @@ func newBlindSpots(p *policy.Policy, base, branch *graph.Graph) []BlindSpotDelta
 	var out []BlindSpotDelta
 	for _, s := range branch.BlindSpots {
 		k := key(s.Kind, s.Site)
-		if baseKeys[k] || seen[k] || p.BlindSpotRatchet.Allows(s.Kind, s.Site) {
+		if baseKeys[k] || seen[k] || s.Kind == impeach.BlindSpotKindImpeachment || p.BlindSpotRatchet.Allows(s.Kind, s.Site) {
 			continue
 		}
 		seen[k] = true

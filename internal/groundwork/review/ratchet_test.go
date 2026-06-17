@@ -6,6 +6,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
+	"github.com/jyang234/golang-code-graph/internal/impeach"
 )
 
 // The blind-spot ratchet (GX-2): no new blind spots base→branch without an
@@ -40,6 +41,33 @@ func TestReviewReportsNewBlindSpot(t *testing.T) {
 	}
 	if a.Verdict == Block {
 		t.Fatalf("verdict = BLOCK without gate: true; ratchet must be observe-only by default")
+	}
+}
+
+// TestImpeachmentSeamNotRatchetDrift pins the §13 enactment fence (#4): a
+// CODEOWNER-gated config-declared ImpeachmentSeam blind spot rides into the branch
+// graph, but the blind-spot ratchet must NOT treat it as undisclosed-dynamism
+// drift. It is a reviewed ratification, not detected drift — arming the ratchet on
+// it would make the impeachment enactment self-defeating (the ratified seam would
+// re-block the very change that ratified it). Even with the ratchet gating, the
+// seam alone must not appear in NewBlindSpots nor BLOCK.
+func TestImpeachmentSeamNotRatchetDrift(t *testing.T) {
+	p := withRatchet(t, &policy.BlindSpotRatchet{Gate: true})
+	base := loadGraph(t, "layeredsvc.graph.json")
+	branch := branchWithBlindSpot(t, impeach.BlindSpotKindImpeachment, reflectSite, "ratified seam")
+
+	a := Review(p, base, branch)
+	for _, s := range a.NewBlindSpots {
+		if s.Kind == impeach.BlindSpotKindImpeachment {
+			t.Fatalf("config-declared ImpeachmentSeam armed the ratchet: %v", a.NewBlindSpots)
+		}
+	}
+	// A reflect blind spot at the SAME site still arms it — the exclusion is scoped
+	// to the seam kind, not the site, so real drift is not laundered through it.
+	driftBranch := branchWithBlindSpot(t, "reflect", reflectSite, "reflect.ValueOf call")
+	driftBranch.BlindSpots = append(driftBranch.BlindSpots, graph.BlindSpot{Kind: impeach.BlindSpotKindImpeachment, Site: reflectSite, Detail: "ratified seam"})
+	if a := Review(p, base, driftBranch); a.Verdict != Block {
+		t.Fatalf("verdict = %s, want BLOCK: a real reflect drift must still arm the ratchet alongside a seam", a.Verdict)
 	}
 }
 
