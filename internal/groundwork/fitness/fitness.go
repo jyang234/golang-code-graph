@@ -6,10 +6,12 @@ import (
 )
 
 // Check evaluates every configured invariant in p against the graph ix and
-// returns the findings, sorted deterministically (violations first). The result
-// is a pure function of (policy, graph): the same inputs always produce the same
-// findings in the same order, which is what lets a green verdict be a hard,
-// reproducible CI gate.
+// returns the findings, sorted deterministically (violations first). Most checks
+// read the graph; one — the ratchet-coupling caution — is a policy-config
+// consistency disclosure independent of ix (it still rides here so it reaches the
+// review/verify gate as a standing caution). The result is a pure function of
+// (policy, graph): the same inputs always produce the same findings in the same
+// order, which is what lets a green verdict be a hard, reproducible CI gate.
 func Check(p *policy.Policy, ix *graph.Index) Result {
 	var r Result
 	checkLayering(p, ix, &r)
@@ -18,6 +20,7 @@ func Check(p *policy.Policy, ix *graph.Index) Result {
 	checkNoConcurrentReach(p, ix, &r)
 	checkIOBudget(p, ix, &r)
 	checkObligations(p, ix, &r)
+	checkRatchetCoupling(p, &r)
 	r.sort()
 	return r
 }

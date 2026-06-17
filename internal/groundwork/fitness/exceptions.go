@@ -107,8 +107,10 @@ func Exceptions(p *policy.Policy, ix *graph.Index) []ExceptionStatus {
 
 	// An effect-ratchet entry is live while the graph still carries a matching
 	// write label — same present-fact test as a blind-spot exception (the
-	// ratchet's findings live in review, not fitness, so suppressed-set
-	// attribution does not apply).
+	// ratchet's DRIFT findings — new write targets — live in review, not fitness,
+	// so suppressed-set attribution does not apply; the graph-independent
+	// ratchet_coupling caution fitness does emit is a config disclosure, not an
+	// allow-entry, so it is irrelevant here).
 	if p.EffectRatchet != nil {
 		var writeLabels []string
 		for _, e := range ix.Edges() {

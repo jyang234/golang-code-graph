@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // PC-3: an effect-ratchet allow entry with an empty target would prefix-match
 // every write label — one entry silently disabling the whole ratchet, the
@@ -50,5 +53,38 @@ func TestEffectRatchetAllows(t *testing.T) {
 	var nilRatchet *EffectRatchet
 	if nilRatchet.Allows("db INSERT x") {
 		t.Error("a nil ratchet must allow nothing")
+	}
+}
+
+// The coupling caution fires on exactly ONE config — effect ratchet gating with the
+// blind-spot ratchet NOT gating (its only backstop against dynamic-laundering is
+// off) — and is silent on every other. This is the single source both policy-check
+// and fitness read, so the truth table here is the parity guard for both surfaces.
+func TestEffectRatchetCouplingCaution(t *testing.T) {
+	gating := func(g bool) *EffectRatchet { return &EffectRatchet{Gate: g} }
+	bsGating := func(g bool) *BlindSpotRatchet { return &BlindSpotRatchet{Gate: g} }
+
+	cases := []struct {
+		name      string
+		effect    *EffectRatchet
+		blindSpot *BlindSpotRatchet
+		wantFire  bool
+	}{
+		{"effect gates, blind-spot gates", gating(true), bsGating(true), false},
+		{"effect gates, blind-spot observe-only", gating(true), bsGating(false), true},
+		{"effect gates, blind-spot absent", gating(true), nil, true}, // absent ⇒ not gating
+		{"effect observe-only", gating(false), bsGating(false), false},
+		{"effect absent", nil, bsGating(false), false},
+		{"both absent", nil, nil, false},
+	}
+	for _, c := range cases {
+		p := &Policy{Service: "svc", Version: 1, EffectRatchet: c.effect, BlindSpotRatchet: c.blindSpot}
+		got := p.EffectRatchetCouplingCaution()
+		if (got != "") != c.wantFire {
+			t.Errorf("%s: caution=%q, want fire=%v", c.name, got, c.wantFire)
+		}
+		if c.wantFire && !strings.Contains(got, "blind_spot_ratchet") {
+			t.Errorf("%s: caution must name blind_spot_ratchet as the remedy; got %q", c.name, got)
+		}
 	}
 }
