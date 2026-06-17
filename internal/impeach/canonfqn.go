@@ -211,6 +211,14 @@ func splitLastDot(s string) (string, string, bool) {
 // segment. This is the boundary rule that is only exact for a clean final segment
 // (the §7/§12.5 caveat); it is deliberately the SAME rule on both spellings so a
 // package-level func — spelled identically on both sides — always reconciles.
+//
+// ONE SOURCE OF TRUTH (CLAUDE.md): this is the same package-boundary predicate as
+// fitness.pkgFromQualified (internal/groundwork/fitness/fqn.go) — first '.' after
+// the last '/', because a package's final path segment is a dot-free identifier. It
+// is not shared as a call because canonFQN needs the SYMBOL remainder too and must
+// also parse runtime spellings fitness never sees; instead the parity with
+// fitness.PkgOf is pinned by TestCanonFQNPackageParityWithFitness so the two copies
+// cannot silently drift.
 func splitPkgSymbol(s string) (string, string, bool) {
 	slash := strings.LastIndexByte(s, '/')
 	dot := strings.IndexByte(s[slash+1:], '.')

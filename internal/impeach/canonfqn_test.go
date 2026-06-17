@@ -1,6 +1,34 @@
 package impeach
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
+)
+
+// TestCanonFQNPackageParityWithFitness pins the one-source-of-truth parity
+// (CLAUDE.md): canonFQN's package-boundary split (splitPkgSymbol / splitLastDot)
+// and fitness.PkgOf implement the SAME rule (first '.' after the last '/'), so they
+// must agree on every ssa spelling. canonFQN cannot simply CALL fitness.PkgOf (it
+// needs the symbol remainder and also parses runtime spellings fitness never
+// sees), so this test is what keeps the two copies from drifting.
+func TestCanonFQNPackageParityWithFitness(t *testing.T) {
+	for _, ssa := range []string{
+		"example.com/svc/internal/origination.NewEvaluator",
+		"(*example.com/svc/internal/client.Bureau).Score",
+		"(example.com/svc/internal/client.Bureau).Score",
+		"example.com/p.Func",
+		"(*example.com/p.T).M",
+	} {
+		k, ok := canonFQN(ssa)
+		if !ok {
+			t.Fatalf("canonFQN(%q) = ⊥, want a key", ssa)
+		}
+		if want := fitness.PkgOf(ssa); k.Pkg != want {
+			t.Errorf("package split drift on %q: canonFQN=%q fitness.PkgOf=%q", ssa, k.Pkg, want)
+		}
+	}
+}
 
 // TestCanonFQNParity is the one-source guard CLAUDE.md requires (§7): for a
 // fixture function of each RECONCILABLE class, the ssa node spelling and the

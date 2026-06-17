@@ -9,18 +9,21 @@ import (
 	"github.com/jyang234/golang-code-graph/ir"
 )
 
-// Severance localization (plan §6), at the L0 resolution (§7 harness levels):
-// entry+effect anchors only, no internal-span FQN reconciliation. It answers
-// WHERE the static over-approximation lost the observed effect, by projecting the
-// coarse observed (entry → effect) anchor pair onto the graph and finding the
-// first hop static cannot reproduce. The result is a coarse Site plus the
+// Severance localization (plan §6) answers WHERE the static over-approximation
+// lost the observed effect, by projecting the observed (entry → effect) path onto
+// the graph and finding where static cannot reproduce it. It resolves at the
+// highest level the corpus supports (§7 harness levels): L0 uses only the entry and
+// effect anchors (coarse), L1 also maps the causal path's internal spans through
+// their `flowmap.fqn` tags to a PRECISE node. The result is a Site plus the
 // known/unknown frontier sort (§6) — disclosure-only at this phase, never enacted
 // (the repair-writing loop is Phase 4, §8).
 //
-// L0 soundness (§7): the Site is COARSER than L1/L2 (it cannot point inside the
-// handler cone), but it is never a GUESS — every anchor is a real graph node (or
-// the entry registration literal), and the proof obligation below refuses to
-// fabricate a seam where none exists. Precision is a dial; soundness is invariant.
+// Soundness is INVARIANT across levels (§7): a coarser level yields a coarser Site,
+// never a wrong one — every anchor is a real graph node (or the entry registration
+// literal), and the proof obligation refuses to fabricate a seam where none exists.
+// The Kind and the proof obligation are computed by ONE shared mechanism (localize)
+// for both levels, so they can never disagree on capture richness; only the Site's
+// resolution changes. Precision is a dial; soundness is invariant.
 
 // Severance kinds (§6, the "three flavors classified for free"). Each names the
 // shape of the broken link the L0 walk found, so a reader knows what to repair
@@ -33,9 +36,9 @@ const (
 	SeveranceMissedRoot = "missed-root"
 
 	// SeveranceSeveredEmitter: the entry IS a discovered root and the effect's
-	// emitter IS a graph node, but no discovered root reaches it — the break is
-	// upstream of the emitter, a dispatch seam somewhere on entry→emitter that L0
-	// cannot resolve finer. Site is the entry function (the upstream anchor).
+	// emitter IS a graph node, but no discovered root reaches it — the break is a
+	// dispatch seam upstream of the emitter. Site is the precise severed path node
+	// at L1, or the entry function (the coarse upstream anchor) at L0.
 	SeveranceSeveredEmitter = "severed-emitter"
 
 	// SeveranceUnmodeledEffect: the graph models NO emitter for the effect at all
@@ -54,21 +57,24 @@ const (
 	SeveranceNone = "no-severance"
 )
 
-// Severance is the L0 localization attached to a candidate witness (§6): the
-// coarse severance Site, the flavor of the break, and the known/unknown frontier
-// sort. It is a pure function of (witness, graph) — every field resolves on
-// intrinsic graph data (entrypoint join, emitter node, reachability, frontier
-// markers), never on arrival order — so it rides the byte-identical report.
+// Severance is the localization attached to a candidate witness (§6): the
+// severance Site (coarse at L0, precise at L1), the flavor of the break, and the
+// known/unknown frontier sort. It is a pure function of (witness, graph) — every
+// field resolves on intrinsic graph data (entrypoint join, emitter node,
+// reachability, frontier markers), never on arrival order — so it rides the
+// byte-identical report.
 type Severance struct {
-	// Site is the coarse L0 severance point: the entry registration literal (a
-	// missed root), the entry function (a severed emitter / unmodeled effect), or
-	// "" (the proof obligation failed — no fabricated seam). The repair-proposal
-	// loop (§8) will target this; Phase 2 only records it.
+	// Site is the severance point: the entry registration literal (a missed root),
+	// the entry function or the precise severed path node (a severed emitter /
+	// unmodeled effect, coarse at L0 / precise at L1), or "" when the Kind is
+	// SeveranceNone (the proof obligation failed — no fabricated seam). The
+	// repair-proposal loop (§8) will target this; Phase 2/3 only records it.
 	Site string `json:"site"`
 
 	// Kind is the break flavor (SeveranceMissedRoot | SeveranceSeveredEmitter |
-	// SeveranceUnmodeledEffect | SeveranceNone), classified for free from whether
-	// the entry mapped and whether an emitter exists (§6).
+	// SeveranceUnmodeledEffect | SeveranceNone), classified by severanceKind from
+	// whether the entry is a discovered root and whether an emitter is modeled —
+	// independent of the resolution level, so L0 and L1 never disagree (§6).
 	Kind string `json:"kind"`
 
 	// FrontierKnown sorts the value (§6): true when a static frontier marker or a
@@ -105,165 +111,183 @@ const (
 	LevelL1 = "L1"
 )
 
+// localizer holds the per-audit state the severance walk shares across every
+// candidate: the graph, the span↔node index, the root-reachable cone, and a memo
+// of the reaches-emitter set keyed by effect (the one per-candidate reverse BFS,
+// hoisted so candidates of one effect compute it once). Built once per Audit.
+type localizer struct {
+	ix        *graph.Index
+	nx        *nodeIndex
+	rootReach map[string]bool            // reachable from any discovered root (roots included)
+	emitReach map[string]map[string]bool // effect key -> {nodes that can reach an emitter}
+}
+
+func newLocalizer(ix *graph.Index) *localizer {
+	return &localizer{
+		ix:        ix,
+		nx:        buildNodeIndex(ix),
+		rootReach: rootReachOf(ix),
+		emitReach: map[string]map[string]bool{},
+	}
+}
+
 // localize runs the severance walk (§6) over one candidate and returns its
 // Severance plus whether the proof obligation HELD (a real contradiction exists).
 // ok == false (Kind SeveranceNone) means the effect was statically reproducible
 // from the observed entry — the Claim was a mis-read, so the caller must disclose
 // a self-inconsistency rather than localize a seam (§6: never a fabricated Site).
 //
-// It resolves at the highest level the corpus supports (§7): when the candidate's
-// causal path carries `flowmap.fqn` tags that map to graph nodes, the precise L1
-// walk finds the first PATH NODE severed from every root — a node Site a repair
-// can blind (the self-extinguish handle, §6/§8). Absent tags, it falls back to the
-// coarse L0 walk (entry+effect anchors). The Site is sound at either level; the
-// level only sets its resolution. nx and rootReach are built once per audit by the
-// caller and shared across candidates.
+// SHARED mechanism, precision DIAL (§7): the proof obligation, the Kind, the Site
+// fallback, and the anchor assembly are computed ONCE here for both levels; the
+// only thing the level changes is whether the Site is the precise severed PATH
+// NODE (L1, when `flowmap.fqn` tags resolve) or the coarse entry/registration
+// anchor (L0). So a tagged and an untagged corpus classify a candidate identically
+// — same Kind, same proof-obligation verdict — and differ only in Site resolution.
 //
 // discovered is also returned so the caller can stamp Observation.EntryDiscovered
 // without re-running the entrypoint join.
-func localize(w Witness, ix *graph.Index, nx *nodeIndex, rootReach map[string]bool) (sev Severance, discovered, ok bool) {
-	emitters := staticEmitters(ix, w.Effect)
-	entryFn := mapEntry(ix, w.Observed.Entry)
+func (lz *localizer) localize(w Witness) (sev Severance, discovered, ok bool) {
+	emitters := staticEmitters(lz.ix, w.Effect)
+	entryFn := mapEntry(lz.ix, w.Observed.Entry)
 	discovered = entryFn != ""
+	reachAbsent := w.Claim.Reachability == ReachAbsent
 
-	if l1, hit, l1ok := localizeL1(w, ix, nx, rootReach, emitters, entryFn, discovered); hit {
-		return l1, discovered, l1ok
+	// The precise L1 Site, when the causal path offers a signal. level records the
+	// resolution; severedSite/pathAnchors/absentHint are empty at L0.
+	severedSite, pathAnchors, absentHint, l1 := lz.walkL1(w.chain, emitters)
+	level := LevelL0
+	if l1 {
+		level = LevelL1
 	}
 
-	switch {
-	case !discovered:
-		// The entry is not a graph root: the registration site is the seam,
-		// regardless of whether an emitter is modeled (§6, EntryDiscovered=false).
-		// The emitter (if any) is unreachable from every discovered root by the
-		// candidate's construction, so the missed root is the real contradiction.
-		sev = Severance{Site: w.Observed.Entry, Kind: SeveranceMissedRoot, Anchors: emitters, Level: LevelL0}
-	case w.Claim.Reachability == ReachAbsent:
-		// A discovered root, but the graph models no emitter at all — the effect
-		// itself is unmodeled (§6, "break at the emitter" with no emitter node).
-		sev = Severance{Site: entryFn, Kind: SeveranceUnmodeledEffect, Anchors: []string{entryFn}, Level: LevelL0}
-	default:
-		// A discovered root AND a modeled emitter, but no root reaches it. The
-		// proof obligation: confirm THIS entry does not reach any emitter either.
-		// It cannot, by construction (a reached emitter is CONFIRMED-LIVE), but the
-		// search IS the verification — a reproducible effect here is a self-
-		// inconsistency, not an impeachment (§6).
-		reach := reachSetOf(ix, []string{entryFn})
+	// Proof obligation (ONE per-entry check, both levels, §6): if THIS discovered
+	// entry statically reaches an emitter, the effect is reproducible — the
+	// unreachable Claim was a mis-read, so disclose a self-inconsistency, never a
+	// fabricated seam. It cannot trip for a real candidate (a reached emitter is
+	// CONFIRMED-LIVE, filtered upstream); the search IS the verification. Skipped
+	// for a missed root (no entry to reproduce from) and a bare absent effect (no
+	// emitter to reach).
+	if discovered && len(emitters) > 0 {
+		entryReach := reachSetOf(lz.ix, []string{entryFn})
 		for _, e := range emitters {
-			if reach[e] {
-				return Severance{Site: "", Kind: SeveranceNone, Level: LevelL0}, discovered, false
+			if entryReach[e] {
+				return Severance{Kind: SeveranceNone, Level: level}, discovered, false
 			}
 		}
-		anchors := []string{entryFn}
-		anchors = append(anchors, emitters...)
-		sev = Severance{Site: entryFn, Kind: SeveranceSeveredEmitter, Anchors: anchors, Level: LevelL0}
 	}
 
-	sev.FrontierKnown = frontierKnown(ix, sev.Site)
+	// Site: the precise severed node when the L1 walk found one, else the coarse
+	// anchor — the entry function when discovered, the registration literal (the
+	// missed-root seam) otherwise.
+	site := severedSite
+	if site == "" {
+		if discovered {
+			site = entryFn
+		} else {
+			site = w.Observed.Entry
+		}
+	}
+
+	sev = Severance{
+		Site:            site,
+		Kind:            severanceKind(discovered, reachAbsent),
+		FrontierKnown:   frontierKnown(lz.ix, site),
+		Anchors:         assembleAnchors(discovered, entryFn, pathAnchors, emitters),
+		Level:           level,
+		AbsentFromGraph: absentHint,
+	}
 	return sev, discovered, true
 }
 
-// localizeL1 attempts the precise §6/§7 walk over the candidate's causal span
-// chain. hit is false when the corpus offers no L1 signal (no internal span maps
-// to a node and none is absent-from-graph) — the caller then falls back to L0.
-//
-// The walk maps each internal span to a graph node and finds the FIRST mapped node
-// that is (a) severed from every root and (b) able to reach an emitter — the
-// outermost point on the OBSERVED path where static lost the effect. That node is
-// the Site: blinding it puts the emitter in the disclosed-seam cone, so the
-// candidate self-extinguishes (§6/§8). A sharp `absent-from-graph` tag (an
-// internal node the graph lacks) rides along as a weak L1 hint (§7/§12.5),
-// disclosed beside the Site, never replacing it.
-func localizeL1(w Witness, ix *graph.Index, nx *nodeIndex, rootReach map[string]bool, emitters []string, entryFn string, discovered bool) (Severance, bool, bool) {
-	// reachesEmitter: every node that can reach a modeled emitter (the emitters
-	// included). A path node here whose forward cone holds the effect is a valid
-	// blind-spot Site.
-	reachesEmitter := map[string]bool{}
-	for _, e := range append(ix.Reaching(emitters...), emitters...) {
-		reachesEmitter[e] = true
+// severanceKind classifies the contradiction's shape from the two facts that
+// determine it — whether the entry is a discovered root and whether the effect is
+// unmodeled — INDEPENDENT of the resolution level (§6's three flavors). One
+// source, so a tagged and an untagged corpus can never disagree on the Kind.
+func severanceKind(discovered, reachAbsent bool) string {
+	switch {
+	case !discovered:
+		return SeveranceMissedRoot // the entry registration site is the seam
+	case reachAbsent:
+		return SeveranceUnmodeledEffect // a discovered root, but no emitter modeled
+	default:
+		return SeveranceSeveredEmitter // a modeled emitter no root reaches
 	}
+}
 
-	var anchors []string
-	absentHint := ""
-	sawSignal := false
-	severed := "" // the first path node severed from every root
-	for _, s := range internalSpans(w.chain) {
-		a := nx.mapInternal(s)
+// assembleAnchors builds the ordered anchor chain entry→…→emitter: the discovered
+// entry function (omitted for a missed root), the L1 path nodes (empty at L0), then
+// the modeled emitters (empty for an unmodeled effect). The chain length itself is
+// the §6 signal (no entry ⇒ missed root; no emitter ⇒ unmodeled), kept honest by
+// this ONE assembler instead of a per-branch copy.
+func assembleAnchors(discovered bool, entryFn string, pathAnchors, emitters []string) []string {
+	var a []string
+	if discovered {
+		a = append(a, entryFn)
+	}
+	a = append(a, pathAnchors...)
+	a = append(a, emitters...)
+	return a
+}
+
+// walkL1 projects the causal span chain onto the graph (§7) and returns the
+// precise severance: the FIRST mapped path node that is severed from every root
+// AND can reach an emitter (the outermost point on the OBSERVED path where static
+// lost the effect — a node Site a blind_spot self-extinguishes, §6/§8), the mapped
+// anchor chain, the sharp `absent-from-graph` hint, and whether ANY L1 signal was
+// present. l1 == false means the corpus offers no signal, so the caller resolves
+// the Site coarsely (L0). It never classifies — Kind and the proof obligation are
+// the caller's shared mechanism.
+func (lz *localizer) walkL1(chain []*ir.CanonicalSpan, emitters []string) (severedSite string, anchors []string, absentHint string, l1 bool) {
+	reachesEmitter := lz.reachesEmitterSet(emitters)
+	for _, s := range pathSpans(chain) {
+		a := lz.nx.mapInternal(s)
 		switch a.Outcome {
 		case MapMapped:
-			sawSignal = true
+			l1 = true
 			anchors = append(anchors, a.Node)
-			if severed == "" && !rootReach[a.Node] && reachesEmitter[a.Node] {
-				severed = a.Node
+			if severedSite == "" && !lz.rootReach[a.Node] && reachesEmitter[a.Node] {
+				severedSite = a.Node
 			}
 		case MapAbsentFromGraph:
-			sawSignal = true
+			l1 = true
 			if absentHint == "" {
 				absentHint = a.Tag
 			}
 		}
 	}
-	if !sawSignal {
-		return Severance{}, false, false // no L1 signal — fall back to L0
-	}
-
-	// The proof obligation at L1: if a discovered root reaches every mapped anchor
-	// AND an emitter (no severed node, no absent hint), the effect is reproducible
-	// along the observed path — a self-inconsistency, not an impeachment (§6).
-	if severed == "" && absentHint == "" {
-		reproducible := discovered
-		for _, n := range anchors {
-			if !rootReach[n] {
-				reproducible = false
-				break
-			}
-		}
-		if reproducible {
-			return Severance{Site: "", Kind: SeveranceNone, Level: LevelL1}, true, false
-		}
-	}
-
-	site := severed
-	kind := SeveranceSeveredEmitter
-	if site == "" {
-		// No mapped severed node carries the effect (only an absent-from-graph hint,
-		// or the chain mapped past the seam): fall to the coarse anchor — the entry
-		// when discovered, else the registration literal (missed root).
-		if discovered {
-			site = entryFn
-		} else {
-			site = w.Observed.Entry
-			kind = SeveranceMissedRoot
-		}
-	} else if !discovered {
-		kind = SeveranceMissedRoot
-	}
-
-	chain := []string{}
-	if discovered {
-		chain = append(chain, entryFn)
-	}
-	chain = append(chain, anchors...)
-	chain = append(chain, emitters...)
-
-	return Severance{
-		Site:            site,
-		Kind:            kind,
-		FrontierKnown:   frontierKnown(ix, site),
-		Anchors:         chain,
-		Level:           LevelL1,
-		AbsentFromGraph: absentHint,
-	}, true, true
+	return severedSite, anchors, absentHint, l1
 }
 
-// internalSpans is the causal chain with the entry (root) and effect (terminal)
-// spans dropped — the spans whose FQN tags the L1 map anchors (§7's "internal"
-// class). The entry maps via the route join and the effect via its label, so only
-// the middle of the chain needs the tag.
-func internalSpans(chain []*ir.CanonicalSpan) []*ir.CanonicalSpan {
-	if len(chain) <= 2 {
+// reachesEmitterSet is the set of nodes that can reach a modeled emitter (the
+// emitters included), memoized by effect: candidates of one effect share the
+// emitters, so the O(V+E) reverse BFS runs once per distinct effect rather than
+// once per candidate. The key is the canonical effect (the emitters' identity), so
+// the memo is sound.
+func (lz *localizer) reachesEmitterSet(emitters []string) map[string]bool {
+	key := strings.Join(emitters, "\x00")
+	if m, ok := lz.emitReach[key]; ok {
+		return m
+	}
+	m := map[string]bool{}
+	for _, e := range append(lz.ix.Reaching(emitters...), emitters...) {
+		m[e] = true
+	}
+	lz.emitReach[key] = m
+	return m
+}
+
+// pathSpans is the causal chain with the EFFECT (terminal) span dropped — every
+// span whose `flowmap.fqn` tag the L1 map may anchor (§7's "internal" class, plus
+// the ROOT span). The effect span is excluded because its emitter is recovered
+// from the static label (staticEmitters), and tagging it would wrongly localize
+// the Site onto the emitter itself rather than the upstream seam. The root IS kept:
+// when the entry route does not map (a missed root), the root span's own FQN tag is
+// the only signal that can pin the missed-root function to a precise node.
+func pathSpans(chain []*ir.CanonicalSpan) []*ir.CanonicalSpan {
+	if len(chain) <= 1 {
 		return nil
 	}
-	return chain[1 : len(chain)-1]
+	return chain[:len(chain)-1]
 }
 
 // staticEmitters returns the sorted, deduped first-party FQNs the graph models as

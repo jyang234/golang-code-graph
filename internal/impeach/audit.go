@@ -209,11 +209,10 @@ func Audit(service string, ix *graph.Index, traces []*ir.CanonicalTrace, prov Pr
 	// fabricated seam. Done before classify so EntryDiscovered is set when the
 	// ladder reads the witness, and before the sort/digest so the localization is
 	// part of the byte-identical artifact.
-	nx := buildNodeIndex(ix)
-	rootReach := rootReachOf(ix)
+	lz := newLocalizer(ix)
 	selfInconsistent := 0
 	for i := range r.Candidates {
-		sev, discovered, ok := localize(r.Candidates[i], ix, nx, rootReach)
+		sev, discovered, ok := lz.localize(r.Candidates[i])
 		s := sev
 		r.Candidates[i].Severance = &s
 		r.Candidates[i].Observed.EntryDiscovered = discovered
@@ -407,15 +406,22 @@ func observedEffects(traces []*ir.CanonicalTrace) []observedEffect {
 	return out
 }
 
-// pathSig is the intrinsic signature of a causal span chain — its ops joined in
-// order — used to key and order observations so the chain never reaches the output
-// by arrival order (determinism, §5/§10).
+// pathSig is the intrinsic signature of a causal span chain — each span's op AND
+// its `flowmap.fqn` tag, joined in order — used to key and order observations so
+// the chain never reaches the output by arrival order (determinism, §5/§10). The
+// FQN tag is folded in because it is part of the path's IDENTITY at L1: two paths
+// with the same op chain but different tags traverse different functions and
+// localize to different Sites, so collapsing them on op alone would drop one path's
+// distinct severance (and make WHICH survives depend on trace arrival order).
 func pathSig(path []*ir.CanonicalSpan) string {
-	ops := make([]string, len(path))
+	parts := make([]string, len(path))
 	for i, s := range path {
-		ops[i] = s.Op
+		parts[i] = s.Op
+		if tag := s.Attrs[FQNTagKey]; tag != "" {
+			parts[i] += "\x1e" + tag
+		}
 	}
-	return strings.Join(ops, "\x1f")
+	return strings.Join(parts, "\x1f")
 }
 
 // causalOps projects a causal span chain to its ordered op list — the disclosed
@@ -465,8 +471,13 @@ func isBusKey(k string) bool {
 func isDBKey(k string) bool { return strings.HasPrefix(k, "db ") }
 
 // lessWitness is the total intrinsic order over candidates (plan §5: sorted by
-// Effect, Flow, Entry, …). Op is the final tie-break so two observations of one
-// effect from one flow/entry that differ only in enrichment still order stably.
+// Effect, Flow, Entry, …). The causal path is the FINAL tie-break: since Phase 3
+// makes two paths to one effect DISTINCT witnesses (the dedup keys on pathSig),
+// two candidates can share (Effect, Flow, Service, Entry, Op) yet differ only in
+// path — so the order must break on pathSig here too, exactly as lessObserved
+// does, or the non-stable candidate sort would order them on arrival. The chain
+// carries the FQN tags pathSig folds in (Observation.CausalPath drops them), so the
+// tie-break is over the full path identity.
 func lessWitness(a, b Witness) bool {
 	if a.Effect != b.Effect {
 		return a.Effect < b.Effect
@@ -480,7 +491,10 @@ func lessWitness(a, b Witness) bool {
 	if a.Observed.Entry != b.Observed.Entry {
 		return a.Observed.Entry < b.Observed.Entry
 	}
-	return a.Observed.Op < b.Observed.Op
+	if a.Observed.Op != b.Observed.Op {
+		return a.Observed.Op < b.Observed.Op
+	}
+	return pathSig(a.chain) < pathSig(b.chain)
 }
 
 func lessObserved(a, b observedEffect) bool {

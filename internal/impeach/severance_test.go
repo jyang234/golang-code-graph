@@ -191,7 +191,7 @@ func TestSeveranceProofObligation(t *testing.T) {
 		Claim:    Claim{Reachability: ReachUnreachable},
 		Observed: Observation{Flow: "POST /x", Service: "svc", Entry: "HTTP POST /x", Op: "DB postgres DELETE ledger"},
 	}
-	sev, discovered, ok := localize(w, ix, buildNodeIndex(ix), rootReachOf(ix))
+	sev, discovered, ok := newLocalizer(ix).localize(w)
 	if ok {
 		t.Fatal("proof obligation passed on a reproducible effect; want fail-closed")
 	}
@@ -225,7 +225,7 @@ func TestSeveranceKnownFrontier(t *testing.T) {
 		Claim:    Claim{Reachability: ReachUnreachable},
 		Observed: Observation{Flow: "POST /x", Service: "svc", Entry: "HTTP POST /x", Op: "DB postgres DELETE ledger"},
 	}
-	sev, _, ok := localize(w, ix, buildNodeIndex(ix), rootReachOf(ix))
+	sev, _, ok := newLocalizer(ix).localize(w)
 	if !ok {
 		t.Fatal("proof obligation failed on a genuinely severed emitter")
 	}

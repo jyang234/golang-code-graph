@@ -136,6 +136,45 @@ func TestLocalizeL1AbsentFromGraphHint(t *testing.T) {
 	if w.Severance.AbsentFromGraph != "ex.com/svc.(*Ghost).Wipe" {
 		t.Errorf("AbsentFromGraph = %q, want the ghost tag", w.Severance.AbsentFromGraph)
 	}
+	// Kind is derived from the contradiction's shape (no emitter modeled, discovered
+	// entry), NOT from the resolution level: an unmodeled effect is unmodeled-effect
+	// at L1 exactly as it is at L0 — never the false 'severed-emitter' (which would
+	// assert an emitter exists). This is the L0/L1 classifier parity.
+	if w.Severance.Kind != SeveranceUnmodeledEffect {
+		t.Errorf("Kind = %q, want %q (Kind must not depend on capture richness)", w.Severance.Kind, SeveranceUnmodeledEffect)
+	}
+}
+
+// TestSeveranceKindLevelIndependent is the direct parity guard for the L0/L1
+// classifier (§6/§7): the SAME unmodeled-effect candidate, audited once with an FQN
+// tag (L1) and once without (L0), must carry the SAME Kind. Only Level and Site
+// resolution may differ — never the classification, or the witness Kind would be a
+// function of capture richness rather than the contradiction's shape.
+func TestSeveranceKindLevelIndependent(t *testing.T) {
+	ix := graph.NewIndex(&graph.Graph{
+		Nodes:       []graph.Node{{FQN: "ex.com/svc.handler"}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "POST /x", Fn: "ex.com/svc.handler"}},
+	})
+	mk := func(tagged bool) *ir.CanonicalSpan {
+		inner := &ir.CanonicalSpan{Op: "internal work", Kind: ir.KindInternal,
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{{Op: "DB postgres DELETE ledger", Kind: ir.KindClient}}}}}
+		if tagged {
+			inner.Attrs = map[string]string{FQNTagKey: "ex.com/svc.(*Ghost).Wipe"}
+		}
+		return &ir.CanonicalSpan{Op: "HTTP POST /x", Kind: ir.KindServer,
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{inner}}}}
+	}
+	l0 := Audit("svc", ix, []*ir.CanonicalTrace{{Flow: "POST /x", Service: "svc", Root: mk(false)}}, Provenance{})
+	l1 := Audit("svc", ix, []*ir.CanonicalTrace{{Flow: "POST /x", Service: "svc", Root: mk(true)}}, Provenance{})
+	if len(l0.Candidates) != 1 || len(l1.Candidates) != 1 {
+		t.Fatalf("want 1 candidate each, got L0=%d L1=%d", len(l0.Candidates), len(l1.Candidates))
+	}
+	if l0.Candidates[0].Severance.Level != LevelL0 || l1.Candidates[0].Severance.Level != LevelL1 {
+		t.Fatalf("levels: L0=%q L1=%q", l0.Candidates[0].Severance.Level, l1.Candidates[0].Severance.Level)
+	}
+	if k0, k1 := l0.Candidates[0].Severance.Kind, l1.Candidates[0].Severance.Kind; k0 != k1 {
+		t.Errorf("Kind differs by level: L0=%q L1=%q (must be level-independent)", k0, k1)
+	}
 }
 
 // TestSelfExtinguishDryRun is the §6/§8 acceptance criterion at Phase 3: ratifying
@@ -193,5 +232,51 @@ func TestLocalizeL1Deterministic(t *testing.T) {
 	b := Audit("svc", ix, []*ir.CanonicalTrace{l1Trace()}, Provenance{})
 	if a.Digest != b.Digest {
 		t.Errorf("L1 report not deterministic / duplicate-stable: %s != %s", a.Digest, b.Digest)
+	}
+}
+
+// TestSeverancePathsDistinctByTag pins two coupled properties around path identity:
+//   - two causal paths to one effect that share an OP chain but carry different
+//     `flowmap.fqn` tags are NOT collapsed (pathSig folds the tag), so each path's
+//     distinct localization survives instead of one being silently dropped; and
+//   - the candidate order is a TOTAL order (lessWitness tie-breaks on the path), so
+//     the non-stable candidate sort cannot order the two by trace arrival.
+func TestSeverancePathsDistinctByTag(t *testing.T) {
+	ix := graph.NewIndex(&graph.Graph{
+		Nodes:       []graph.Node{{FQN: "ex.com/svc.handler"}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "POST /x", Fn: "ex.com/svc.handler"}},
+	})
+	const tagA, tagB = "ex.com/svc.(*A).Do", "ex.com/svc.(*B).Do"
+	// Two captures of the same flow whose internal span shares the op "internal
+	// work" but carries a different FQN tag — two distinct causal paths to the one
+	// effect key, differing ONLY in the tag.
+	trace := func(tag string) *ir.CanonicalTrace {
+		return &ir.CanonicalTrace{Flow: "POST /x", Service: "svc", Root: &ir.CanonicalSpan{
+			Op: "HTTP POST /x", Kind: ir.KindServer,
+			Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{{
+				Op: "internal work", Kind: ir.KindInternal, Attrs: map[string]string{FQNTagKey: tag},
+				Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{{Op: "DB postgres DELETE ledger", Kind: ir.KindClient}}}},
+			}}}},
+		}}
+	}
+	trA, trB := trace(tagA), trace(tagB)
+	r := Audit("svc", ix, []*ir.CanonicalTrace{trA, trB}, Provenance{})
+	if len(r.Candidates) != 2 {
+		t.Fatalf("tag-distinguished paths collapsed: want 2 candidates, got %d: %+v", len(r.Candidates), r.Candidates)
+	}
+	// The two carry the two distinct tags (no path's localization was dropped).
+	hints := map[string]bool{r.Candidates[0].Severance.AbsentFromGraph: true, r.Candidates[1].Severance.AbsentFromGraph: true}
+	if !hints[tagA] || !hints[tagB] {
+		t.Errorf("paths not distinguished by tag: hints = %v", hints)
+	}
+	// lessWitness is a TOTAL order over them: exactly one direction is true (so the
+	// non-stable candidate sort cannot order them by arrival).
+	c0, c1 := r.Candidates[0], r.Candidates[1]
+	if lessWitness(c0, c1) == lessWitness(c1, c0) {
+		t.Error("lessWitness is not a total order: two distinct-path candidates compare equal (arrival-order dependent)")
+	}
+	// Order-independent digest across trace arrival order (the corpus is a set).
+	if swapped := Audit("svc", ix, []*ir.CanonicalTrace{trB, trA}, Provenance{}); r.Digest != swapped.Digest {
+		t.Errorf("digest depends on trace arrival order: %s != %s", r.Digest, swapped.Digest)
 	}
 }
