@@ -70,11 +70,12 @@ type Report struct {
 
 // Witness is one candidate: an effect observed where static did not place it.
 type Witness struct {
-	Effect   string      `json:"effect"`   // the canonical join key (the §7 key space)
-	Claim    Claim       `json:"claim"`    // the static negative under test
-	Observed Observation `json:"observed"` // the runtime counterexample
-	Rungs    []Rung      `json:"rungs"`    // the FULL ordered downgrade ladder (§4), recorded whole
-	Verdict  string      `json:"verdict"`  // IMPEACHMENT | <downgrade> — the first failing rung's disclosure
+	Effect    string      `json:"effect"`              // the canonical join key (the §7 key space)
+	Claim     Claim       `json:"claim"`               // the static negative under test
+	Observed  Observation `json:"observed"`            // the runtime counterexample
+	Severance *Severance  `json:"severance,omitempty"` // the L0 localization of WHERE static lost it (§6, Phase 2)
+	Rungs     []Rung      `json:"rungs"`               // the FULL ordered downgrade ladder (§4), recorded whole
+	Verdict   string      `json:"verdict"`             // IMPEACHMENT | <downgrade> — the first failing rung's disclosure
 }
 
 // Claim is the static side of the contradiction.
@@ -90,7 +91,12 @@ type Observation struct {
 	Flow    string `json:"flow"`
 	Service string `json:"service,omitempty"`
 	Entry   string `json:"entry,omitempty"`
-	Op      string `json:"op"`
+	// EntryDiscovered records whether the graph modeled Entry as a root (§5): the
+	// missed-root vs missed-edge distinction the severance walk turns on (§6). Set
+	// during localization, so it is the same entrypoint join Severance is derived
+	// from, not a second guess.
+	EntryDiscovered bool   `json:"entry_discovered"`
+	Op              string `json:"op"`
 }
 
 // Audit joins a stamped graph against a canonical trace corpus and returns the
@@ -184,6 +190,28 @@ func Audit(service string, ix *graph.Index, traces []*ir.CanonicalTrace, prov Pr
 	}
 	sort.Strings(gaps)
 	r.CoverageGaps = gaps
+
+	// Localize each candidate (Phase 2, §6): project its coarse (entry → effect)
+	// anchors onto the graph and record WHERE static lost the effect (the Site) plus
+	// the known/unknown frontier sort. The proof obligation is folded in — a
+	// candidate whose effect turns out to be statically reproducible (Kind
+	// SeveranceNone) is a self-inconsistency, disclosed in a caveat, never a
+	// fabricated seam. Done before classify so EntryDiscovered is set when the
+	// ladder reads the witness, and before the sort/digest so the localization is
+	// part of the byte-identical artifact.
+	selfInconsistent := 0
+	for i := range r.Candidates {
+		sev, discovered, ok := localize(r.Candidates[i], ix)
+		s := sev
+		r.Candidates[i].Severance = &s
+		r.Candidates[i].Observed.EntryDiscovered = discovered
+		if !ok {
+			selfInconsistent++
+		}
+	}
+	if selfInconsistent > 0 {
+		caveats = append(caveats, plural(selfInconsistent, "candidate")+" is self-inconsistent (the effect is statically reproducible along the observed anchors): localized to no severance, never impeached (§6 proof obligation)")
+	}
 
 	// Classify each candidate through the downgrade ladder (§4): CANDIDATE becomes
 	// IMPEACHMENT or a specific downgrade, with the full ordered ladder recorded.
