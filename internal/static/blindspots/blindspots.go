@@ -44,6 +44,13 @@ const (
 	// Linkname is a package using //go:linkname, which links symbols outside the
 	// visible call graph.
 	Linkname Kind = "go:linkname"
+	// ImpeachmentSeam is a human-RATIFIED seam: a site where behavior proved the
+	// static over-approximation's disclosure incomplete (the behavioral-impeachment
+	// loop's blind-spot repair, plan §8). Unlike the others it is not auto-detected
+	// from code — it is DECLARED in config (static.declaredBlindSpots), CODEOWNER-
+	// gated, each carrying the impeachment witness as its reason. flowmap merges it
+	// so the next run abstains at the seam (NEVER → CANT-PROVE) — the safe direction.
+	ImpeachmentSeam Kind = "ImpeachmentSeam"
 )
 
 // Kinds returns every blind-spot category. It exists so exhaustiveness guards —
@@ -52,7 +59,7 @@ const (
 // above (a new const belongs here).
 func Kinds() []Kind {
 	return []Kind{
-		NonConstantBoundaryArg, UnresolvedDispatch, Reflect, HighFanOut, Unsafe, Cgo, Linkname,
+		NonConstantBoundaryArg, UnresolvedDispatch, Reflect, HighFanOut, Unsafe, Cgo, Linkname, ImpeachmentSeam,
 	}
 }
 

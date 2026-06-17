@@ -94,6 +94,39 @@ func TestRatchetEntryMatchesTheRepair(t *testing.T) {
 	}
 }
 
+// TestRatifyBundlesBothHalves is the §8 enactment: a verified repair yields the
+// ONE reviewed act — a declared seam for flowmap's config AND the policy ratchet
+// allow-list entry — keyed identically (kind, site) and sharing the witness reason,
+// so the two halves cannot drift and the ratchet allows exactly the declared seam.
+func TestRatifyBundlesBothHalves(t *testing.T) {
+	_, r, _ := prodL1(t)
+	rep := ProposeRepair(r.Candidates[0])
+	rat, ok := Ratify(rep, r.Candidates[0])
+	if !ok {
+		t.Fatal("Ratify refused a verified blind-spot repair")
+	}
+	if rat.DeclaredSite != rep.Site || rat.DeclaredKind != BlindSpotKindImpeachment {
+		t.Errorf("declared seam = (%q,%q), want (%q,%q)", rat.DeclaredSite, rat.DeclaredKind, rep.Site, BlindSpotKindImpeachment)
+	}
+	// The two halves agree on (kind, site) and reason — one source, no drift.
+	if rat.RatchetAllow.Site != rat.DeclaredSite || rat.RatchetAllow.Kind != rat.DeclaredKind || rat.RatchetAllow.Reason != rat.Reason {
+		t.Errorf("ratchet entry %+v disagrees with the declared seam (%q,%q,%q)", rat.RatchetAllow, rat.DeclaredKind, rat.DeclaredSite, rat.Reason)
+	}
+	// The committed allow-list entry allows EXACTLY the declared seam (so enacting
+	// it does not trip blind_spot_ratchet).
+	ratchet := &policy.BlindSpotRatchet{Allow: []policy.BlindSpotException{rat.RatchetAllow}}
+	if !ratchet.Allows(rat.DeclaredKind, rat.DeclaredSite) {
+		t.Error("ratchet does not allow the seam it co-committed")
+	}
+	if rat.Reason == "" {
+		t.Error("ratification carries no reason (the witness)")
+	}
+	// A reclaimer is never ratifiable through this path.
+	if _, ok := Ratify(&ProposedRepair{Kind: RepairReclaimer, Site: "x"}, r.Candidates[0]); ok {
+		t.Error("Ratify accepted a reclaimer")
+	}
+}
+
 // TestSelfExtinguishesAcceptsCorrectRepair is the per-repair acceptance gate's
 // happy path (§6/§8): blinding the precise severed Site makes the emitter
 // seam-reachable, so the target impeachment extinguishes, and with no policy proofs

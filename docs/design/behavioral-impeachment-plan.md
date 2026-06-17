@@ -39,14 +39,17 @@ first-party function that opened each span (`harness.firstPartyFQN`), and canon
 compute (scoped to tagged spans, so production/untagged ingestion is unchanged) —
 so the severance walk localizes a missed-root impeachment to the precise severed
 NODE on the real captured path, and the whole loop runs E2E over the impeachsvc
-fixture. The remaining gaps are **honestly disclosed, not hidden**:
-`CaptureProvenance` *attestation* is still absent (capture-fidelity stays
-human-asserted, §12.6), the L1 `absent-from-graph` sharp signal stays L2-gated
-until the §12.5 ⊥-symmetry carve-out is closed, and **enacting** a
-ratified blind-spot into the next graph build has no substrate yet (graph blind
-spots are auto-detected from code, with no manifest for a human-declared seam) — so
-the loop proposes, verifies, and emits the ratchet entry, but the graph-side
-persistence is the one piece a human/flowmap still completes by hand. It is the
+fixture. **Enactment is now real too:** flowmap reads a human-ratified seam from
+config (`static.declaredBlindSpots`) and merges it into the graph's blind spots, so
+the next build abstains at the seam exactly as for an auto-detected one — `Ratify`
+bundles the verified repair into the one reviewed act (the declared seam + the
+`blind_spot_ratchet` allow-list entry, §13 crack #6), and a round-trip test proves
+that committing the seam REALLY extinguishes the impeachment across the producer→
+consumer JSON wire (not just in the dry run). The remaining gaps are **honestly
+disclosed, not hidden**: `CaptureProvenance` *attestation* is still absent
+(capture-fidelity stays human-asserted, §12.6), and the L1 `absent-from-graph`
+sharp signal stays L2-gated until the §12.5 ⊥-symmetry carve-out is closed (the
+localized `Site` itself is sound at L1, proven by self-extinguish). It is the
 design record of a single
 extended exploration: how to combine the static call graph with captured runtime
 behavior so that each covers the other's blind spot, *without* risking the prime
@@ -429,7 +432,21 @@ exactly what `blind_spot_ratchet` gates as "a new blind spot," so a ratification
 disclosed a seam without allow-listing it would trip that very gate. The ratification
 is one reviewed act: it adds the blind spot *and* records it in the ratchet's
 allow-list with the impeachment witness as its reason — a reviewed, intentional
-disclosure, not drift.
+disclosure, not drift. **Implemented** as `impeach.Ratify`, which bundles a verified
+repair into both halves from the same witness (so they cannot drift): the declared
+seam and the `policy.BlindSpotException` ratchet entry, keyed identically.
+
+**The enactment substrate (the seam reaches the next graph).** A ratified seam is a
+new `ImpeachmentSeam` blind-spot kind, declared in flowmap's config
+(`static.declaredBlindSpots`, CODEOWNER-gated like `static.routers`) and merged into
+the graph at build (`graphio`), deterministically and indistinguishably from an
+auto-detected blind spot. It is the one disclosed-gap category that is *declared*,
+not detected — sound for the same reason as the rest: a blind spot only makes static
+*abstain* (NEVER → CANT-PROVE), never hides a violation (reachability is edge-based),
+and under `require_proof` it fails *closed*. So the human commits one reviewed act
+(the `Ratify` bundle), the next `flowmap graph` carries the seam, and the
+impeachment self-extinguishes for real — proven across the producer→consumer JSON
+wire by a round-trip test.
 
 **Per-repair acceptance gate: the self-extinguish test** — after ratifying,
 regenerate and confirm the **target impeachment extinguishes while no `PROVEN-ABSENT`
@@ -481,7 +498,7 @@ independently shippable and valuable; the plan is a set of off-ramps.
 | **1 — ladder** ✅ **LANDED** | the five rungs (`internal/impeach/ladder.go`) → candidates classified IMPEACHMENT vs the four downgrades (`NOT-A-CONTRADICTION`/`VERSION-SKEW`/`LABEL-MISMATCH`/`CROSS-SERVICE`/`CAPTURE-UNTRUSTED`); ladder recorded **whole**, verdict = first failing rung | a trustworthy counterexample finder (over exercised paths), **zero substrate/gate risk** — the natural resting point | measure the rung distribution; *mostly downgrades, rare impeachments* = healthy; mostly IMPEACHMENT = too credulous, fix before proceeding — **measured:** downgrade-dominated, **0 IMPEACHMENT without attested provenance** (no commit stamp on the corpus today ⇒ `VERSION-SKEW`, §14-D); the genuine impeachsvc candidate promotes to IMPEACHMENT only under a stamped graph + matching production capture — healthy |
 | **2 — severance L0** ✅ **LANDED** | coarse `Site` (entry+effect anchors) + the proof obligation (`internal/impeach/severance.go`): the entrypoint join maps the observed entry, `staticEmitters` the effect, and the L0 walk classifies the break (missed-root / severed-emitter / unmodeled-effect) + sorts it known/unknown via the frontier section; a reproducible effect localizes to `SeveranceNone` (the proof obligation, disclosed in a caveat, never a fabricated seam) | impeachments carry a coarse location + known/unknown sort | proof obligation holds; spot-check Sites — **measured:** the impeachsvc missed root localizes to its entry registration literal, sorted UNDISCLOSED; the synthetic severed-emitter/unmodeled/absent-missed-root flavors localize as designed; determinism preserved (severance rides the byte-identical digest) |
 | **3 — map + `canonFQN`** ✅ **LANDED** | the span↔node map (`spanmap.go`: node reverse-index by `FQNKey`, the four internal-span outcomes), `canonFQN` + `FQNKey` (`canonfqn.go`: total, pure, ⊥-with-reason) + the fixture **parity test** and the **⊥-symmetry fuzz** (`FuzzCanonFQNSymmetry`) the sharp `absent-from-graph` needs, and the L1-precise walk (`walkL1`: the first severed path node carrying the effect → a node `Site`, with the `absent-from-graph` hint riding beside it as a weak-at-L1 signal); the Kind and the proof obligation are ONE shared mechanism for both levels (the level is a precision dial, not a fork), so a tagged and an untagged corpus classify a candidate identically; causal-path (FQN tags folded into its signature) threaded into the witness; untagged corpora fall back to L0 | precise localization, sharp `absent-from-graph` | parity test green + self-extinguish **dry run** — **measured:** parity + symmetry fuzz green (the fuzz surfaced and pinned a dotted-final-segment asymmetry as the documented L2-only carve-out, and a leaky-key regression now fixed); the L1 walk localizes the severed-node `Site`, and the self-extinguish dry run confirms a `blind_spot` there extinguishes the target while creating no new candidate (monotonic) |
-| **4 — loop** ✅ **LANDED + E2E (propose+verify; enact gapped)** | `ProposeRepair` (always `blind_spot`, never auto-reclaimer) + the **monotonic** `SelfExtinguishes` gate (`extinguish.go`: in-memory `WithBlindSpots` dry run, target extinguishes ∧ no proof newly created, reusing `fitness.Check`) + `RatchetEntry` (the §13-crack-#6 co-update) | findings carry a verified, ratifiable repair instead of re-firing | per-repair self-extinguish test — **measured (unit + E2E):** unit — the correct severed-node repair is accepted, a mislocalized Site rejected, a repair extinguishing **several** impeachments still accepted (crack #4 = monotonic, not count-1), a reclaimer refused; **E2E over the real impeachsvc fixture** — the blind-spot repair at the L1-localized `PurgeLedger` node extinguishes the real impeachment, monotonically. **Gap:** enacting the ratified blind spot into the next graph has no manifest substrate yet (auto-detected blind spots only) |
+| **4 — loop** ✅ **LANDED + E2E (propose → verify → enact)** | `ProposeRepair` (always `blind_spot`, never auto-reclaimer) + the **monotonic** `SelfExtinguishes` gate (`extinguish.go`: in-memory `WithBlindSpots` dry run, target extinguishes ∧ no proof newly created, reusing `fitness.Check`) + `Ratify` (bundles the §13-crack-#6 co-update: the declared seam + the ratchet allow-list entry) + the ENACTMENT (`config.static.declaredBlindSpots` → `graphio` merges it into the graph) | findings carry a verified, ratifiable repair that, once committed, resolves instead of re-firing | per-repair self-extinguish test + the round-trip — **measured (unit + E2E):** unit — correct repair accepted, mislocalized Site rejected, a repair extinguishing **several** impeachments still accepted (crack #4 = monotonic, not count-1), a reclaimer refused, `Ratify`'s two halves agree; **E2E** — the blind-spot repair at the L1-localized `PurgeLedger` node extinguishes the real impeachment monotonically, AND a round-trip (flowmap build with the declared seam → JSON → groundwork) really extinguishes it (1→0 candidates) across the trust boundary |
 | **5 — verdict** ✅ **LANDED + E2E (behind default-off opt-in)** | `Resolve` (`verdict.go`): a witnessed `must_not_reach` breach (a node on the OBSERVED causal path binds the rule's `from`, the effect its `to`) → `VIOLATED` (never laundered); bare impeachment records the dependent `SATISFIED`→`CANT-PROVE` downgrade; the `CorpusOrigin` fence makes a live corpus audit-only **by representation**; `GateBlockers` blocks a bare impeachment only under `require_proof`; wired into `review.Gate` via `WithImpeachment` behind `policy.ImpeachmentGate` | gating on analyzer-unsoundness and on witnessed breaches, **committed corpus only** (§9) | observe-first: disclosed before it fails a gate — **measured (unit + E2E):** the same breach discloses on PASS without the opt-in and BLOCKs with it; a live corpus yields **no** gate blocker; the default static gate digest is byte-identical; **E2E over the real fixture** — `VIOLATED` blocks on the committed corpus / audit-only on live, and a `require_proof` rule from the discovered handler is impeached `SATISFIED`→`CANT-PROVE`→BLOCK. **Cap:** capture-fidelity is the trusted-pipeline assertion (§12.6), so gating is sound only on attested pipelines |
 
 **Cross-cutting:** every canonicalization ships with its determinism test (report
@@ -518,18 +535,17 @@ wired into `review.Gate` behind the default-off `impeachment_gate` opt-in, and
 L1-localized severed node, `VIOLATED` committed-vs-live, `require_proof` downgrade).
 **L1 is now real**: the in-process `flowmap.fqn` producer (`harness.firstPartyFQN`)
 plus canon's scoped waypoint preservation give the severance walk a precise node on
-the real captured path. **The remaining work is the absent substrate the phases
-budget honestly, not new logic:** (1) `CaptureProvenance` *attestation* (§12.6) —
-until a capture pipeline can be attested (or mock spans detected structurally),
-gating is sound only on trusted pipelines, asserted via `verify --capture`; (2) the
-L1 `absent-from-graph` sharp signal stays L2-gated until the §12.5 ⊥-symmetry
-carve-out is closed (the localized `Site` itself is sound at L1, proven by
-self-extinguish); (3) **enacting** a ratified blind-spot into the next graph build —
-graph blind spots are auto-detected from code with no manifest for a human-declared
-seam, so the loop stops at the verified proposal + ratchet entry and a human/flowmap
-completes the persistence. None of the
-three is a soundness hole: each is a fail-closed abstention (a downgrade, a weak
-hint, or a hand-completed step), never a confidently-wrong verdict.
+the real captured path. **Enactment is real**: flowmap merges a ratified seam from
+`config.static.declaredBlindSpots` into the graph (`Ratify` bundles the one reviewed
+act — the declared seam + the ratchet allow-list entry), proven across the
+producer→consumer wire by a round-trip test. **The remaining work is the absent
+substrate the phases budget honestly, not new logic:** (1) `CaptureProvenance`
+*attestation* (§12.6) — until a capture pipeline can be attested (or mock spans
+detected structurally), gating is sound only on trusted pipelines, asserted via
+`verify --capture`; (2) the L1 `absent-from-graph` sharp signal stays L2-gated until
+the §12.5 ⊥-symmetry carve-out is closed (the localized `Site` itself is sound at
+L1, proven by self-extinguish). Neither is a soundness hole: each is a fail-closed
+abstention (a downgrade or a weak hint), never a confidently-wrong verdict.
 
 ---
 

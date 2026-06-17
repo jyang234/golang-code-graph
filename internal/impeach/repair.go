@@ -74,6 +74,52 @@ func RatchetEntry(repair *ProposedRepair, w Witness) policy.BlindSpotException {
 	return policy.BlindSpotException{
 		Kind:   BlindSpotKindImpeachment,
 		Site:   repair.Site,
-		Reason: "ratified behavioral impeachment: " + w.Effect + " observed on flow " + w.Observed.Flow,
+		Reason: ratifyReason(w),
 	}
+}
+
+// Ratification is the COMPLETE "one reviewed act" a human commits to enact a
+// verified repair (§8, §13 crack #6) — both halves, derived from the same witness
+// so they cannot drift:
+//   - the ENACTMENT: a declared seam for flowmap's config (static.declaredBlindSpots),
+//     so the next graph build carries the blind spot and static abstains at the seam;
+//   - the RATCHET allow-list entry for the policy, so adding that blind spot does not
+//     trip blind_spot_ratchet (its sibling gate).
+//
+// The declared-seam fields are plain strings (not a config.DeclaredBlindSpot) so the
+// groundwork-side loop never imports the flowmap config package — the wire is the
+// (kind, site, reason) triple, identical to the RatchetAllow entry's key.
+type Ratification struct {
+	// DeclaredSite/DeclaredKind/Reason render the flowmap config seam:
+	//   static: {declaredBlindSpots: [{site: DeclaredSite, kind: DeclaredKind, reason: Reason}]}
+	DeclaredSite string
+	DeclaredKind string
+	Reason       string
+	// RatchetAllow is the policy blind_spot_ratchet allow-list entry, keyed
+	// identically (kind, site) so it allows EXACTLY the declared seam.
+	RatchetAllow policy.BlindSpotException
+}
+
+// Ratify bundles a verified blind-spot repair into the one reviewed act that
+// enacts it (§8). It is pure derivation — it enacts nothing; the human commits the
+// two halves (the flowmap config seam and the policy ratchet entry). Returns
+// (_, false) when there is no blind-spot repair to ratify (a reclaimer is never
+// auto-proposed, and a nil/empty repair has nothing to enact).
+func Ratify(repair *ProposedRepair, w Witness) (Ratification, bool) {
+	if repair == nil || repair.Kind != RepairBlindSpot || repair.Site == "" {
+		return Ratification{}, false
+	}
+	return Ratification{
+		DeclaredSite: repair.Site,
+		DeclaredKind: BlindSpotKindImpeachment,
+		Reason:       ratifyReason(w),
+		RatchetAllow: RatchetEntry(repair, w),
+	}, true
+}
+
+// ratifyReason is the ONE wording for a ratified seam's justification — the
+// impeachment witness — shared by both halves of the ratification so the config
+// seam and the ratchet entry record the same reason.
+func ratifyReason(w Witness) string {
+	return "ratified behavioral impeachment: " + w.Effect + " observed on flow " + w.Observed.Flow
 }

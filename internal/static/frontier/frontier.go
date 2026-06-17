@@ -343,8 +343,9 @@ func blindSpotBin(kind string) (Bin, bool) {
 		return BinC, true // over-approximation, not blindness
 	case string(blindspots.Reflect), string(blindspots.Unsafe),
 		string(blindspots.Cgo), string(blindspots.Linkname),
-		string(blindspots.UnresolvedDispatch), string(blindspots.NonConstantBoundaryArg):
-		return BinA, true // runtime/irreducible frontier
+		string(blindspots.UnresolvedDispatch), string(blindspots.NonConstantBoundaryArg),
+		string(blindspots.ImpeachmentSeam):
+		return BinA, true // runtime/irreducible frontier (a ratified seam is irreducible to static)
 	default:
 		return BinA, false // unrecognized — disclosed as A, but the guard test flags it
 	}

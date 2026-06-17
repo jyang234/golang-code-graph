@@ -14,6 +14,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 
 	"github.com/jyang234/golang-code-graph/internal/canonjson"
+	"github.com/jyang234/golang-code-graph/internal/config"
 	"github.com/jyang234/golang-code-graph/internal/sqlverb"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
@@ -148,6 +149,46 @@ type Edge struct {
 	Via string `json:"via,omitempty"`
 }
 
+// mergeDeclaredBlindSpots appends the config's human-ratified seams (§8 enactment)
+// to the auto-detected graph blind spots, deterministically — deduped by (kind,
+// site), sorted, so the result is byte-identical regardless of declaration order.
+// A declared seam makes static abstain at its site (the safe direction: it can only
+// weaken proofs, never hide a violation). The default kind is ImpeachmentSeam (the
+// behaviorally-discovered category); an explicit kind is kept verbatim. An entry
+// with no site is skipped (nothing to blind).
+func mergeDeclaredBlindSpots(detected []blindspots.BlindSpot, cfg *config.Config) []blindspots.BlindSpot {
+	if cfg == nil || len(cfg.Static.DeclaredBlindSpots) == 0 {
+		return detected
+	}
+	seen := map[[2]string]bool{}
+	for _, b := range detected {
+		seen[[2]string{string(b.Kind), b.Site}] = true
+	}
+	out := append([]blindspots.BlindSpot(nil), detected...)
+	for _, d := range cfg.Static.DeclaredBlindSpots {
+		kind := d.Kind
+		if kind == "" {
+			kind = string(blindspots.ImpeachmentSeam)
+		}
+		key := [2]string{kind, d.Site}
+		if d.Site == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, blindspots.BlindSpot{Kind: blindspots.Kind(kind), Site: d.Site, Detail: d.Reason})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Site != out[j].Site {
+			return out[i].Site < out[j].Site
+		}
+		return out[i].Detail < out[j].Detail
+	})
+	return out
+}
+
 // Build renders the full first-party graph of res. If entry is non-empty, the
 // graph is scoped to the functions reachable from the matching entry-point root.
 func Build(res *analyze.Result, entry string) (*Graph, error) {
@@ -172,6 +213,12 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 	if gs := blindspots.Graph(blindspots.Detect(res, hints)); len(gs) > 0 {
 		g.BlindSpots = gs
 	}
+	// Merge human-ratified seams declared in config (the behavioral-impeachment
+	// loop's enactment, §8): sites where static must abstain because behavior proved
+	// the disclosure incomplete. Done here so a declared seam rides the graph exactly
+	// like an auto-detected blind spot — the consumer (groundwork) cannot tell them
+	// apart, and the next run is honest at the seam.
+	g.BlindSpots = mergeDeclaredBlindSpots(g.BlindSpots, res.Config)
 	rootFns := rootFuncSet(res)
 	if entry == "" {
 		for _, r := range res.Roots.Roots {
