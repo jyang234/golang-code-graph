@@ -117,7 +117,7 @@ func Audit(service string, ix *graph.Index, traces []*ir.CanonicalTrace) Report 
 	if dbUnreadable > 0 {
 		caveats = append(caveats, plural(dbUnreadable, "opaque DB effect")+" in the graph: an unnamed observed DB op is treated as covered by these (reclaimed-live), never impeached")
 	}
-	caveats = append(caveats, "outbound HTTP/RPC effects are not joined at Phase 0 (label parity deferred); only bus and DB are audited")
+	caveats = append(caveats, "Phase 0 joins caused effects only: bus PUBLISH and DB. Inbound CONSUME/HTTP-server spans are entries, not effects; outbound HTTP/RPC is deferred (label parity)")
 
 	blindCovered := 0
 	for _, o := range observed {
@@ -233,7 +233,12 @@ func staticEffectSets(ix *graph.Index) (named, reachable, blind map[string]bool,
 	}
 	busEffs, busDynamic := ix.BusEffects()
 	for _, be := range busEffs {
-		add(be.Op+" "+be.Event, be.From) // "PUBLISH loan.approved"
+		// Only PUBLISH is a caused effect; an inbound CONSUME is an entry, not
+		// joined (observedKey excludes it on the behavioral side in lockstep).
+		if be.Op != graph.BusPublish {
+			continue
+		}
+		add(graph.BusPublish+" "+be.Event, be.From) // "PUBLISH loan.approved"
 	}
 	dbEffs, dbUnreadable := ix.DBEffects()
 	for _, de := range dbEffs {
@@ -300,19 +305,23 @@ func observedEffects(traces []*ir.CanonicalTrace) []observedEffect {
 }
 
 // observedKey reduces a span to the canonical join key, or ok=false when the span
-// is not a Phase-0 boundary effect (outbound HTTP/RPC, server entry, internal
-// compute). A DB span keys through ParseDBKey regardless of client/internal kind;
-// a producer/consumer keys on its already-canonical op.
+// is not a Phase-0 CAUSED effect. The cell impeaches an outbound effect a flow
+// PRODUCED on a path static says it cannot — so the join is over caused effects:
+// a bus PUBLISH and a DB op. An inbound CONSUME or HTTP server span is the flow's
+// ENTRY (the left side of attribution), not a caused effect, and is excluded —
+// otherwise a consumer's own subscription, whose boundary edge static anchors at
+// the registration site (a wiring root, not the handler's cone), reads as a false
+// "unreachable" candidate. Outbound HTTP/RPC client calls are caused effects but
+// deferred at Phase 0 (label parity, see Audit). A DB span keys through
+// ParseDBKey regardless of client/internal kind.
 func observedKey(s *ir.CanonicalSpan) (string, bool) {
 	if _, op, table, ok := opkey.ParseDBKey(s.Op); ok && op != "" {
 		return DBEffectKey(op, table), true
 	}
-	switch s.Kind {
-	case ir.KindProducer, ir.KindConsumer:
-		return s.Op, true
-	default:
-		return "", false
+	if s.Kind == ir.KindProducer {
+		return s.Op, true // "PUBLISH <event>"
 	}
+	return "", false
 }
 
 func witness(o observedEffect, reach string) Witness {
