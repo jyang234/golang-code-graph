@@ -206,8 +206,17 @@ func Classify(in *Input) *Result {
 		}
 	}
 
-	// Disclosed blind spots, binned by kind.
+	// Disclosed blind spots, binned by kind. A ratified ImpeachmentSeam is
+	// EXCLUDED from the frontier markers: it is not a reclaimable (or even a
+	// newly-discovered) frontier but a human-ratified disclosure already enacted in
+	// config, so counting it would let every ratification churn ReclaimableShare and
+	// the bin ratios — a metric drifting on governance actions, not on code
+	// dynamism. Its kind is still mapped by blindSpotBin (kept whole for the
+	// exhaustiveness guard); it just does not enter the marker set.
 	for _, bs := range in.BlindSpots {
+		if bs.Kind == string(blindspots.ImpeachmentSeam) {
+			continue
+		}
 		bin, _ := blindSpotBin(bs.Kind)
 		add(Marker{Kind: bs.Kind, Bin: bin, Site: bs.Site})
 	}

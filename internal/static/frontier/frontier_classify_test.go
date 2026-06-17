@@ -249,6 +249,28 @@ func TestClassifyDeterministic(t *testing.T) {
 	}
 }
 
+// TestClassifyExcludesImpeachmentSeam pins #13: a ratified ImpeachmentSeam is a
+// human-enacted disclosure, not a reclaimable frontier, so it must not enter the
+// marker set nor churn ReclaimableShare. Adding a seam alongside a real reclaimable
+// marker must leave the marker count and ratios identical to the seam-free input.
+func TestClassifyExcludesImpeachmentSeam(t *testing.T) {
+	reflectSpot := frontier.InBlindSpot{Kind: string(blindspots.Reflect), Site: wrap}
+	seamSpot := frontier.InBlindSpot{Kind: string(blindspots.ImpeachmentSeam), Site: store}
+
+	without := frontier.Summarize(frontier.Classify(in(nil, nil, nil, []frontier.InBlindSpot{reflectSpot})), 0)
+	withSeam := frontier.Summarize(frontier.Classify(in(nil, nil, nil, []frontier.InBlindSpot{reflectSpot, seamSpot})), 0)
+
+	if len(withSeam.Markers) != len(without.Markers) {
+		t.Fatalf("seam entered the marker set: %d markers with seam vs %d without", len(withSeam.Markers), len(without.Markers))
+	}
+	if withSeam.ReclaimableShare != without.ReclaimableShare {
+		t.Errorf("seam churned ReclaimableShare: %v vs %v", withSeam.ReclaimableShare, without.ReclaimableShare)
+	}
+	if _, ok := marker(withSeam.Markers, string(blindspots.ImpeachmentSeam)); ok {
+		t.Error("ImpeachmentSeam marker present; a ratified seam must not be a frontier marker")
+	}
+}
+
 // An empty input yields an empty inventory and zero ratios — no divide-by-zero.
 func TestClassifyEmpty(t *testing.T) {
 	r := frontier.Summarize(frontier.Classify(&frontier.Input{}), 0)

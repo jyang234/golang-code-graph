@@ -196,8 +196,10 @@ func firstPartyFQN() string {
 
 // transparentInfra are the frame prefixes that sit BETWEEN the OTel SDK and the
 // application frame for a span the application opened — walked past so the SUT
-// frame just above them is found. Listed by exact infra package, never a whole
-// org, so a service under one of these paths is not mis-skipped.
+// frame just above them is found. Listed by exact infra PACKAGE, never a whole
+// org: these are THIRD-PARTY/stdlib paths a real first-party service could be
+// nested under (a service module could legitimately live below a vanity org that
+// also ships infra), so an org-wide skip here could mis-skip a genuine SUT frame.
 var transparentInfra = []string{
 	"runtime.",
 	"reflect.",
@@ -210,7 +212,23 @@ var transparentInfra = []string{
 // driverBoundary are the frames that OPEN spans on the SUT's behalf (the harness
 // server span) or drive it (the test). Hitting one before any SUT frame means the
 // span has no first-party opener, so the producer emits no tag rather than
-// mislabelling it with a harness or test function.
+// mislabelling it with a harness or test function. This skip only ever SUPPRESSES
+// a tag (fail-closed, the soundness-safe direction); it can never mint a wrong one.
+//
+// The org-wide "…/golang-code-graph/internal/" prefix here is DELIBERATE and is
+// NOT in tension with transparentInfra's "never a whole org" rule — the two govern
+// different things. transparentInfra lists third-party paths a real SUT could be
+// nested under, so an org-wide skip there risks mis-skipping a genuine opener.
+// driverBoundary lists FLOWMAP'S OWN module-internal toolchain, which is never the
+// captured production SUT: in production the captured service is an external module
+// (e.g. example.com/impeachsvc/…), and flowmap's internal/ holds only the driver
+// and analysis machinery. The lone first-party SUT that lives under internal/ is
+// the test fixture internal/loansut, and it is intentionally left UNTAGGED: tagging
+// it would (via canon's keep-tagged-waypoint rule) preserve its tier-3 compute
+// spans, contradicting the loan fixture's documented purpose of demonstrating pure
+// tier-based contraction (TestHTTPCaptureCanonicalizes). L1 localization is still
+// fully exercised by the dedicated impeachsvc fixture under example.com/, which is
+// outside internal/ and therefore tagged.
 var driverBoundary = []string{
 	"testing.",
 	"github.com/jyang234/golang-code-graph/harness",
