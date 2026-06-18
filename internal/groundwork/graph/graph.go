@@ -195,12 +195,16 @@ type BlindSpot struct {
 // every groundwork surface that echoes provenance (fitness, review, verify), so
 // they word it identically. An empty algo means the graph predates provenance
 // recording — stated as "unrecorded", never implying a substrate. caveats are
-// the recorded soundness/precision notes, joined.
+// the recorded soundness/precision notes, joined — and they are disclosed even when
+// the substrate itself is unrecorded: a reclaim note or the committed-corpus
+// code-identity disclosure is a trust assumption the verdict leaned on regardless of
+// whether the call-graph algo was recorded, so an algo-less graph must NOT silently
+// swallow it (the prime-directive no-silent-drop these disclosures exist to honor).
 func ProvenanceLine(algo string, caveats []string) string {
-	if algo == "" {
-		return "substrate: unrecorded (graph predates provenance; regenerate with current flowmap)\n"
-	}
 	line := "substrate: " + algo
+	if algo == "" {
+		line = "substrate: unrecorded (graph predates provenance; regenerate with current flowmap)"
+	}
 	if len(caveats) > 0 {
 		line += " — " + strings.Join(caveats, "; ")
 	}

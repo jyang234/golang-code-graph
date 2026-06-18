@@ -40,7 +40,10 @@ type GateResult struct {
 	ImpeachmentBreaches []impeach.GateFinding `json:"impeachment_breaches,omitempty"`
 	// Algo and Caveats record the call-graph substrate the judged branch graph
 	// was built on — provenance baked into the gate digest so the verdict
-	// self-certifies which algorithm produced it (R3).
+	// self-certifies which algorithm produced it (R3). Caveats also carries the
+	// committed-corpus code-identity disclosure when a behavioral impeachment is
+	// present (committedCorpusIdentityCaveat) — a trust assumption on the same line,
+	// not a call-graph property.
 	Algo    string   `json:"algo,omitempty"`
 	Caveats []string `json:"caveats,omitempty"`
 	Digest  string   `json:"digest"`
@@ -64,6 +67,22 @@ type GateOption func(*gateConfig)
 func WithImpeachment(blockers []impeach.GateFinding) GateOption {
 	return func(c *gateConfig) { c.impeachment = blockers }
 }
+
+// committedCorpusIdentityCaveat discloses the one rung of the impeachment downgrade
+// ladder that a committed (stampless) corpus clears by INJECTION rather than by an
+// independent check. On the `verify --corpus` gating path the committed golden
+// carries no trace stamp, so committedImpeachmentBlockers injects the gated graph's
+// OWN stamp as the trace identity (§14-E "the committed corpus takes the gated
+// SHA"); the code-identity rung (§4 rung 2) then compares the graph's stamp against
+// itself. That rung therefore confirms only that the graph IS stamped — never that
+// the corpus was captured from the gated code. The version-skew protection it exists
+// for is thus an operational assumption on this path (corpus freshness), not a
+// mechanical check: a stale golden asserting an effect the current code no longer
+// emits would yield a false BLOCK the ladder cannot catch (errs safe — never a false
+// PASS). Disclosed so a reviewer reads freshness as the assumption it is — the
+// behavioral analog of R11's "regenerate from current source" trust-anchor — beside
+// the reclaim/substrate provenance caveats it mirrors.
+const committedCorpusIdentityCaveat = "impeachment gated on a committed corpus; code-identity is asserted by the gated stamp, not verified against a trace stamp — ensure the corpus is re-captured for this commit"
 
 // Gate runs the pre-flight checks. scope is the set of package-path prefixes the
 // change is declared to be confined to; an empty scope disables the scope-creep
@@ -103,6 +122,17 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string, opts ...G
 		writeTargets = newWriteTargets(p, base, branch)
 	}
 
+	// When a behavioral impeachment is present it cleared the code-identity rung by
+	// INJECTION, not by an independent check (the committed corpus is stamped with the
+	// gated graph's own stamp, §14-E) — so disclose that corpus freshness is an
+	// operational assumption on this path. Emitted only ALONGSIDE a present impeachment
+	// (the finding it qualifies), so the default static gate — and WithImpeachment(nil)
+	// — stays byte-identical, carrying no stray caveat into the digest.
+	caveats := provenanceCaveats(p.Substrate, base, branch)
+	if len(cfg.impeachment) > 0 {
+		caveats = append(caveats, committedCorpusIdentityCaveat)
+	}
+
 	g := GateResult{
 		Service:             p.Service,
 		NewViolations:       newViolations,
@@ -113,7 +143,7 @@ func Gate(p *policy.Policy, base, branch *graph.Graph, scope []string, opts ...G
 		StandingCautions:    standingCautions,
 		ImpeachmentBreaches: cfg.impeachment,
 		Algo:                branch.Algo,
-		Caveats:             provenanceCaveats(p.Substrate, base, branch),
+		Caveats:             caveats,
 	}
 	// Impeachment breaches are ALWAYS disclosed (above) but gate only on the
 	// opt-in (§9/§10 observe-first): a breach DISCLOSES from day one and BLOCKS only

@@ -31,6 +31,12 @@ func TestProvenanceLineAndRoundTrip(t *testing.T) {
 	if got := ProvenanceLine("", nil); !strings.Contains(got, "unrecorded") {
 		t.Errorf("empty algo must read as unrecorded, got %q", got)
 	}
+	// A caveat must surface even when the substrate is unrecorded: a trust disclosure
+	// (reclaim, committed-corpus code-identity) the verdict leaned on may not be
+	// silently dropped just because the call-graph algo was not recorded.
+	if got := ProvenanceLine("", []string{"some trust disclosure"}); !strings.Contains(got, "unrecorded") || !strings.Contains(got, "some trust disclosure") {
+		t.Errorf("an unrecorded substrate must still disclose its caveats, got %q", got)
+	}
 }
 
 // A graph carrying flowmap's producing-build version (the `tool` header, R11)

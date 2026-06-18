@@ -84,3 +84,53 @@ func TestGateImpeachmentOptInOnlyGatesWithBreaches(t *testing.T) {
 		t.Errorf("opt-in with no breach must pass; got %+v", g)
 	}
 }
+
+// stampedAlgoPair mirrors the REAL gating path: a CI-built graph that records its
+// substrate (Algo). base==branch keeps the static gate clean, isolating the
+// behavioral input as before. (The disclosure surfaces on an algo-less graph too —
+// ProvenanceLine no longer drops caveats when the substrate is unrecorded; that
+// regression is guarded at the ProvenanceLine level in graph_test.go.)
+func stampedAlgoPair() (*graph.Graph, *graph.Graph) {
+	g := &graph.Graph{Algo: "rta", Nodes: []graph.Node{{FQN: "svc.handler", Sig: "func()"}}}
+	return g, g
+}
+
+// TestGateImpeachmentDisclosesCommittedCorpusIdentity: a present behavioral
+// impeachment cleared the code-identity rung by injection — the committed corpus is
+// stamped with the gated graph's own stamp (§14-E), so the rung verifies only that
+// the graph is stamped, not that the corpus came from the gated code. The gate must
+// DISCLOSE that corpus freshness is an operational assumption: structurally in
+// Caveats (so a CI consumer of --json sees it, baked into the digest) AND in the
+// human render, never silently trusting the corpus while advertising a mechanical
+// check.
+func TestGateImpeachmentDisclosesCommittedCorpusIdentity(t *testing.T) {
+	base, branch := stampedAlgoPair()
+	p := &policy.Policy{Service: "svc", Version: 1}
+	g := Gate(p, base, branch, nil, WithImpeachment([]impeach.GateFinding{violatedBlocker()}))
+
+	if !hasCaveat(g.Caveats, committedCorpusIdentityCaveat) {
+		t.Errorf("a present impeachment must disclose the committed-corpus identity assumption in caveats; got %q", g.Caveats)
+	}
+	if !strings.Contains(g.Render(), "re-captured") {
+		t.Errorf("the human render must surface the committed-corpus freshness disclosure; got:\n%s", g.Render())
+	}
+
+	// Absent when there is no impeachment: the disclosure qualifies a finding, so its
+	// absence keeps the static gate byte-identical — no stray caveat enters the digest.
+	clean := Gate(p, base, branch, nil)
+	if hasCaveat(clean.Caveats, committedCorpusIdentityCaveat) {
+		t.Errorf("no impeachment must carry no committed-corpus caveat; got %q", clean.Caveats)
+	}
+	if clean.Digest != Gate(p, base, branch, nil, WithImpeachment(nil)).Digest {
+		t.Error("WithImpeachment(nil) must stay byte-identical to the static gate (no disclosure caveat)")
+	}
+}
+
+func hasCaveat(cs []string, want string) bool {
+	for _, c := range cs {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
