@@ -226,7 +226,11 @@ func ProvenanceLine(algo string, caveats []string) string {
 func (g *Graph) ReclaimCaveat() string {
 	counts := map[string]int{}
 	for _, e := range g.Edges {
-		if e.Via != "" {
+		// Only EDGE reclaimers (added call edges at a dispatch seam) belong on this
+		// line. The SQL label fold also carries a Via, but on a BOUNDARY edge — it
+		// recovers a verb, not an edge — so it is disclosed separately
+		// (SQLFoldCaveat) to keep the two reclaimer KINDS independently auditable.
+		if e.Via != "" && !e.IsBoundary() {
 			counts[e.Via]++
 		}
 	}
@@ -240,6 +244,30 @@ func (g *Graph) ReclaimCaveat() string {
 	}
 	return "reclaim-informed: " + strings.Join(parts, ", ") +
 		" edge(s) recovered at a dispatch seam (flowmap --reclaim) — a reachable verdict may rest on a reclaimed edge"
+}
+
+// SQLFoldCaveat returns a substrate caveat disclosing that this graph carries DB
+// effect labels whose verb the SQL const-accumulation fold recovered (flowmap's
+// opt-in `--reclaim-sql`), or "" when it carries none. A folded label feeds the
+// write-surface classification (a recovered mutating verb is charged to the
+// budget; a recovered SELECT is trusted as a read), so a verdict that leaned on
+// one must disclose it — the label analogue of ReclaimCaveat (plan §3, L3).
+//
+// The fold is sound-or-abstain, so a folded label is at least as trustworthy as a
+// call-site constant; the disclosure exists so a verdict resting on a RECOVERED
+// verb is auditable as such, not mistaken for one the labeler read directly.
+func (g *Graph) SQLFoldCaveat() string {
+	n := 0
+	for _, e := range g.Edges {
+		if e.Via != "" && e.IsBoundary() {
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("sql-fold-informed: %d DB effect verb(s) recovered from constant-fragment SQL "+
+		"(flowmap --reclaim-sql) — a write/read classification may rest on a folded verb", n)
 }
 
 // SubstrateMismatchCaveat returns a disclosure when a policy proposed on

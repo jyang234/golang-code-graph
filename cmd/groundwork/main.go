@@ -68,6 +68,15 @@ func run(args []string) error {
 		usage()
 		return nil
 	}
+	// Consistent help across subcommands: `groundwork <cmd> -h/--help` prints that
+	// command's own usage and exits 0. Intercepting here — before each subcommand's
+	// own parsing — fixes the three divergent behaviors (a FlagSet's empty "Usage of
+	// fitness:", and the positional-first init reading "-h" as <graph.json>) in one
+	// place. The bare top-level help forms are handled by the switch below.
+	if cmd := args[0]; cmd != "help" && cmd != "-h" && cmd != "--help" && helpRequested(args[1:]) {
+		printSubUsage(cmd)
+		return nil
+	}
 	switch args[0] {
 	case "version":
 		fmt.Println("groundwork", buildinfo.Version(version))
@@ -108,8 +117,44 @@ func run(args []string) error {
 	}
 }
 
-func usage() {
-	fmt.Print(`groundwork — deterministic verification over flowmap's call graph
+func usage() { fmt.Print(usageBody) }
+
+// helpRequested reports whether any arg is the help flag. It checks only -h/--help
+// (not a bare "help" token) so a positional value never trips it.
+func helpRequested(args []string) bool {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+// printSubUsage prints the usage line(s) for one subcommand, scanned from the
+// master usageBody (mcp has several). It falls back to the full usage when a
+// command has no dedicated line, so help is never empty.
+func printSubUsage(cmd string) {
+	var lines []string
+	for _, line := range strings.Split(usageBody, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "groundwork "+cmd+" ") || t == "groundwork "+cmd {
+			lines = append(lines, t)
+		}
+	}
+	if len(lines) == 0 {
+		usage()
+		return
+	}
+	fmt.Println("usage:")
+	for _, l := range lines {
+		fmt.Println("  " + l)
+	}
+}
+
+// usageBody is the master usage text. Per-subcommand help (printSubUsage) scans it
+// so `groundwork <cmd> -h` answers with that command's own line — the single
+// source so the two views cannot drift.
+const usageBody = `groundwork — deterministic verification over flowmap's call graph
 
 usage:
   groundwork reach <graph.json> <fqn>          reachability + entrypoint cover + effects for a function
@@ -141,8 +186,7 @@ only ever reads it.
 exit codes: 0 clean; 1 a computed verdict failed the gate (violation, BLOCK,
 breaking change, tampered/stale artifact); 2 operational error (bad flags,
 unreadable inputs).
-`)
-}
+`
 
 // cmdTriage resolves an incident symptom (stack frame, DB table, bus event, or
 // outbound peer) to suspect functions and prints the triage card: implicated

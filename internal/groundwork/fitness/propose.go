@@ -9,6 +9,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 	"github.com/jyang234/golang-code-graph/internal/sqlverb"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 )
 
 // Propose derives a baseline policy from a graph's measured facts — the
@@ -34,6 +35,7 @@ func Propose(ix *graph.Index, service string) (*policy.Policy, string) {
 	var g guide
 	g.intro(service)
 
+	proposeReclaimHint(ix, &g)
 	proposeLayers(ix, p, &g)
 	proposeWaypoint(ix, p, &g)
 	proposeReadOnly(ix, p, &g)
@@ -45,6 +47,47 @@ func Propose(ix *graph.Index, service string) (*policy.Policy, string) {
 	reconcile(ix, p, &g)
 	g.closing(ix)
 	return p, g.String()
+}
+
+// proposeReclaimHint surfaces flowmap's existing strict-server reclaimer from the
+// verdict path (issue 2). groundwork consumes a pre-built graph and cannot run the
+// SSA-based reclaimer itself, so when it sees an UN-reclaimed dispatch seam at an
+// HTTP route entry — an UnresolvedCall blind spot whose site IS a registered HTTP
+// handler (the framework wired the per-route handler through an interface field the
+// call-graph algorithm cannot resolve) — it recommends rebuilding the graph with
+// `flowmap graph --reclaim`. The signal is STRUCTURAL (UnresolvedCall ∩ HTTP route
+// handler), not a generated type name, so it covers the oapi-codegen strict-server
+// shape and any framework with the same blind-at-the-route-entry topology. That
+// seam blinds the dominant Go HTTP entry pattern: every route-anchored invariant is
+// frontier-caveated at the endpoint entry, so a must_not_reach reads "no path found,
+// but the frontier is blind" instead of a real proof. The reclaimer recovers the
+// wrapper→handler edge soundly (R2: it only adds edges real execution can take).
+// Skipped when the graph already carries reclaim provenance, so it stays quiet.
+func proposeReclaimHint(ix *graph.Index, g *guide) {
+	for _, e := range ix.Edges() {
+		// A non-boundary edge carrying a reclaimer's provenance: already reclaimed.
+		if e.Via != "" && !e.IsBoundary() {
+			return
+		}
+	}
+	httpRoute := map[string]bool{}
+	for _, ep := range ix.Entrypoints() {
+		if ep.Kind == "http" {
+			httpRoute[ep.Fn] = true
+		}
+	}
+	blind := 0
+	for _, b := range ix.BlindSpots() {
+		if b.Kind == string(blindspots.UnresolvedCall) && httpRoute[b.Site] {
+			blind++
+		}
+	}
+	if blind == 0 {
+		return
+	}
+	g.section("⚠️ Un-reclaimed dispatch seam — HTTP route entries are blind",
+		fmt.Sprintf("%d HTTP route entr(y/ies) are `UnresolvedCall` blind spots: the framework dispatches the per-route handler through an interface field wired at runtime (the oapi-codegen strict-server shape, and any framework like it), which the call-graph algorithm cannot resolve. Every route-anchored invariant is therefore frontier-caveated at the endpoint entry — a `must_not_reach` keyed on a route reports \"no path found, but the frontier is blind\" rather than a proof.\n\n"+
+			"**Fix — rebuild the graph with `flowmap graph --reclaim`, then re-run init/fitness on it.** The strict-server reclaimer recovers the wrapper→handler edge: it is deterministic generated code with a fixed shape, so the edge is statically recoverable even though it is interface-dispatched, and adding it is SOUND (R2 — it only ever adds edges real execution can take, never a false proof of absence). This un-blinds the dominant Go HTTP entry pattern, making route-level invariants provable instead of frontier-caveated. The reclaimed graph carries `via: strict-server` provenance, disclosed on every verdict's substrate line, so a reclaim-informed verdict stays auditable.", blind))
 }
 
 // proposeLayers ranks first-party packages by longest path from the
@@ -416,17 +459,30 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 		}
 	}
 
+	// The forward-ratchet targets: the canonical write-effect labels plus bus
+	// PUBLISH. If NONE of them bind anywhere in the graph (the service has zero
+	// CLASSIFIED writes — typically because every write is non-constant SQL labeled
+	// "db call"), the rule would bind nothing and fitness would correctly flag it
+	// "to binds nothing — vacuous". Proposing it anyway would make init caution its
+	// own baseline and frame a deliberate forward-ratchet as a user typo, so the
+	// rule is DEFERRED with an honest disclosure instead (R-series self-clean: init
+	// must not emit a baseline its own gate flags).
+	to := append(dbWriteTargets(), "boundary:bus PUBLISH")
 	switch {
-	case len(readOnly) > 0:
+	case len(readOnly) > 0 && bindsAnyTarget(ix, to):
 		p.MustNotReach = []policy.ReachRule{{
 			Name: "read-routes-stay-read-only",
 			From: readOnly,
-			To:   append(dbWriteTargets(), "boundary:bus PUBLISH"),
+			To:   to,
 		}}
 		g.section("Read-only routes (must_not_reach): proposed",
 			fmt.Sprintf("%d entrypoint(s) currently reach no external write: %s. Ratcheted — a future change that makes a read route write fails the gate instead of shipping silently.\n\n"+
 				"**Tighten by**: `\"require_proof\": true` on any of these that are unauthenticated.\n"+
 				"**Delete entries** that are EXPECTED to start writing soon.", len(readOnly), shortList(readOnly)))
+	case len(readOnly) > 0:
+		g.section("Read-only routes (must_not_reach): not proposed (no write target to forbid yet)",
+			fmt.Sprintf("%d entrypoint(s) currently reach no external write, but the graph contains NO classified write target (no `boundary:db <verb>`, no `boundary:bus PUBLISH`) for a read-only ratchet to forbid — most often because every write is non-constant SQL the labeler reads as `db call`. A `read-routes-stay-read-only` rule would bind nothing and fitness would flag it vacuous, so it is deferred rather than shipped as a self-cautioning baseline.\n\n"+
+				"**Unblock by**: making the write SQL constant (or building the graph with `flowmap graph --reclaim-sql`, which recovers the verb of constant-fragment SQL builders) so a real write target appears, then re-running init. Revisit also when the service starts writing.", len(readOnly)))
 	case len(unproven) > 0:
 		g.section("Read-only routes (must_not_reach): not proposed",
 			"No entrypoint is PROVABLY read-only: every route that reaches no classified write also reaches a DB effect built from non-constant SQL the labeler cannot read as a write (see the caution below). Ratcheting any of them would assert a read-only claim the substrate cannot support.")
@@ -522,6 +578,15 @@ func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 		labels := setutil.SortedKeys(unclass)
 		g.section("Concurrency (no_concurrent_reach): not proposed",
 			"A concurrent (goroutine/defer-spawned) path reaches "+dbCallPhrase(labels)+" — it MIGHT be an unsupervised concurrent write. \"No concurrent path reaches a DB write\" is therefore UNPROVEN on this substrate, so no `no-concurrent-db-writes` rule was ratcheted: it would assert a claim the graph cannot support and would fire the day the SQL is made constant (a strict analyzability improvement). Make the SQL constant to expose the verb, or confirm by hand that no goroutine/defer path mutates.")
+		return
+	}
+	// Like proposeReadOnly: if the graph has zero classified write targets, the
+	// no-concurrent-db-writes rule binds nothing and fitness flags it vacuous (now
+	// that no_concurrent_reach has the same to-binds-nothing check as must_not_reach).
+	// Defer it rather than ship a baseline init's own gate would caution.
+	if !bindsAnyTarget(ix, dbWriteTargets()) {
+		g.section("Concurrency (no_concurrent_reach): not proposed (no write target to forbid yet)",
+			"The graph contains no classified DB write target (`boundary:db <verb>`) for a `no-concurrent-db-writes` rule to forbid — most often because every write is non-constant SQL the labeler reads as `db call`. The rule would bind nothing and fitness would flag it vacuous, so it is deferred. Make the SQL constant (or build with `flowmap graph --reclaim-sql`) so a real write target appears, then re-run init; or revisit when the service writes.")
 		return
 	}
 	p.NoConcurrentReach = []policy.ConcurrentRule{{

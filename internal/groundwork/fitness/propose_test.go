@@ -140,22 +140,22 @@ func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
 	}
 	p, guide := Propose(graph.NewIndex(g), "svc")
 
-	// The opaque write route must NOT be ratcheted as read-only...
-	from := map[string]bool{}
-	if len(p.MustNotReach) > 0 {
-		for _, f := range p.MustNotReach[0].From {
-			from[f] = true
-		}
+	// This service has ZERO classified write targets (every write is an opaque db
+	// call), so there is nothing for `read-routes-stay-read-only` to forbid. The
+	// rule is DEFERRED rather than shipped vacuous — proposing it would make init
+	// caution its own baseline ("to binds nothing", issue 1b) and frame a forward
+	// ratchet as a user typo. The provably-read-only routes wait for a real write
+	// target (the disclosure tells the user to make the SQL constant / --reclaim-sql).
+	_ = readRoute
+	_ = healthRoute
+	if len(p.MustNotReach) != 0 {
+		t.Errorf("with zero classified write targets the read-only ratchet must be deferred, got %+v", p.MustNotReach)
 	}
-	if from[writeRoute] {
-		t.Errorf("the opaque db-call write route was swept into read-routes-stay-read-only: %v", p.MustNotReach[0].From)
-	}
-	// ...while the provably read-only routes (no DB, and a non-mutating probe) are.
-	if !from[readRoute] || !from[healthRoute] {
-		t.Errorf("provably read-only routes must still be ratcheted; From = %v", p.MustNotReach[0].From)
+	if !strings.Contains(guide, "no write target to forbid yet") {
+		t.Errorf("guide must disclose the read-only ratchet was deferred for lack of a write target")
 	}
 
-	// ...and it must be DISCLOSED in the guide, in the R2 caution's voice.
+	// The opaque write route must still be DISCLOSED in the guide, in the R2 caution's voice.
 	for _, want := range []string{"Read-only status unproven", "db call", ShortName(writeRoute)} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("guide missing unproven-route disclosure %q", want)
@@ -180,12 +180,17 @@ func TestProposeExcludesAndDisclosesDBCallWrites(t *testing.T) {
 		t.Errorf("guide must disclose that opaque db-call writes evade the effect ratchet")
 	}
 
-	// The proposal must still be a clean ratchet of its own graph (no must_not_reach
-	// rule fires, because the excluded opaque write never reaches a classified target).
+	// Self-clean, strengthened to CAUTIONS (issue 1b): init must not ship a baseline
+	// its own gate flags at ALL — not only a violation, but a vacuous "to binds
+	// nothing" caution from a forward-ratchet over a write target that does not exist
+	// in the graph yet. Pre-existing graph-carried obligation verdicts are excepted.
 	res := Check(p, graph.NewIndex(g))
-	for _, f := range res.Violations() {
-		if f.Rule != "obligation" {
-			t.Errorf("proposed rule violates its own source graph: %v", f)
+	for _, f := range res.Findings {
+		if f.Rule == "obligation" {
+			continue
+		}
+		if f.Severity == Violation || strings.Contains(f.Summary, "binds nothing") {
+			t.Errorf("init shipped a baseline its own gate flags: %v", f)
 		}
 	}
 }
@@ -312,18 +317,24 @@ func TestProposeConcurrentDirectOpaqueBoundaryDisclosed(t *testing.T) {
 // disclosure. The opacity escape hatch must not swallow analyzable non-writes.
 func TestProposeConcurrentControlOpsStillProposed(t *testing.T) {
 	const (
-		route   = "(*example.com/svc/internal/handler.Server).Do"
-		spawned = "(*example.com/svc/internal/worker.Worker).Run"
+		route       = "(*example.com/svc/internal/handler.Server).Do"
+		spawned     = "(*example.com/svc/internal/worker.Worker).Run"
+		writerRoute = "(*example.com/svc/internal/api.Repo).Insert"
 	)
 	for _, op := range []string{"PingContext", "BeginTx"} {
 		g := &graph.Graph{
 			Nodes: []graph.Node{
 				{FQN: route, Sig: "func()", Tier: 1},
 				{FQN: spawned, Sig: "func()", Tier: 1},
+				{FQN: writerRoute, Sig: "func()", Tier: 1},
 			},
 			Edges: []graph.Edge{
 				{From: route, To: spawned, Tier: 2, Concurrent: true},
 				{From: spawned, To: "boundary:db " + op, Tier: 1, Boundary: "outbound-sync"},
+				// A classified write exists elsewhere (a separate, non-concurrent route),
+				// so the forward-ratchet binds a real target and is not deferred for
+				// vacuity. It is off the concurrent cone, so "no concurrent DB write" holds.
+				{From: writerRoute, To: "boundary:db INSERT t", Tier: 1, Boundary: "outbound-sync"},
 			},
 		}
 		p, guide := Propose(graph.NewIndex(g), "svc")
@@ -347,17 +358,22 @@ func TestProposeConcurrentControlOpsStillProposed(t *testing.T) {
 // disclosure. A regression dropping SELECT from the exclusion would surface here.
 func TestProposeConcurrentSelectStillProposed(t *testing.T) {
 	const (
-		route   = "(*example.com/svc/internal/handler.Server).Do"
-		spawned = "(*example.com/svc/internal/worker.Worker).Run"
+		route       = "(*example.com/svc/internal/handler.Server).Do"
+		spawned     = "(*example.com/svc/internal/worker.Worker).Run"
+		writerRoute = "(*example.com/svc/internal/api.Repo).Insert"
 	)
 	g := &graph.Graph{
 		Nodes: []graph.Node{
 			{FQN: route, Sig: "func()", Tier: 1},
 			{FQN: spawned, Sig: "func()", Tier: 1},
+			{FQN: writerRoute, Sig: "func()", Tier: 1},
 		},
 		Edges: []graph.Edge{
 			{From: route, To: spawned, Tier: 2, Concurrent: true},
 			{From: spawned, To: "boundary:db SELECT users", Tier: 1, Boundary: "outbound-sync"},
+			// A classified write off the concurrent cone, so the forward-ratchet binds
+			// a real target (not deferred for vacuity) while "no concurrent write" holds.
+			{From: writerRoute, To: "boundary:db INSERT t", Tier: 1, Boundary: "outbound-sync"},
 		},
 	}
 	p, guide := Propose(graph.NewIndex(g), "svc")
@@ -464,6 +480,46 @@ func TestProposeClosingUnionsConcurrentOpaqueWrites(t *testing.T) {
 	closing := guideSection(guide, "What init CANNOT derive")
 	if !strings.Contains(closing, "Opaque DB writes") || !strings.Contains(closing, "db call") {
 		t.Errorf("closing 'Opaque DB writes' must include the concurrent-cone opaque label; section:\n%s", closing)
+	}
+}
+
+// Issue 2: when groundwork sees an UN-reclaimed oapi strict-server seam
+// (UnresolvedCall blind spots at ServerInterfaceWrapper route entries), init's
+// guide must recommend `flowmap graph --reclaim` — the existing reclaimer that
+// un-blinds route-anchored invariants. A graph already carrying reclaim provenance
+// must stay quiet.
+func TestProposeRecommendsReclaimForStrictServerSeam(t *testing.T) {
+	const (
+		wrapper = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetEventType"
+		closure = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetEventType$1"
+	)
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: wrapper, Sig: "func()", Tier: 1},
+			{FQN: closure, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: closure, To: "boundary:db SELECT event_types", Tier: 1, Boundary: "outbound-sync"},
+		},
+		// The wrapper IS the registered HTTP route handler, and it is an UnresolvedCall
+		// blind spot — the structural signal (UnresolvedCall ∩ HTTP route entry) the
+		// hint keys on, not the generated type name.
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /event-types/{id}", Fn: wrapper}},
+		BlindSpots: []graph.BlindSpot{
+			{Kind: "UnresolvedCall", Site: wrapper, Detail: "func-value call resolved to no callees"},
+		},
+	}
+	_, guide := Propose(graph.NewIndex(g), "svc")
+	if !strings.Contains(guide, "flowmap graph --reclaim") || !strings.Contains(guide, "strict-server") {
+		t.Errorf("init must recommend --reclaim on an un-reclaimed strict-server seam; guide:\n%s", guide)
+	}
+
+	// A graph already reclaimed (carries the wrapper→closure edge tagged
+	// via=strict-server) must NOT repeat the recommendation.
+	g.Edges = append(g.Edges, graph.Edge{From: wrapper, To: closure, Tier: 2, Via: "strict-server"})
+	_, guide = Propose(graph.NewIndex(g), "svc")
+	if strings.Contains(guide, "Un-reclaimed dispatch seam") {
+		t.Errorf("a reclaimed graph must not be told to reclaim again; guide:\n%s", guide)
 	}
 }
 
@@ -649,17 +705,22 @@ func TestProposeUnprovenDisclosureNotPollutedByPrefixSibling(t *testing.T) {
 	const (
 		getUser     = "(*example.com/svc/internal/api.W).GetUser"
 		getUserData = "(*example.com/svc/internal/api.W).GetUserData"
+		createUser  = "(*example.com/svc/internal/api.W).CreateUser"
 		st          = "(*example.com/svc/internal/store.S).Load"
 	)
 	g := &graph.Graph{
 		Nodes: []graph.Node{
 			{FQN: getUser, Sig: "func()", Tier: 1},
 			{FQN: getUserData, Sig: "func()", Tier: 1},
+			{FQN: createUser, Sig: "func()", Tier: 1},
 			{FQN: st, Sig: "func() error", Tier: 1},
 		},
 		Edges: []graph.Edge{
 			{From: getUserData, To: st, Tier: 2},
 			{From: st, To: "boundary:db call", Tier: 1, Boundary: "outbound-sync"},
+			// A classified write exists, so the read-only ratchet binds a real target
+			// (not deferred for vacuity) and GetUser can be ratcheted read-only.
+			{From: createUser, To: "boundary:db INSERT users", Tier: 1, Boundary: "outbound-sync"},
 		},
 	}
 	ix := graph.NewIndex(g)

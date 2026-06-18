@@ -52,6 +52,15 @@ func checkNoConcurrentReach(p *policy.Policy, ix *graph.Index, r *Result) {
 
 	type pair struct{ from, to string }
 	for _, rule := range p.NoConcurrentReach {
+		// Parity with must_not_reach (reach.go): a To that binds nothing ANYWHERE in
+		// the graph is a dead selector (a typo'd or stale label), not a proof the
+		// concurrent cone is clean. Disclose it like an unbindable must_not_reach
+		// target — a Caution by default, escalated under require_proof — so a guard
+		// that quietly stopped existing is loud, not silently "enforced".
+		if !bindsAnyTarget(ix, rule.To) {
+			r.add(unbindableTargetFinding("no_concurrent_reach", rule.Name, "to", rule.RequireProof))
+			continue
+		}
 		hits := map[pair]bool{}
 		for _, e := range direct {
 			if matchAny(e.To, rule.To) {

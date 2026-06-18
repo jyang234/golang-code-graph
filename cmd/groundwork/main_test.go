@@ -105,6 +105,23 @@ func TestRunErrors(t *testing.T) {
 	}
 }
 
+// Issue 3: every subcommand answers -h/--help with a clean exit (its own usage),
+// not an error. Previously the FlagSet commands (reach/fitness/policy-check) hit
+// an empty default usage and the positional-first init read "-h" as <graph.json>
+// ("open -h: no such file"). The interception in run() makes them consistent.
+func TestRunHelpFlagIsCleanAcrossSubcommands(t *testing.T) {
+	for _, cmd := range []string{
+		"reach", "triage", "ground", "chains", "fitness", "review", "verify",
+		"diff", "verify-artifact", "exceptions", "transcript", "init", "policy-check", "mcp",
+	} {
+		for _, flag := range []string{"-h", "--help"} {
+			if err := run([]string{cmd, flag}); err != nil {
+				t.Errorf("run([%q %q]) = %v, want a clean help exit", cmd, flag, err)
+			}
+		}
+	}
+}
+
 // Verdict failures and operational failures exit differently (1 vs 2) so CI
 // can tell "the change failed the gate" from "the gate failed to run". The
 // boundary is the error's type; main maps it to the exit code.

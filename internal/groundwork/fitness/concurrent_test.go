@@ -55,6 +55,26 @@ func TestConcurrentDirectEffect(t *testing.T) {
 	}
 }
 
+// Issue 1a: a no_concurrent_reach rule whose To binds nothing is a dead selector
+// (a typo'd or stale label), disclosed exactly like an unbindable must_not_reach
+// target — a Caution by default, escalated under require_proof — never a silent
+// "enforced" pass. This is the parity the issue asked for.
+func TestConcurrentUnbindableTargetIsDisclosed(t *testing.T) {
+	g := loadGraph(t, "layeredsvc.graph.json")
+	rule := policy.ConcurrentRule{Name: "no-async-zzz", To: []string{"boundary:db ZZZ_NONEXISTENT"}}
+	res := Check(concurrentPolicy(rule), graph.NewIndex(g))
+	c := res.Cautions()
+	if len(res.Violations()) != 0 || len(c) != 1 || !strings.Contains(c[0].Summary, "to binds nothing") {
+		t.Fatalf("an unbindable no_concurrent_reach To must be a disclosed caution, got %v", res.Findings)
+	}
+
+	rule.RequireProof = true
+	res = Check(concurrentPolicy(rule), graph.NewIndex(g))
+	if v := res.Violations(); len(v) != 1 || !strings.Contains(v[0].Summary, "require_proof") {
+		t.Fatalf("require_proof must escalate an unbindable concurrent target, got %v", res.Findings)
+	}
+}
+
 // No concurrent path over a blind frontier: caution, escalated by require_proof.
 func TestConcurrentBlindFrontier(t *testing.T) {
 	g := loadGraph(t, "blindsvc.graph.json")
@@ -67,6 +87,11 @@ func TestConcurrentBlindFrontier(t *testing.T) {
 		}
 	}
 	g.Edges = append(g.Edges, graph.Edge{From: anyNode, To: anyNode, Tier: 2, Concurrent: true})
+	// The target must BIND somewhere (else the to-binds-nothing check fires first),
+	// but NOT on the concurrent cone — so an isolated node reaches it. The concurrent
+	// cone stays blind and never reaches it, exercising the blind-frontier caution.
+	g.Nodes = append(g.Nodes, graph.Node{FQN: "example.com/blindsvc/internal/store.isolatedDeleter"})
+	g.Edges = append(g.Edges, graph.Edge{From: "example.com/blindsvc/internal/store.isolatedDeleter", To: "boundary:db DELETE", Tier: 1, Boundary: "db"})
 	rule := policy.ConcurrentRule{Name: "no-async-deletes", To: []string{"boundary:db DELETE"}}
 	res := Check(concurrentPolicy(rule), graph.NewIndex(g))
 	if c := res.Cautions(); len(c) != 1 || !strings.Contains(c[0].Summary, "frontier is blind") {

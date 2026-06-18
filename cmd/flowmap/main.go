@@ -122,6 +122,7 @@ func cmdGraph(args []string) error {
 	stamp := fs.String("stamp", "", "identity stamp (e.g. the commit SHA) recorded in the graph; consumers can verify with --expect")
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch — fewer spurious callees), "cha" (rootless fallback)`)
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers (opt-in; adds provenance-tagged edges that close the strict-server seam)")
+	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer (opt-in; recovers verbs from constant-fragment SQL builders, tagging them via=sql-constfold)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -138,7 +139,7 @@ func cmdGraph(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, *entry)
+	g, err := graphio.Build(res, *entry, sqlFoldOpts(*reclaimSQLFlag)...)
 	if err != nil {
 		return err
 	}
@@ -177,6 +178,7 @@ func cmdFrontier(args []string) error {
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch), "cha"`)
 	asJSON := fs.Bool("json", false, "emit the full marker inventory as canonical JSON")
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers before classifying (shows the frontier with the seam closed)")
+	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer before classifying (recovers verbs from constant-fragment SQL builders, shrinking the B2 opaque-SQL frontier)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -193,7 +195,7 @@ func cmdFrontier(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, "")
+	g, err := graphio.Build(res, "", sqlFoldOpts(*reclaimSQLFlag)...)
 	if err != nil {
 		return err
 	}
@@ -231,6 +233,16 @@ func algoOption(s string) (callgraph.Options, error) {
 	default:
 		return callgraph.Options{}, fmt.Errorf("unknown --algo %q (want rta, vta, or cha)", s)
 	}
+}
+
+// sqlFoldOpts maps the --reclaim-sql flag to the build options. It is its own knob
+// (not folded into --reclaim) so a label-reclaimed verdict and an edge-reclaimed
+// verdict stay separately auditable on the substrate line.
+func sqlFoldOpts(on bool) []graphio.BuildOption {
+	if on {
+		return []graphio.BuildOption{graphio.WithSQLFold()}
+	}
+	return nil
 }
 
 // cmdDiff prints the structural, prioritized change set between two canonical
@@ -936,8 +948,8 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--reclaim] [dir]  print the non-gated call-graph view (--reclaim closes sound dispatch seams)
-  frontier [--algo A] [--reclaim] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  graph [--entry R] [--algo A] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--reclaim* close sound seams/SQL labels)
+  frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects

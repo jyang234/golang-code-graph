@@ -158,6 +158,16 @@ sound edges, so a proof of *absence* over a reclaimed graph is at least as stron
 the disclosure exists so a *reachable* verdict resting on a reclaimed edge is not
 mistaken for one the base graph already saw.
 
+**Build with `--reclaim` for spec-first (oapi-codegen strict-server) services.**
+There the per-route handler is dispatched through a stored interface field the
+call-graph algorithm cannot resolve, so every route entry is an `UnresolvedCall`
+blind spot and a route-anchored `must_not_reach` reads "no path found, but the
+frontier is blind" instead of a real proof. `flowmap graph --reclaim` recovers the
+`wrapper→handler` edge (deterministic generated code, recovered soundly), making
+those route-level invariants provable. `groundwork init` detects this un-reclaimed
+seam and recommends it in the proposal guide; feed it the reclaimed graph and
+re-run.
+
 `init` also records the algorithm it proposed against in the policy's `substrate`
 field, and `fitness`/`verify` flag a **policy-vs-graph** mismatch the same way: a
 policy proposed on `vta` but checked against an `rta` graph (the `flowmap graph`

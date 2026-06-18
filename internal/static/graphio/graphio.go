@@ -103,6 +103,13 @@ type Graph struct {
 	// no verdict — R3), omitted when there is nothing to disclose so a clean,
 	// unscoped service emits a byte-identical graph.
 	Frontier *FrontierSection `json:"frontier,omitempty"`
+
+	// foldSQL records whether this graph was built with the SQL const-fold
+	// (--reclaim-sql / WithSQLFold). Unexported, so it never serializes (no golden
+	// churn) and is an in-memory build flag only: the frontier classifier reads it
+	// to split the opaque-db disclosure into B2a/B2b, taken from the flag rather than
+	// inferred from tagged edges so an all-abstain fold run still reads as folded.
+	foldSQL bool
 }
 
 // FrontierSection is the disclosed frontier carried in the graph: the per-site
@@ -208,7 +215,27 @@ func mergeDeclaredBlindSpots(detected []blindspots.BlindSpot, cfg *config.Config
 
 // Build renders the full first-party graph of res. If entry is non-empty, the
 // graph is scoped to the functions reachable from the matching entry-point root.
-func Build(res *analyze.Result, entry string) (*Graph, error) {
+// BuildOption tunes a graph build. Options are opt-in refinements (D2-style): the
+// zero set reproduces the default graph byte-for-byte, so every committed golden
+// is unchanged unless a caller explicitly asks for a refinement.
+type BuildOption func(*buildOptions)
+
+type buildOptions struct {
+	foldSQL bool
+}
+
+// WithSQLFold enables the SQL const-accumulation label reclaimer (--reclaim-sql):
+// DB effects whose statement is non-constant at the call site but provably built
+// from constant fragments get their verb recovered and the edge tagged
+// via=sqlfold.Via. Off by default; sound-or-abstain (docs/design/
+// sql-constfold-reclaim-plan.md).
+func WithSQLFold() BuildOption { return func(o *buildOptions) { o.foldSQL = true } }
+
+func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, error) {
+	var o buildOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ext := features.NewExtractor(res.Config, res.Program.ModulePath)
 	hints := ext.Hints()
 
@@ -226,6 +253,7 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 		Algo:       string(res.Graph.Algo),
 		Caveats:    res.Graph.Caveats,
 		Nodes:      []Node{}, Edges: []Edge{}, BlindSpots: []blindspots.BlindSpot{},
+		foldSQL: o.foldSQL,
 	}
 	if gs := blindspots.Graph(blindspots.Detect(res, hints)); len(gs) > 0 {
 		g.BlindSpots = gs
@@ -295,8 +323,16 @@ func Build(res *analyze.Result, entry string) (*Graph, error) {
 		// label and the ssa call site coexist (IT-3 scoping note).
 		var nodeEdges []Edge
 		for _, e := range n.Out {
-			edges := edgeOf(ext, hints, e, scope)
+			edges := edgeOf(ext, hints, e, scope, o.foldSQL)
 			nodeEdges = append(nodeEdges, edges...)
+			// Record a committed effect only when the site yields exactly ONE — the
+			// unambiguous case. A fold-resolved finite-table write fans the site out
+			// into one edge PER possible target (e.g. DELETE publishers + DELETE
+			// subscribers), but only one of them is committed on any given run: each is
+			// a SOME-paths effect, so recording it as a directEffect would let the
+			// proof-only effect-order/fault-card derivation (below) cite a target the
+			// execution never wrote. The fan-out still rides g.Edges for the
+			// write-surface budget; it just must not enter the always-effect channel.
 			if entry == "" && e.Site != nil && len(edges) == 1 && committedEffect(edges[0].To) {
 				directEffects[fn] = append(directEffects[fn], obligations.EffectSite{Label: edges[0].To, Site: e.Site})
 				if labelSites[edges[0].To] == nil {
@@ -398,9 +434,12 @@ func frontierSection(g *Graph) *FrontierSection {
 func ClassifyFrontier(g *Graph) *frontier.Result { return frontier.Classify(frontierInput(g)) }
 
 // frontierInput adapts the assembled graph into the classifier's serialization-free
-// input view (frontier imports nothing of graphio; graphio adapts to it).
+// input view (frontier imports nothing of graphio; graphio adapts to it). The fold
+// state comes from g.foldSQL — the actual build flag, NOT inferred from tagged
+// edges, so a --reclaim-sql run that recovers nothing is still reported as folded
+// (its remaining opaque-db markers are the genuine residue, not "untried").
 func frontierInput(g *Graph) *frontier.Input {
-	in := &frontier.Input{}
+	in := &frontier.Input{Folded: g.foldSQL}
 	for _, n := range g.Nodes {
 		in.Nodes = append(in.Nodes, n.FQN)
 	}
@@ -484,7 +523,7 @@ func (e *EntryNotFoundError) Error() string { return "no entry point named " + e
 // edgeOf renders zero or one graph edges for an SSA call edge: a typed boundary
 // edge for publish/HTTP/DB calls, an internal edge for first-party→first-party
 // calls, and nothing for calls into unhinted stdlib/third-party code.
-func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool) []Edge {
+func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool, foldSQL bool) []Edge {
 	from := e.Caller.Func.RelString(nil)
 	callee := e.Callee.Func
 	f := ext.Edge(e.Caller.Func, callee, e.Site)
@@ -512,7 +551,12 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 	case hints.IsHTTP(callee):
 		return []Edge{{From: from, To: "boundary:" + httpLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
 	case hints.IsDB(callee):
-		return []Edge{{From: from, To: "boundary:db " + dbLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
+		labels, via := dbLabel(e.Site, foldSQL)
+		edges := make([]Edge, 0, len(labels))
+		for _, label := range labels {
+			edges = append(edges, Edge{From: from, To: "boundary:db " + label, Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent, Via: via})
+		}
+		return edges
 	case scope[callee]:
 		return []Edge{{From: from, To: callee.RelString(nil), Tier: tier, Concurrent: concurrent}}
 	default:

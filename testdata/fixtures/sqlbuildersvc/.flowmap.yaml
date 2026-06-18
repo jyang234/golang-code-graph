@@ -1,0 +1,4 @@
+service: sqlbuildersvc
+classify:
+  db:
+    - "database/sql"

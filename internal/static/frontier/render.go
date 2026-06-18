@@ -31,7 +31,15 @@ func Render(name, algo string, r *Report) string {
 		len(r.Markers), r.Counts[BinB], 100*r.ReclaimableShare)
 	fmt.Fprintf(&b, "    A  truly dynamic       : %d\n", r.Counts[BinA])
 	fmt.Fprintf(&b, "    B  reclaimable seam     : %d\n", r.Counts[BinB])
-	fmt.Fprintf(&b, "    B2 opaque, make const   : %d\n", r.Counts[BinB2])
+	// The B2 line splits on whether the SQL fold ran: after --reclaim-sql the
+	// remaining opaque-db markers are the genuine B2b residue (the consumer ask);
+	// before it, the count is the undifferentiated union and --reclaim-sql is the
+	// first lever to pull (it folds the B2a constant-fragment-builder sub-class).
+	if r.SQLFolded {
+		fmt.Fprintf(&b, "    B2 opaque, residue      : %d (B2b — --reclaim-sql could not fold these; make them const)\n", r.Counts[BinB2])
+	} else {
+		fmt.Fprintf(&b, "    B2 opaque, make const   : %d (try --reclaim-sql to fold the B2a builder sub-class)\n", r.Counts[BinB2])
+	}
 	fmt.Fprintf(&b, "    C  over-approximation   : %d\n", r.Counts[BinC])
 
 	var seams []Marker

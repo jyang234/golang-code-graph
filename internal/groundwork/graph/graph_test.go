@@ -125,6 +125,48 @@ func TestReclaimCaveatSilentOnBaseGraph(t *testing.T) {
 	}
 }
 
+// The SQL label fold tags a BOUNDARY edge (it recovers a verb, not an edge), so it
+// must surface under SQLFoldCaveat and NOT under ReclaimCaveat — the two reclaimer
+// KINDS stay independently auditable on the substrate line (plan §3, L3).
+func TestSQLFoldCaveatSeparateFromEdgeReclaim(t *testing.T) {
+	const j = `{"algo":"vta","nodes":[{"fqn":"a","sig":"f"}],"edges":[` +
+		`{"from":"a","to":"svc.B","via":"strict-server"},` +
+		`{"from":"a","to":"boundary:db DELETE","via":"sql-constfold"}],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rc := g.ReclaimCaveat()
+	if !strings.Contains(rc, "1 via strict-server") || strings.Contains(rc, "sql-constfold") {
+		t.Errorf("ReclaimCaveat must count only the edge reclaimer, got %q", rc)
+	}
+	sc := g.SQLFoldCaveat()
+	if !strings.Contains(sc, "sql-fold-informed") || !strings.Contains(sc, "1 DB effect") {
+		t.Errorf("SQLFoldCaveat must disclose the folded verb count, got %q", sc)
+	}
+	// Both ride the substrate line, distinctly.
+	line := ProvenanceLine(g.Algo, []string{rc, sc})
+	if !strings.Contains(line, "reclaim-informed") || !strings.Contains(line, "sql-fold-informed") {
+		t.Errorf("provenance line must carry both disclosures, got %q", line)
+	}
+}
+
+// A folded label with no edge reclaimer leaves ReclaimCaveat silent — only the
+// SQL disclosure fires.
+func TestSQLFoldCaveatAloneLeavesReclaimSilent(t *testing.T) {
+	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db INSERT users","via":"sql-constfold"}],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if rc := g.ReclaimCaveat(); rc != "" {
+		t.Errorf("ReclaimCaveat must be silent when only a label fold is present, got %q", rc)
+	}
+	if sc := g.SQLFoldCaveat(); !strings.Contains(sc, "sql-fold-informed") {
+		t.Errorf("SQLFoldCaveat = %q, want the fold disclosure", sc)
+	}
+}
+
 // The substrate guard flags a policy-vs-graph algorithm mismatch (§9): a policy
 // proposed on one algorithm checked against a graph built on another can surface
 // spurious reachability findings (precision differs). It must stay silent when

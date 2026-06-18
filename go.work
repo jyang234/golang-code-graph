@@ -13,6 +13,7 @@ use (
 	./testdata/fixtures/dispatchsvc
 	./testdata/fixtures/reflectsvc
 	./testdata/fixtures/reclaimsvc
+	./testdata/fixtures/sqlbuildersvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc

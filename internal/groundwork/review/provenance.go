@@ -36,6 +36,13 @@ func provenanceCaveats(policyAlgo string, base, branch *graph.Graph) []string {
 	if rc := branch.ReclaimCaveat(); rc != "" {
 		out = append(out, rc)
 	}
+	// The label analogue: when the branch graph was built with `--reclaim-sql`, a
+	// write/read classification may rest on a verb the const-accumulation fold
+	// recovered. Disclosed on the same substrate line, kept distinct from the
+	// dispatch-seam edge reclaimers above so each reclaimer kind is auditable (R9).
+	if sc := branch.SQLFoldCaveat(); sc != "" {
+		out = append(out, sc)
+	}
 	if len(out) == 0 {
 		return nil
 	}
