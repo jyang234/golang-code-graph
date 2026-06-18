@@ -33,29 +33,11 @@ func Update() bool { return *update }
 // and <stem>.flow.md (the rendered view). On an assertion it returns a
 // human-readable error describing the structural difference, or nil on a match.
 func Compare(got *ir.CanonicalTrace, dir, name string, update bool) error {
-	stem := filepath.Join(dir, Slug(name))
-	goldenPath := stem + ".golden.json"
-	mdPath := stem + ".flow.md"
-
 	if update {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		// A committed golden is STAMPLESS — the code-identity Stamp is run-varying
-		// provenance (the deployed commit), so writing it would churn the file each
-		// deploy and stale-skew every later audit against it, exactly as the static
-		// graph golden carries no --stamp. Identity is injected at audit time.
-		cp := stampless(got)
-		b, err := cp.Marshal()
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(goldenPath, b, 0o644); err != nil {
-			return err
-		}
-		return os.WriteFile(mdPath, []byte(render.Mermaid(got)), 0o644)
+		return WriteSnapshot(got, dir, Slug(name))
 	}
 
+	goldenPath := filepath.Join(dir, Slug(name)) + ".golden.json"
 	raw, err := os.ReadFile(goldenPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -80,6 +62,33 @@ func Compare(got *ir.CanonicalTrace, dir, name string, update bool) error {
 			goldenPath, changeSet(want, got, string(wantBytes), string(gotBytes)))
 	}
 	return nil
+}
+
+// WriteSnapshot rebases the committed golden for an already-slugged stem: it writes
+// <dir>/<stem>.golden.json (the STAMPLESS gated IR) and <dir>/<stem>.flow.md (the
+// rendered view). It is the SINGLE writer both the in-test golden lifecycle (Compare
+// under -update) and the `flowmap behavior ingest --corpus-dir` impeach-corpus
+// exporter go through, so a committed impeach corpus is byte-identical however it was
+// produced — a harness -update re-drive or a from-collector ingest both land the same
+// stampless trace that loadCommittedCorpus/ir.Load reads.
+func WriteSnapshot(got *ir.CanonicalTrace, dir, stem string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, stem)
+	// A committed golden is STAMPLESS — the code-identity Stamp is run-varying
+	// provenance (the deployed commit), so writing it would churn the file each
+	// deploy and stale-skew every later audit against it, exactly as the static
+	// graph golden carries no --stamp. Identity is injected at audit time.
+	cp := stampless(got)
+	b, err := cp.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".golden.json", b, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(path+".flow.md", []byte(render.Mermaid(got)), 0o644)
 }
 
 // changeSet renders the prioritized structural diff (the authoritative,

@@ -258,18 +258,36 @@ reported, never failed (so a run that exercises less doesn't flake). A golden
 with no capture this run is **skipped, not silently passed**. Route
 `flows/*.effects.json` through CODEOWNERS so a contract change reaches a human.
 
-**These same goldens are the behavioral impeachment corpus.** The committed
-`flows/` directory you just built is exactly what `groundwork verify --corpus
-flows/` audits the static graph against (and what the MCP `impeach` lens discloses
-from) — so capturing flows buys you both the snapshot gate *and* the counterexample
-finder for the graph's negatives, with no extra authoring. One thing to get right:
-the **capture-fidelity grade**. The captures carry a self-described grade
-(`production` | `integration`); the in-process harness marks its captures
-`integration` and a real deploy sets `production` via a resource attribute. Only
-`production`/`integration` can promote a gating impeachment, and an asserted
-`--capture` that contradicts the corpus's own grade fails closed — so a synthetic or
-test corpus can never be laundered into a trusted one. See
-[`adopting-flowmap.md`](../adopting-flowmap.md) step 9 for arming the gate.
+**The same traces also build the behavioral impeachment corpus — a separate
+artifact.** `groundwork verify --corpus` audits against the full canonical traces
+(`*.golden.json`), **not** the effect sets (`*.effects.json`) the coverage gate above
+commits. `--corpus-dir` writes them, through the same stampless golden writer the
+in-test harness snapshots use:
+
+```sh
+# write the stampless <slug>.<svc>.golden.json impeach corpus:
+flowmap behavior ingest --corpus-dir corpus/ <traces>
+git add corpus/<slug>.<svc>.golden.json corpus/<slug>.<svc>.flow.md
+```
+
+The committed `corpus/` directory is what `groundwork verify --corpus corpus/` audits
+the static graph against (and what the MCP `impeach` lens discloses from) — the
+counterexample finder for the graph's negatives, from the same capture, with no extra
+authoring. Two things to get right:
+
+- The **capture-fidelity grade**. The captures carry a self-described grade
+  (`production` | `integration`); the in-process harness marks its captures
+  `integration` and a real deploy sets `production` via a resource attribute. Only
+  `production`/`integration` can promote a gating impeachment, and an asserted
+  `--capture` that contradicts the corpus's own grade fails closed — so a synthetic or
+  test corpus can never be laundered into a trusted one.
+- **Localization precision.** A from-collector corpus carries no in-process
+  `flowmap.fqn` span tag (the harness sets it in-process; a raw OTLP export does not),
+  so impeach severance localizes at **L0** (the coarse entry/effect pair) rather than
+  **L1** (the precise severed call site). `ingest` discloses which on write — L0 is
+  still a sound impeach input; only the localization is coarser.
+
+See [`adopting-flowmap.md`](../adopting-flowmap.md) step 9 for arming the gate.
 
 ---
 
