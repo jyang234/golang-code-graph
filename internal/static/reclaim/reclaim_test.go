@@ -78,6 +78,50 @@ func TestStrictServerNoFalsePositives(t *testing.T) {
 	}
 }
 
+// TestStrictServerR2DoesNotConnectUnservedClosures is probe #3 of the audit: the
+// reclaimer's R2 boundary — it must add ONLY edges real execution can take, never a
+// closure the method merely passes. The existing no-false-positive test uses services
+// with no ServeHTTP dispatch at all; this one puts a confounder INSIDE a dispatching
+// method, where a loosened flowsTo fails.
+//
+// reclaimsvc.wrapper.Admin dispatches via handler.ServeHTTP but holds TWO closures:
+// the SERVED one (Admin$1, which reaches the receiver through the middleware Phi — so
+// this also exercises flowsTo's Phi branch) and a SIBLING (Admin$2) the method only
+// passes to runLater, never serving it. A reclaimer that connected "any AnonFunc in a
+// method that calls ServeHTTP" would also emit Admin→Admin$2; the flow requirement
+// must gate it to exactly 1 — Admin→Admin$1 — because only that closure provably flows
+// to a ServeHTTP receiver. Connecting Admin$2 is an edge execution cannot take via the
+// dispatch, an R2 violation that could later launder a false coverage/effect-
+// attribution proof (the false-positive-edge pole this probe guards). A mutation that
+// drops the flow requirement is confirmed to make this test emit the spurious Admin$2
+// edge.
+//
+// authMW supplies the middleware Phi and can SHORT-CIRCUIT (no Authorization → 401, the
+// handler is never called). The reclaimed Admin→Admin$1 edge is therefore a MAY edge —
+// execution CAN take it on the authorized path, which is precisely R2's "can take"
+// requirement; a spurious edge would only ever over-block a negative check, never
+// manufacture a false provenAbsent.
+func TestStrictServerR2DoesNotConnectUnservedClosures(t *testing.T) {
+	edges := reclaim.StrictServer(analyzeFixture(t, "reclaimsvc"))
+	if len(edges) != 1 {
+		t.Fatalf("R2: want exactly 1 reclaimed edge (the served closure), got %d: %+v", len(edges), edges)
+	}
+	e := edges[0]
+	if e.Via != reclaim.ViaStrictServer {
+		t.Errorf("edge not attributed to the reclaimer: via=%q", e.Via)
+	}
+	if !strings.HasSuffix(e.From, "wrapper).Admin") {
+		t.Errorf("From should be the dispatching method wrapper.Admin, got %q", e.From)
+	}
+	if !strings.HasSuffix(e.To, "wrapper).Admin$1") {
+		t.Errorf("To should be the SERVED closure Admin$1, got %q", e.To)
+	}
+	// The sibling closure the method merely passes must never be a reclaim target.
+	if strings.Contains(e.To, "Admin$2") {
+		t.Errorf("R2 violation: connected the unserved sibling closure %q via %q", e.To, e.From)
+	}
+}
+
 // Integration: folding the reclaimed edges into the graph closes the seam — every
 // route reaches its effects, so the frontier reports zero attribution loss and no
 // B (severed-closure / starved-entrypoint) markers, leaving only the genuinely
