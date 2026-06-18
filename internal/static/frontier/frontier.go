@@ -17,7 +17,14 @@
 //	     is starved of every effect). The static lever — a sound reclaimer ADDS
 //	     the missing edge.
 //	B2 — consumer-reclaimable: opaque only because the SOURCE is non-constant (a
-//	     `db ExecContext` from runtime-built SQL). The consumer makes it constant.
+//	     `db ExecContext` from runtime-built SQL). It splits in two (plan §2):
+//	       B2a — accumulator-reclaimable by the maintainer-side SQL const-fold
+//	             (--reclaim-sql): a constant statement laundered through a builder.
+//	             Once folded it gains a readable verb and LEAVES the frontier, so it
+//	             is visible as the drop in the opaque-db count, not a standing marker.
+//	       B2b — genuinely consumer-reclaimable: a dynamic verb or a runtime
+//	             identifier spliced into the text, which the fold cannot recover. In
+//	             a folded graph the remaining opaque-db markers ARE the B2b residue.
 //	C  — over-approximation: sound but imprecise (HighFanOut shared dispatch). Not
 //	     blindness; precision.
 package frontier
@@ -58,6 +65,12 @@ type Input struct {
 	Edges       []InEdge
 	BlindSpots  []InBlindSpot
 	Entrypoints []InEntry
+	// Folded reports whether the graph was built with the SQL const-fold
+	// (--reclaim-sql) applied. When true, every opaque-db marker that REMAINS is the
+	// genuine B2b residue (the fold tried and abstained), so its disclosure is the
+	// consumer ask; when false, the opaque-db set is the undifferentiated B2 union,
+	// and the disclosure points the reader at --reclaim-sql first.
+	Folded bool
 }
 
 // InEdge is a call or boundary edge (To is a "boundary:..." label for an effect).
@@ -87,6 +100,7 @@ const Coverage = "starvation confirmed for the oapi strict-server shape only; " 
 type Result struct {
 	Markers           []Marker
 	UnconfirmedRoutes []string // entrypoint FQNs reaching no effect, severance unconfirmed
+	Folded            bool     // the SQL const-fold was applied (opaque-db markers are the B2b residue)
 }
 
 // Report is the deterministic roll-up: every marker, the per-bin counts, the two
@@ -101,8 +115,9 @@ type Report struct {
 	StarvedEntrypoints int         `json:"starved_entrypoints"` // CONFIRMED severed
 	UnconfirmedRoutes  []string    `json:"unconfirmed_routes,omitempty"`
 	Coverage           string      `json:"coverage,omitempty"`
-	ReclaimableShare   float64     `json:"reclaimable_share"` // B / total markers
-	AttributionLoss    float64     `json:"attribution_loss"`  // CONFIRMED severed / entrypoints (a lower bound)
+	ReclaimableShare   float64     `json:"reclaimable_share"`    // B / total markers
+	AttributionLoss    float64     `json:"attribution_loss"`     // CONFIRMED severed / entrypoints (a lower bound)
+	SQLFolded          bool        `json:"sql_folded,omitempty"` // --reclaim-sql applied: opaque-db count is the B2b residue
 }
 
 // Classify bins in's frontier into a sorted, deduplicated marker list, plus the
@@ -149,7 +164,7 @@ func Classify(in *Input) *Result {
 				ReclaimerHint: "runtime-resolved target — disclose; resolvable only by observation, never statically"})
 		case strings.HasPrefix(label, "db ") && !readableDBVerb(label):
 			add(Marker{Kind: "opaque-db", Bin: BinB2, Site: label, Owner: e.From,
-				ReclaimerHint: "make the SQL a constant so the verb is readable (" + short(e.From) + ")"})
+				ReclaimerHint: opaqueDBHint(in.Folded, e.From)})
 		}
 	}
 
@@ -255,7 +270,21 @@ func Classify(in *Input) *Result {
 		return a.Owner < b.Owner
 	})
 	sort.Strings(unconfirmed)
-	return &Result{Markers: markers, UnconfirmedRoutes: unconfirmed}
+	return &Result{Markers: markers, UnconfirmedRoutes: unconfirmed, Folded: in.Folded}
+}
+
+// opaqueDBHint is the B2 disclosure for an opaque DB effect, split by whether the
+// SQL const-fold already ran (plan §2). Folded: the site is the genuine B2b
+// residue — the fold tried and could not recover a verb (a dynamic verb, or a
+// runtime identifier spliced into the statement text), so the consumer must make
+// the statement constant. Unfolded: it is the undifferentiated B2 union, so the
+// reader is pointed at --reclaim-sql first — it folds the constant-fragment-builder
+// sub-class (B2a) for free, leaving only the residue to hoist to a const.
+func opaqueDBHint(folded bool, owner string) string {
+	if folded {
+		return "B2b genuine residue: --reclaim-sql could not recover a verb (dynamic verb, or a runtime identifier spliced into the SQL text) — make the statement a constant (" + short(owner) + ")"
+	}
+	return "opaque SQL built at runtime — run --reclaim-sql to fold the constant-fragment-builder sub-class (B2a); make any residue a constant (" + short(owner) + ")"
 }
 
 // Summarize rolls a Result up into the report ratios. entrypoints is the total
@@ -279,6 +308,7 @@ func Summarize(r *Result, entrypoints int) *Report {
 		StarvedEntrypoints: starved,
 		UnconfirmedRoutes:  r.UnconfirmedRoutes,
 		Coverage:           Coverage,
+		SQLFolded:          r.Folded,
 	}
 	if len(r.Markers) > 0 {
 		rep.ReclaimableShare = float64(counts[BinB]) / float64(len(r.Markers))

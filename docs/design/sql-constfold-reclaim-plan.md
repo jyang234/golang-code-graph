@@ -11,8 +11,11 @@ Phase 2 (finite-constant table naming) is **also shipped**: a write's dynamic ta
 resolves to its complete constant set when provable — the fleet's `s.table ∈
 {publishers, subscribers}` fans out into `DELETE publishers` + `DELETE
 subscribers` — abstaining on every completeness gap. Phase 3 (the B2a/B2b
-disclosure split) remains designed-not-built. This plan is the SQL-label analogue
-of the strict-server
+disclosure split) is **shipped**: the frontier classifier is fold-aware, so a
+folded graph's residual `opaque-db` markers are disclosed as the genuine B2b
+consumer-ask while an unfolded graph points the reader at `--reclaim-sql` (which
+folds the B2a builder sub-class). **All three phases are now built.** This plan is
+the SQL-label analogue of the strict-server
 *edge* reclaimer shipped in `frontier-instrumentation-plan.md` (component 3,
 `internal/static/reclaim`). It inherits that plan's doctrine wholesale (R1–R4, the
 A/B/B2/C taxonomy, opt-in + provenance discipline) and adds the one new soundness
@@ -306,9 +309,17 @@ tag (the groundwork decoder already round-trips a per-edge `via`,
    safe-direction — a naming miss can over-list or under-name a target but never
    hide a write. `TestFoldResolvesFiniteConstantTableSet` and
    `TestFoldAbstainsOnNonConstantTableField` pin both directions.
-3. **Disclosure reconciliation.** Update the frontier classifier's B2 split (§2) and
-   the D3 disclosure so a B2a site reads "reclaimable by const-fold (`--reclaim-sql`)"
-   instead of "hoist to a `const`," and a B2b residue keeps the consumer ask.
+3. **Disclosure reconciliation. ✅ DONE.** The frontier classifier
+   (`internal/static/frontier`) carries a fold-aware `Folded` signal (set by graphio
+   from the `sqlfold.Via` provenance on boundary edges). Unfolded, an `opaque-db`
+   marker's hint points the reader at `--reclaim-sql` (which folds the B2a
+   constant-fragment-builder sub-class for free); folded, the remaining `opaque-db`
+   markers ARE the genuine B2b residue and the hint becomes the consumer ask ("make
+   the statement a `const`"). The `Report`/`Render` carry `SQLFolded` so the B2 count
+   reads as the residue, not the union — an agent reading the data (not just the
+   prose) sees the regime. No committed golden churns: no default-build graph carries
+   an `opaque-db` marker, and the embedded section is always the unfolded build.
+   `TestOpaqueDBDisclosureIsFoldAware` pins both regimes.
 
 Each phase ships with a determinism test and a `canon/sql` fuzz-corpus extension
 (per the repo's determinism-test rule), and a fixture mirroring the two builder

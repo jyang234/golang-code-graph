@@ -2,6 +2,7 @@ package frontier_test
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
@@ -32,6 +33,49 @@ func marker(markers []frontier.Marker, kind string) (frontier.Marker, bool) {
 	}
 	return frontier.Marker{}, false
 }
+
+// Phase 3: the opaque-db disclosure is fold-aware. Unfolded, it points the reader
+// at --reclaim-sql (the B2a builder sub-class folds for free); folded, the marker
+// that remains is the genuine B2b residue (the consumer must make it constant), and
+// the result/report carry the fold flag so an agent reading the data knows the
+// opaque-db count is post-fold.
+func TestOpaqueDBDisclosureIsFoldAware(t *testing.T) {
+	mk := func(folded bool) *frontier.Input {
+		v := in([]string{store},
+			[][2]string{{store, "boundary:db ExecContext"}}, nil, nil)
+		v.Folded = folded
+		return v
+	}
+
+	unfolded := frontier.Classify(mk(false))
+	if unfolded.Folded {
+		t.Error("unfolded result must not be flagged folded")
+	}
+	m, ok := marker(unfolded.Markers, "opaque-db")
+	if !ok || m.Bin != frontier.BinB2 {
+		t.Fatalf("want an opaque-db B2 marker, got %+v", unfolded.Markers)
+	}
+	if !contains(m.ReclaimerHint, "--reclaim-sql") {
+		t.Errorf("unfolded hint must point at --reclaim-sql, got %q", m.ReclaimerHint)
+	}
+	if rep := frontier.Summarize(unfolded, 0); rep.SQLFolded {
+		t.Error("unfolded report must not set sql_folded")
+	}
+
+	folded := frontier.Classify(mk(true))
+	if !folded.Folded {
+		t.Error("folded result must be flagged folded")
+	}
+	fm, _ := marker(folded.Markers, "opaque-db")
+	if !contains(fm.ReclaimerHint, "B2b") || !contains(fm.ReclaimerHint, "residue") {
+		t.Errorf("folded hint must name the genuine B2b residue, got %q", fm.ReclaimerHint)
+	}
+	if rep := frontier.Summarize(folded, 0); !rep.SQLFolded {
+		t.Error("folded report must set sql_folded so the B2 count reads as the residue")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
 
 // FQNs shared across cases.
 const (

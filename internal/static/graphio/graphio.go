@@ -26,6 +26,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/reclaim"
 	"github.com/jyang234/golang-code-graph/internal/static/roots"
 	"github.com/jyang234/golang-code-graph/internal/static/signatures"
+	"github.com/jyang234/golang-code-graph/internal/static/sqlfold"
 )
 
 // Graph is the non-gated call-graph view, optionally scoped to one entry point.
@@ -434,6 +435,11 @@ func frontierInput(g *Graph) *frontier.Input {
 	}
 	for _, e := range g.Edges {
 		in.Edges = append(in.Edges, frontier.InEdge{From: e.From, To: e.To})
+		// A boundary edge tagged with the SQL fold's provenance means --reclaim-sql
+		// ran: the remaining opaque-db markers are then the genuine B2b residue.
+		if e.Via == sqlfold.Via && strings.HasPrefix(e.To, "boundary:") {
+			in.Folded = true
+		}
 	}
 	for _, b := range g.BlindSpots {
 		in.BlindSpots = append(in.BlindSpots, frontier.InBlindSpot{Kind: string(b.Kind), Site: b.Site})
