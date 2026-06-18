@@ -27,6 +27,7 @@ import (
 	"github.com/jyang234/golang-code-graph/harness"
 
 	"example.com/impeachsvc/internal/admin"
+	"example.com/impeachsvc/internal/eventbus"
 	"example.com/impeachsvc/internal/handler"
 	"example.com/impeachsvc/internal/router"
 	"example.com/impeachsvc/internal/store"
@@ -44,7 +45,7 @@ func wire() http.Handler {
 	mux.HandleFunc("POST /loan", handler.New(loans).Create)
 
 	adminRouter := router.New()
-	admin.New(loans).Mount(adminRouter)
+	admin.New(loans, eventbus.New()).Mount(adminRouter)
 	mux.Handle("/admin/", adminRouter)
 	return mux
 }
@@ -66,6 +67,34 @@ func TestAdminPurgeFlow(t *testing.T) {
 	flow.New("DELETE /admin/ledger").
 		Trigger("DELETE", "/admin/ledger?loan=L1").
 		ExpectExactlyOnce("DB postgres DELETE ledger").
+		ExpectExactlyOnce("DB postgres DELETE audit_log").
+		Quiescence(15*time.Millisecond, 3*time.Second).
+		Run(t, app)
+}
+
+// TestAdminReindexFlow is the effectless-missed-route negative control. Reindex is
+// a missed root too (mounted on the same custom, unhinted router), but reaches NO
+// boundary effect — so its capture must yield ZERO impeachment candidates. The cell
+// fires on a missed route that reaches an effect static lost, NEVER on a missed
+// route merely for being unattributed; this is the real-capture proof of the
+// false-positive direction (tenet 4: a false IMPEACHMENT is the cardinal sin).
+func TestAdminReindexFlow(t *testing.T) {
+	app := harness.NewInProcess(t, wire(), harness.WithService("impeachsvc"))
+	flow.New("POST /admin/reindex").
+		Trigger("POST", "/admin/reindex").
+		Quiescence(15*time.Millisecond, 3*time.Second).
+		Run(t, app)
+}
+
+// TestAdminNotifyFlow captures a BUS impeachment witness: a constant-named PUBLISH
+// reached on the missed admin route. Its effect lives in the bus label vocabulary
+// (not DB), so the corpus now impeaches a missed-root effect over BOTH seams —
+// proving the route→effect attribution gap the cell catches is label-agnostic.
+func TestAdminNotifyFlow(t *testing.T) {
+	app := harness.NewInProcess(t, wire(), harness.WithService("impeachsvc"))
+	flow.New("POST /admin/notify").
+		Trigger("POST", "/admin/notify").
+		ExpectExactlyOnce("PUBLISH ledger.purged").
 		Quiescence(15*time.Millisecond, 3*time.Second).
 		Run(t, app)
 }

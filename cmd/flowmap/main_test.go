@@ -12,6 +12,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/buildinfo"
 	"github.com/jyang234/golang-code-graph/internal/ingest"
+	"github.com/jyang234/golang-code-graph/ir"
 )
 
 // TestLoadIngestConfigReadsServiceDir: ingest's canon config (e.g. the
@@ -263,6 +264,46 @@ func captureStdout(t *testing.T, fn func()) string {
 func otlpFixture() string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", "otlp", "loan-application.otlp.json")
+}
+
+// TestBehaviorIngestCorpusDir exercises the Track-2 impeach-corpus exporter:
+// --corpus-dir persists each canonicalized fragment as a STAMPLESS
+// <flow>.<service>.golden.json — the exact committed-corpus form
+// loadCommittedCorpus/ir.Load reads (it round-trips as a canonical trace, with the
+// run-varying code-identity Stamp absent). A from-collector export carries no
+// in-process flowmap.fqn tag, so the localization caveat must disclose the L0
+// fallback rather than silently imply L1 precision.
+func TestBehaviorIngestCorpusDir(t *testing.T) {
+	dir := t.TempDir()
+	fx := otlpFixture()
+
+	out := captureStdout(t, func() {
+		if err := run([]string{"behavior", "ingest", "--corpus-dir", dir, fx}); err != nil {
+			t.Fatalf("ingest --corpus-dir: %v", err)
+		}
+	})
+
+	gp := filepath.Join(dir, "loan_application.loansvc.golden.json")
+	b, err := os.ReadFile(gp)
+	if err != nil {
+		t.Fatalf("expected impeach corpus golden at %s: %v", gp, err)
+	}
+	tr, err := ir.Load(b)
+	if err != nil {
+		t.Fatalf("corpus golden must load as a canonical trace (the impeach corpus form): %v", err)
+	}
+	if tr.Root == nil {
+		t.Error("corpus golden has no root span")
+	}
+	if tr.Stamp != "" {
+		t.Errorf("a committed corpus golden must be stampless; got stamp %q", tr.Stamp)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "loan_application.loansvc.flow.md")); err != nil {
+		t.Errorf("expected rendered view alongside the corpus golden: %v", err)
+	}
+	if !strings.Contains(out, "L0") || !strings.Contains(out, "flowmap.fqn") {
+		t.Errorf("the L0 localization caveat must be disclosed for a from-collector corpus; got:\n%s", out)
+	}
 }
 
 // TestBehaviorIngestGate exercises the stage-2 opt-in gate end to end: --update

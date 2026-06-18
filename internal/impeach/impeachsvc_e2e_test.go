@@ -36,11 +36,20 @@ func e2eFixture(t *testing.T) (*graph.Index, Report, Provenance) {
 	// injects only the code identity and the grade comes from the corpus itself.
 	prov := Provenance{TraceIdentity: commit}
 	r := Audit("impeachsvc", ix, []*ir.CanonicalTrace{loadTrace(t, impeachTraceAdminPurge), loadTrace(t, impeachTraceLoanCreate)}, prov)
-	if len(r.Candidates) != 1 || r.Candidates[0].Verdict != VerdictImpeachment {
-		t.Fatalf("want one IMPEACHMENT over the real corpus, got %+v", r.Candidates)
+	// The missed route reaches two named DELETEs, so the real corpus carries TWO
+	// IMPEACHMENTs — both localized L1 to the SAME severed node (PurgeLedger is the
+	// missed root behind both effects). The single-witness downstream tests select
+	// the ledger candidate by effect.
+	if len(r.Candidates) != 2 {
+		t.Fatalf("want two IMPEACHMENTs over the real corpus, got %+v", r.Candidates)
 	}
-	if got := r.Candidates[0].Severance; got == nil || got.Level != LevelL1 || got.Site != purgeLedgerNode {
-		t.Fatalf("want L1 localization to the severed node, got %+v", got)
+	for _, w := range r.Candidates {
+		if w.Verdict != VerdictImpeachment {
+			t.Fatalf("Verdict = %q for %q, want IMPEACHMENT", w.Verdict, w.Effect)
+		}
+		if got := w.Severance; got == nil || got.Level != LevelL1 || got.Site != purgeLedgerNode {
+			t.Fatalf("want L1 localization to the severed node for %q, got %+v", w.Effect, got)
+		}
 	}
 	return ix, r, prov
 }
@@ -61,11 +70,14 @@ func TestImpeachsvcCallerCaptureContradictsCorpus(t *testing.T) {
 	traces := []*ir.CanonicalTrace{loadTrace(t, impeachTraceAdminPurge), loadTrace(t, impeachTraceLoanCreate)}
 	// Caller claims production; the corpus carries integration ⇒ contradiction.
 	r := Audit("impeachsvc", ix, traces, Provenance{TraceIdentity: "deadbeefcafe", Capture: CaptureProduction})
-	if len(r.Candidates) != 1 {
-		t.Fatalf("want 1 candidate, got %d", len(r.Candidates))
+	if len(r.Candidates) != 2 {
+		t.Fatalf("want 2 candidates, got %d", len(r.Candidates))
 	}
-	if v := r.Candidates[0].Verdict; v != DowngradeCaptureUntrusted {
-		t.Errorf("Verdict = %q, want %q (caller grade contradicts the corpus ⇒ fail closed)", v, DowngradeCaptureUntrusted)
+	// The fail-closed cap applies to EVERY candidate the contradicted grade touches.
+	for _, w := range r.Candidates {
+		if w.Verdict != DowngradeCaptureUntrusted {
+			t.Errorf("Verdict = %q for %q, want %q (caller grade contradicts the corpus ⇒ fail closed)", w.Verdict, w.Effect, DowngradeCaptureUntrusted)
+		}
 	}
 	if r.CaptureProvenance != "" {
 		t.Errorf("resolved capture = %q, want \"\" (unestablished on contradiction)", r.CaptureProvenance)
@@ -79,7 +91,7 @@ func TestImpeachsvcCallerCaptureContradictsCorpus(t *testing.T) {
 // their own impeachments on REAL captures, not just in-memory unit fixtures.
 func TestImpeachsvcSelfExtinguishesE2E(t *testing.T) {
 	ix, r, prov := e2eFixture(t)
-	w := r.Candidates[0]
+	w := candidateFor(t, r, "db DELETE ledger")
 	rep := ProposeRepair(w)
 	if rep == nil || rep.Kind != RepairBlindSpot || rep.Site != purgeLedgerNode {
 		t.Fatalf("repair = %+v, want a blind_spot at the severed node", rep)
@@ -112,7 +124,10 @@ func TestImpeachsvcViolatedE2E(t *testing.T) {
 		{Name: "no-admin-delete", From: []string{"(*example.com/impeachsvc/internal/admin.Admin)"}, To: []string{"boundary:db DELETE ledger"}},
 	}
 	committed := Resolve(r, ix, rules, OriginCommitted)
-	w := committed.Candidates[0]
+	// The rule's `to` binds only DELETE ledger, so that candidate upgrades to VIOLATED
+	// while the audit_log candidate stays a bare IMPEACHMENT — so exactly ONE blocker,
+	// the ledger breach (a bare impeachment never gates).
+	w := candidateFor(t, committed.Report, "db DELETE ledger")
 	if w.Verdict != VerdictViolated {
 		t.Fatalf("Verdict = %q, want %q (witnessed breach from a path node)", w.Verdict, VerdictViolated)
 	}
@@ -141,7 +156,10 @@ func TestImpeachsvcRequireProofDowngradeE2E(t *testing.T) {
 
 	strict := []policy.ReachRule{{Name: "routes-no-delete", From: []string{createHandler}, To: []string{"boundary:db DELETE ledger"}, RequireProof: true}}
 	res := Resolve(r, ix, strict, OriginCommitted)
-	if v := res.Candidates[0].Verdict; v != VerdictImpeachment {
+	// The rule binds only DELETE ledger; that candidate stays a bare IMPEACHMENT (from
+	// does not bind the path) and blocks under require_proof, while audit_log — bound
+	// by no rule — stays advisory. So exactly one blocker, the ledger one.
+	if v := candidateFor(t, res.Report, "db DELETE ledger").Verdict; v != VerdictImpeachment {
 		t.Fatalf("Verdict = %q, want bare %q (from does not bind the path)", v, VerdictImpeachment)
 	}
 	got := res.GateBlockers()

@@ -12,8 +12,11 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/review"
 )
 
-// corpusDir is the committed impeachsvc behavioral corpus (the missed-root DB
-// DELETE + the sound POST /loan baseline).
+// corpusDir is the committed impeachsvc behavioral corpus, loaded WHOLE by
+// loadCommittedCorpus: the missed admin route's two DB DELETEs (ledger + audit_log)
+// and its bus PUBLISH (ledger.purged), the sound POST /loan baseline, and the
+// effectless reindex control. The gating tests below assert via the rule-bound
+// ledger breach, not a corpus-wide candidate count.
 const corpusDir = "../../testdata/fixtures/impeachsvc/flows/testdata/flows"
 
 // stampedImpeachGraph writes a STAMPED copy of the committed impeachsvc graph to a

@@ -33,6 +33,20 @@
                     }
                   }
                 ]
+              },
+              {
+                "members": [
+                  {
+                    "op": "DB postgres DELETE audit_log",
+                    "kind": "client",
+                    "peer": "postgres",
+                    "tier": 1,
+                    "attrs": {
+                      "db.statement": "DELETE FROM audit_log WHERE loan_id = ?",
+                      "flowmap.fqn": "example.com/impeachsvc/internal/store.dbSpan"
+                    }
+                  }
+                ]
               }
             ]
           }

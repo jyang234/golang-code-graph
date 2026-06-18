@@ -22,6 +22,7 @@ import (
 	"net/http"
 
 	"example.com/impeachsvc/internal/admin"
+	"example.com/impeachsvc/internal/eventbus"
 	"example.com/impeachsvc/internal/handler"
 	"example.com/impeachsvc/internal/router"
 	"example.com/impeachsvc/internal/store"
@@ -31,6 +32,7 @@ func main() { log.Fatal(run()) }
 
 func run() error {
 	loans := store.New(nil)
+	bus := eventbus.New()
 	app := handler.New(loans)
 
 	mux := http.NewServeMux()
@@ -40,7 +42,7 @@ func run() error {
 	// http.Handler (not func-typed) and is not a recognized registrar, so neither
 	// the mount nor the routes inside it are discovered.
 	adminRouter := router.New()
-	admin.New(loans).Mount(adminRouter)
+	admin.New(loans, bus).Mount(adminRouter)
 	mux.Handle("/admin/", adminRouter)
 
 	httpSrv := &http.Server{Addr: ":8080", Handler: mux}

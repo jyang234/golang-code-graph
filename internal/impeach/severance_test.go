@@ -1,6 +1,7 @@
 package impeach
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -28,10 +29,9 @@ func TestSeveranceMissedRoot(t *testing.T) {
 	create := loadTrace(t, impeachTraceLoanCreate)
 	r := Audit("impeachsvc", ix, []*ir.CanonicalTrace{purge, create}, Provenance{})
 
-	if len(r.Candidates) != 1 {
-		t.Fatalf("want exactly 1 candidate, got %d: %+v", len(r.Candidates), r.Candidates)
-	}
-	w := r.Candidates[0]
+	// Both missed-route DELETEs localize to the same severed node; this test inspects
+	// the ledger one (audit_log is structurally identical bar the table).
+	w := candidateFor(t, r, "db DELETE ledger")
 	if w.Severance == nil {
 		t.Fatal("candidate carries no severance localization")
 	}
@@ -260,7 +260,17 @@ func TestSeveranceDeterministic(t *testing.T) {
 	if a.Digest != b.Digest {
 		t.Errorf("severance broke order-independence: %s != %s", a.Digest, b.Digest)
 	}
-	if len(a.Candidates) != 1 || a.Candidates[0].Severance == nil {
-		t.Fatalf("expected one localized candidate, got %+v", a.Candidates)
+	// Two localized candidates, in an order-independent sequence. The count is pinned
+	// FIRST: without it, a regression to zero candidates would make both effectsOf
+	// slices empty (slices.Equal passes) and skip the loop body — a vacuous green that
+	// proves nothing. The expected sequence is concrete, so emptiness cannot satisfy it.
+	wantOrder := []string{"db DELETE audit_log", "db DELETE ledger"}
+	if !slices.Equal(effectsOf(a), wantOrder) || !slices.Equal(effectsOf(b), wantOrder) {
+		t.Fatalf("severance broke candidate ordering: a=%v b=%v, want %v", effectsOf(a), effectsOf(b), wantOrder)
+	}
+	for _, w := range a.Candidates {
+		if w.Severance == nil {
+			t.Fatalf("candidate %q carries no localization: %+v", w.Effect, w)
+		}
 	}
 }

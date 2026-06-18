@@ -1,6 +1,7 @@
 package impeach
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -16,9 +17,10 @@ import (
 // and the seam this whole fixture exists to manufacture inside a boundary we
 // control independent of the test.
 const (
-	impeachsvcGraph        = "testdata/impeachsvc.graph.json"
-	impeachTraceAdminPurge = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/delete_admin_ledger.golden.json"
-	impeachTraceLoanCreate = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_loan.golden.json"
+	impeachsvcGraph         = "testdata/impeachsvc.graph.json"
+	impeachTraceAdminPurge  = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/delete_admin_ledger.golden.json"
+	impeachTraceLoanCreate  = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_loan.golden.json"
+	impeachTraceAdminNotify = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_admin_notify.golden.json"
 )
 
 // TestImpeachsvcCatchesUndisclosedMissedRoot is the end-to-end proof: the real
@@ -49,18 +51,29 @@ func TestImpeachsvcCatchesUndisclosedMissedRoot(t *testing.T) {
 	create := loadTrace(t, impeachTraceLoanCreate)
 	r := Audit("impeachsvc", ix, []*ir.CanonicalTrace{purge, create}, Provenance{})
 
-	// Determinism over the real corpus.
-	if r.Digest != Audit("impeachsvc", ix, []*ir.CanonicalTrace{create, purge}, Provenance{}).Digest {
+	// Determinism over the real corpus, now with MORE THAN ONE candidate: the
+	// missed admin route reaches two named DELETEs, so this is the first real corpus
+	// whose witness sort orders multiple findings. The digest is order-independent
+	// AND the candidate SEQUENCE is identical regardless of input-trace order — the
+	// sort resolves on intrinsic data (effect first), never on arrival order.
+	rev := Audit("impeachsvc", ix, []*ir.CanonicalTrace{create, purge}, Provenance{})
+	if r.Digest != rev.Digest {
 		t.Error("report not order-independent over the real corpus")
 	}
+	wantOrder := []string{"db DELETE audit_log", "db DELETE ledger"} // lexical on the PRIMARY sort key, effect (§5); distinct effects, so no tie-break is reached
+	if got := effectsOf(r); !slices.Equal(got, wantOrder) {
+		t.Errorf("candidate order = %v, want %v (deterministic sort on intrinsic effect key)", got, wantOrder)
+	}
+	if got := effectsOf(rev); !slices.Equal(got, wantOrder) {
+		t.Errorf("reversed-input candidate order = %v, want %v (order-independent witness sort)", got, wantOrder)
+	}
 
-	if len(r.Candidates) != 1 {
-		t.Fatalf("want exactly 1 impeachment candidate, got %d: %+v", len(r.Candidates), r.Candidates)
+	if len(r.Candidates) != 2 {
+		t.Fatalf("want exactly 2 impeachment candidates (ledger + audit_log), got %d: %+v", len(r.Candidates), r.Candidates)
 	}
-	w := r.Candidates[0]
-	if w.Effect != "db DELETE ledger" {
-		t.Errorf("Effect = %q, want %q", w.Effect, "db DELETE ledger")
-	}
+	// Both missed-route effects are impeached; inspect the ledger one as the witness
+	// detail exemplar (the audit_log candidate is structurally identical bar the table).
+	w := candidateFor(t, r, "db DELETE ledger")
 	if w.Claim.Reachability != ReachUnreachable {
 		t.Errorf("Reachability = %q, want %q (named effect, no discovered route reaches it)", w.Claim.Reachability, ReachUnreachable)
 	}
@@ -69,8 +82,10 @@ func TestImpeachsvcCatchesUndisclosedMissedRoot(t *testing.T) {
 	// caps it at VERSION-SKEW — fail-closed, not promoted to a bare IMPEACHMENT on
 	// a graph it cannot prove the trace ran. The promotion is exercised separately
 	// (TestImpeachsvcLadderPromotesWithProvenance) once the substrate is supplied.
-	if w.Verdict != DowngradeVersionSkew {
-		t.Errorf("Verdict = %q, want %q (real corpus has no code identity)", w.Verdict, DowngradeVersionSkew)
+	for _, c := range r.Candidates {
+		if c.Verdict != DowngradeVersionSkew {
+			t.Errorf("Verdict = %q for %q, want %q (real corpus has no code identity)", c.Verdict, c.Effect, DowngradeVersionSkew)
+		}
 	}
 	// The witness carries the runtime counterexample: the entry it was reached
 	// from (the missed admin route) and the enriched observed op (with DB system).
@@ -109,6 +124,125 @@ func TestImpeachsvcDiscoveredRouteAloneIsClean(t *testing.T) {
 	}
 }
 
+// TestImpeachsvcCatchesBusPublishMissedRoot is the bus-vocabulary axis: the missed
+// admin route reaches a constant-named bus PUBLISH (not a DB effect), so this proves
+// the cell impeaches over the PUBLISH label vocabulary too — the label rung is not
+// DB-specific. Without provenance it caps at VERSION-SKEW (fail-closed, like every
+// stampless real capture); with the gated stamp + the corpus-carried integration
+// grade it promotes to a true IMPEACHMENT, localized L1 to the severed Notify node.
+func TestImpeachsvcCatchesBusPublishMissedRoot(t *testing.T) {
+	const notifyNode = "(*example.com/impeachsvc/internal/admin.Admin).Notify"
+	g, err := graph.LoadFile(impeachsvcGraph)
+	if err != nil {
+		t.Fatalf("load graph: %v", err)
+	}
+	notify := loadTrace(t, impeachTraceAdminNotify)
+
+	// Stampless: a real captured bus effect is a genuine contradiction the ladder
+	// caps at VERSION-SKEW until code identity is supplied — never a bare IMPEACHMENT.
+	bare := Audit("impeachsvc", graph.NewIndex(g), []*ir.CanonicalTrace{notify}, Provenance{})
+	w := candidateFor(t, bare, "PUBLISH ledger.purged")
+	if w.Claim.Reachability != ReachUnreachable {
+		t.Errorf("Reachability = %q, want %q (named bus effect, no discovered route reaches it)", w.Claim.Reachability, ReachUnreachable)
+	}
+	if w.Verdict != DowngradeVersionSkew {
+		t.Errorf("Verdict = %q, want %q (stampless real capture)", w.Verdict, DowngradeVersionSkew)
+	}
+	if w.Observed.Op != "PUBLISH ledger.purged" {
+		t.Errorf("Observed.Op = %q, want the canonical PUBLISH op", w.Observed.Op)
+	}
+	if w.Severance == nil || w.Severance.Level != LevelL1 || w.Severance.Site != notifyNode {
+		t.Errorf("want L1 localization to the severed Notify node, got %+v", w.Severance)
+	}
+
+	// With provenance the bus PUBLISH promotes to a full IMPEACHMENT — the label rung
+	// clears on the bus vocabulary exactly as it does for DB.
+	g.Stamp = "deadbeefcafe"
+	promoted := Audit("impeachsvc", graph.NewIndex(g), []*ir.CanonicalTrace{notify}, Provenance{TraceIdentity: "deadbeefcafe"})
+	pw := candidateFor(t, promoted, "PUBLISH ledger.purged")
+	if pw.Verdict != VerdictImpeachment {
+		t.Fatalf("Verdict = %q, want %q; ladder = %+v", pw.Verdict, VerdictImpeachment, pw.Rungs)
+	}
+	for _, rung := range pw.Rungs {
+		if rung.Name == RungLabel && !rung.Passed {
+			t.Errorf("label rung must clear on the bus PUBLISH vocabulary: %s", rung.Evidence)
+		}
+	}
+}
+
+// TestImpeachsvcCrossServiceDowngrade exercises the service-scope rung (§4 rung 4)
+// over a multi-service span tree, end to end through the full audit+ladder — not the
+// rung-in-isolation unit. An impeachsvc flow whose effect span is owned by a FOREIGN
+// service (a downstream peer's DB write appearing in the same distributed trace) must
+// downgrade to CROSS-SERVICE: behavior on another service's span cannot impeach THIS
+// service's static negative (fail-closed, §4). The discrimination is exact — the SAME
+// effect on impeachsvc's OWN span promotes to a full IMPEACHMENT, so the span's owning
+// service is the only thing that flips the verdict.
+//
+// The trace is hand-authored: the in-process harness captures a single service, so a
+// real multi-service OTLP capture is the one cross-service residual the audit deferred
+// (§17). This still drives the whole pipeline — candidate formation from a realistic
+// span tree, the full five-rung ladder, classify — the integration evidence a
+// rung-in-isolation unit test cannot give.
+func TestImpeachsvcCrossServiceDowngrade(t *testing.T) {
+	g, err := graph.LoadFile(impeachsvcGraph)
+	if err != nil {
+		t.Fatalf("load graph: %v", err)
+	}
+	const commit = "deadbeefcafe"
+	g.Stamp = commit
+	ix := graph.NewIndex(g)
+	prov := Provenance{TraceIdentity: commit}
+
+	// An impeachsvc flow whose DB effect is observed on effectService's span; the
+	// effect (peer_ledger) is one impeachsvc's graph models no emitter for, so it
+	// forms an ABSENT candidate and the only open question is whose span it is on.
+	xsvc := func(effectService string) *ir.CanonicalTrace {
+		return &ir.CanonicalTrace{
+			Flow: "DELETE /admin/ledger", Service: "impeachsvc", Provenance: "integration",
+			Root: &ir.CanonicalSpan{
+				Op: "HTTP DELETE /admin/ledger", Kind: ir.KindServer, Service: "impeachsvc",
+				Children: []ir.ChildGroup{{Members: []*ir.CanonicalSpan{
+					{Op: "DB postgres DELETE peer_ledger", Kind: ir.KindClient, Service: effectService},
+				}}},
+			},
+		}
+	}
+
+	// Foreign-service effect → CROSS-SERVICE. The verdict IS the first failing rung's
+	// downgrade, so CROSS-SERVICE proves rungs 1-3 cleared and service-scope is the
+	// decider — but assert the rung record explicitly for legibility.
+	foreign := Audit("impeachsvc", ix, []*ir.CanonicalTrace{xsvc("peersvc")}, prov)
+	fw := candidateFor(t, foreign, "db DELETE peer_ledger")
+	if fw.Verdict != DowngradeCrossService {
+		t.Errorf("Verdict = %q, want %q (effect on a foreign service's span)", fw.Verdict, DowngradeCrossService)
+	}
+	if fw.Observed.Service != "peersvc" {
+		t.Errorf("Observed.Service = %q, want the foreign owner", fw.Observed.Service)
+	}
+	cleared := map[string]bool{RungStaticAssertsNoPath: false, RungCodeIdentity: false, RungLabel: false}
+	for _, rung := range fw.Rungs {
+		if rung.Name == RungServiceScope && rung.Passed {
+			t.Errorf("service-scope rung passed on a foreign-service effect: %s", rung.Evidence)
+		}
+		if _, want := cleared[rung.Name]; want {
+			cleared[rung.Name] = rung.Passed
+		}
+	}
+	for name, passed := range cleared {
+		if !passed {
+			t.Errorf("rung %q did not clear before service-scope; CROSS-SERVICE not isolated to rung 4", name)
+		}
+	}
+
+	// Discrimination: the SAME effect on impeachsvc's OWN span promotes — only the
+	// owning service changed, so the service-scope rung is the sole decider.
+	own := Audit("impeachsvc", ix, []*ir.CanonicalTrace{xsvc("impeachsvc")}, prov)
+	if ow := candidateFor(t, own, "db DELETE peer_ledger"); ow.Verdict != VerdictImpeachment {
+		t.Errorf("Verdict = %q, want %q (same effect on the service's own span)", ow.Verdict, VerdictImpeachment)
+	}
+}
+
 // TestImpeachsvcLadderPromotesWithProvenance is the end-to-end IMPEACHMENT proof:
 // the SAME real graph + real captured traces that downgrade to VERSION-SKEW above
 // promote to a true IMPEACHMENT once the capture-side substrate the ladder needs
@@ -138,25 +272,28 @@ func TestImpeachsvcLadderPromotesWithProvenance(t *testing.T) {
 	if r.Digest != Audit("impeachsvc", ix, []*ir.CanonicalTrace{create, purge}, prov).Digest {
 		t.Error("report not order-independent under provenance")
 	}
-	if len(r.Candidates) != 1 {
-		t.Fatalf("want exactly 1 candidate, got %d: %+v", len(r.Candidates), r.Candidates)
-	}
-	w := r.Candidates[0]
-	if w.Verdict != VerdictImpeachment {
-		t.Fatalf("Verdict = %q, want %q; ladder = %+v", w.Verdict, VerdictImpeachment, w.Rungs)
-	}
-	// The ladder is recorded WHOLE and every rung cleared (Passed == benign
-	// explanation ruled out): an IMPEACHMENT is exactly "all five rungs passed".
-	if len(w.Rungs) != 5 {
-		t.Fatalf("want the full 5-rung ladder recorded, got %d: %+v", len(w.Rungs), w.Rungs)
+	// Both missed-route DELETEs promote: the promotion path is exercised over MORE
+	// THAN ONE finding, so "the ladder can reach IMPEACHMENT" is proven for each.
+	if len(r.Candidates) != 2 {
+		t.Fatalf("want exactly 2 candidates (ledger + audit_log), got %d: %+v", len(r.Candidates), r.Candidates)
 	}
 	wantOrder := []string{RungStaticAssertsNoPath, RungCodeIdentity, RungLabel, RungServiceScope, RungCaptureFidelity}
-	for i, rung := range w.Rungs {
-		if rung.Name != wantOrder[i] {
-			t.Errorf("rung %d = %q, want %q (ladder must be in §4 order)", i, rung.Name, wantOrder[i])
+	for _, w := range r.Candidates {
+		if w.Verdict != VerdictImpeachment {
+			t.Fatalf("Verdict = %q for %q, want %q; ladder = %+v", w.Verdict, w.Effect, VerdictImpeachment, w.Rungs)
 		}
-		if !rung.Passed {
-			t.Errorf("rung %q did not pass on the promotion path: %s", rung.Name, rung.Evidence)
+		// The ladder is recorded WHOLE and every rung cleared (Passed == benign
+		// explanation ruled out): an IMPEACHMENT is exactly "all five rungs passed".
+		if len(w.Rungs) != 5 {
+			t.Fatalf("want the full 5-rung ladder recorded for %q, got %d: %+v", w.Effect, len(w.Rungs), w.Rungs)
+		}
+		for i, rung := range w.Rungs {
+			if rung.Name != wantOrder[i] {
+				t.Errorf("rung %d = %q, want %q (ladder must be in §4 order)", i, rung.Name, wantOrder[i])
+			}
+			if !rung.Passed {
+				t.Errorf("rung %q did not pass on the promotion path for %q: %s", rung.Name, w.Effect, rung.Evidence)
+			}
 		}
 	}
 	// Provenance is recorded in the report header (the numerator's identity, §5):

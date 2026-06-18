@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"example.com/impeachsvc/internal/eventbus"
 	"example.com/impeachsvc/internal/router"
 	"example.com/impeachsvc/internal/store"
 )
@@ -20,10 +21,11 @@ import (
 // Admin holds the dependencies the factory closes over.
 type Admin struct {
 	loans *store.Loans
+	bus   *eventbus.Bus
 }
 
-// New builds the admin sub-app over the shared store.
-func New(loans *store.Loans) *Admin { return &Admin{loans: loans} }
+// New builds the admin sub-app over the shared store and event bus.
+func New(loans *store.Loans, bus *eventbus.Bus) *Admin { return &Admin{loans: loans, bus: bus} }
 
 // route pairs a runtime-built pattern with its handler — the dynamic route table.
 type route struct {
@@ -39,6 +41,7 @@ func (a *Admin) table() []route {
 	return []route{
 		{"DELETE", base + "/ledger", a.PurgeLedger},
 		{"POST", base + "/reindex", a.Reindex},
+		{"POST", base + "/notify", a.Notify},
 	}
 }
 
@@ -67,7 +70,12 @@ func (a *Admin) PurgeLedger(w http.ResponseWriter, req *http.Request) {
 	if id == "" {
 		id = "ALL"
 	}
+	// Two named DB effects on the one missed route: the ledger and its audit trail.
+	// Both are reached from no discovered entrypoint, so the missed route impeaches
+	// TWO effects from a single capture — the multi-candidate witness sort the
+	// single-effect corpus never exercised.
 	_ = a.loans.Purge(ctx, id)
+	_ = a.loans.PurgeAudit(ctx, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -75,5 +83,17 @@ func (a *Admin) PurgeLedger(w http.ResponseWriter, req *http.Request) {
 // single special case but a genuine sub-app surface.
 func (a *Admin) Reindex(w http.ResponseWriter, req *http.Request) {
 	_ = context.Canceled // no boundary effect; exercises the table's second entry
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// Notify publishes a constant-named event — a BUS boundary effect reached only
+// through this missed route. It is the bus analogue of PurgeLedger's DB DELETE: a
+// named effect static attributes to no discovered entrypoint, behaviorally observed
+// on POST /admin/notify, so the impeachment cell catches it over the PUBLISH label
+// vocabulary (not just DB) on a real capture.
+func (a *Admin) Notify(w http.ResponseWriter, req *http.Request) {
+	ctx, span := otel.Tracer("impeachsvc").Start(req.Context(), "admin.notify")
+	defer span.End()
+	_ = a.bus.Publish(ctx, "ledger.purged", nil)
 	w.WriteHeader(http.StatusAccepted)
 }

@@ -243,10 +243,13 @@ func TestImpeachsvcLivePathPromotes(t *testing.T) {
 	// identity (the Stamp set above) AND its capture grade (the goldens carry
 	// "integration", §12.6) — the audit asserts nothing.
 	r := Audit("impeachsvc", ix, []*ir.CanonicalTrace{purge, create}, Provenance{})
-	if len(r.Candidates) != 1 {
-		t.Fatalf("want 1 candidate, got %d: %+v", len(r.Candidates), r.Candidates)
+	if len(r.Candidates) != 2 {
+		t.Fatalf("want 2 candidates, got %d: %+v", len(r.Candidates), r.Candidates)
 	}
-	if v := r.Candidates[0].Verdict; v != VerdictImpeachment {
-		t.Errorf("Verdict = %q, want %q; ladder = %+v", v, VerdictImpeachment, r.Candidates[0].Rungs)
+	// Both missed-route DELETEs promote off the trace's self-described identity+grade.
+	for _, w := range r.Candidates {
+		if w.Verdict != VerdictImpeachment {
+			t.Errorf("Verdict = %q for %q, want %q; ladder = %+v", w.Verdict, w.Effect, VerdictImpeachment, w.Rungs)
+		}
 	}
 }

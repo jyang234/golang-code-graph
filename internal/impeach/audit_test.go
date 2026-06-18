@@ -35,6 +35,36 @@ func loadTrace(t *testing.T, path string) *ir.CanonicalTrace {
 	return tr
 }
 
+// candidateFor returns the single candidate with the given effect, failing if it
+// is absent or duplicated. The impeachsvc missed route now impeaches TWO effects
+// (db DELETE ledger + db DELETE audit_log), so a test that reasons about one
+// specific witness selects it by effect rather than positional index — robust to
+// the deterministic sort order, which is itself asserted separately.
+func candidateFor(t *testing.T, r Report, effect string) Witness {
+	t.Helper()
+	var found []Witness
+	for _, w := range r.Candidates {
+		if w.Effect == effect {
+			found = append(found, w)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one candidate for effect %q, got %d: %+v", effect, len(found), r.Candidates)
+	}
+	return found[0]
+}
+
+// effectsOf is the candidate effect sequence in report order — the determinism
+// surface a multi-candidate corpus exercises (the witness sort must be a pure,
+// order-independent function of intrinsic data).
+func effectsOf(r Report) []string {
+	out := make([]string, len(r.Candidates))
+	for i, w := range r.Candidates {
+		out[i] = w.Effect
+	}
+	return out
+}
+
 // TestAuditDeterministic pins the P0 cross-cutting requirement (§10): the report
 // is a pure function of (graph, corpus), byte-identical across runs and
 // independent of trace arrival order. The digest is the mechanical witness.

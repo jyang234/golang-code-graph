@@ -34,9 +34,10 @@ func TestDeclaredBlindSpotEnactmentRoundTrip(t *testing.T) {
 		t.Fatalf("analyze impeachsvc: %v", err)
 	}
 
-	// Baseline: no ratified seam → the missed-root DB DELETE is impeached.
-	if n := auditImpeachsvc(t, buildGraphJSON(t, res)); n != 1 {
-		t.Fatalf("baseline: want 1 impeachment candidate, got %d", n)
+	// Baseline: no ratified seam → both missed-root DB DELETEs (ledger + audit_log,
+	// reached through the same severed route) are impeached.
+	if n := auditImpeachsvc(t, buildGraphJSON(t, res)); n != 2 {
+		t.Fatalf("baseline: want 2 impeachment candidates, got %d", n)
 	}
 
 	// Ratify: declare the seam the loop proposed + self-extinguish-verified. The

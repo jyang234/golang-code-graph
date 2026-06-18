@@ -1,0 +1,16 @@
+{
+  "flow": "POST /admin/reindex",
+  "service": "impeachsvc",
+  "provenance": "integration",
+  "schema_version": "flowmap.trace/v1",
+  "root": {
+    "op": "HTTP POST /admin/reindex",
+    "kind": "server",
+    "peer": "",
+    "tier": 1
+  },
+  "discards": {
+    "ids": "dropped",
+    "timing": "dropped"
+  }
+}

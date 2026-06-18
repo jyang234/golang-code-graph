@@ -365,6 +365,7 @@ func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	serviceDir := fs.String("service-dir", "", "service source dir; show the coverage delta against its boundary contract")
 	flowsDir := fs.String("flows-dir", "", "directory of committed *.effects.json post-hoc goldens; enables the opt-in gate")
+	corpusDir := fs.String("corpus-dir", "", "write a stampless <flow>.<service>.golden.json impeach corpus per flow here (any mode); the form `groundwork verify --corpus` consumes")
 	update := fs.Bool("update", false, "with --flows-dir, rebase the post-hoc goldens and .flow.md views from the traces")
 	renderDir := fs.String("render-dir", "", "write a cross-service <slug>.system.flow.md per flow here (any mode, non-gated)")
 	root := fs.String("root", "", "with --render-dir, center the diagram on this service's subtree")
@@ -446,6 +447,15 @@ func cmdIngest(args []string) error {
 		}
 	}
 
+	// The impeach corpus is also a producer side-effect, independent of the effects
+	// gate (the gate over this corpus is `groundwork verify --corpus`, never here):
+	// emit it in any mode when --corpus-dir is given.
+	if *corpusDir != "" {
+		if err := writeImpeachCorpus(*corpusDir, frags, spans); err != nil {
+			return err
+		}
+	}
+
 	switch {
 	case *update && *flowsDir != "":
 		if err := updateEffectGoldens(*flowsDir, frags); err != nil {
@@ -506,6 +516,61 @@ func updateEffectGoldens(dir string, frags []ingestFragment) error {
 		fmt.Printf("wrote %s.effects.json (+ .flow.md)\n", stem)
 	}
 	return nil
+}
+
+// writeImpeachCorpus persists each canonicalized fragment as a stampless
+// <flow>.<service>.golden.json through the SAME writer the in-test golden lifecycle
+// uses (golden.WriteSnapshot), producing the committed-corpus form `groundwork verify
+// --corpus` consumes — the wiring the design doc's "remaining: a flowmap CLI for the
+// loop" called for. It is presence-only (impeach uses behavioral PRESENCE to impeach
+// static ABSENCE, never the reverse), so a synthesized-root fragment — truncated, no
+// clean inbound entry — is still sound to include (a partial trace can only OMIT a
+// real effect, never invent one) and is written best-effort with a note, mirroring the
+// cross-service view rather than the effects gate's skip. Same fail-closed collision
+// guard as updateEffectGoldens: two fragments slugging to one stem are refused, never
+// silently overwritten. The L0/L1 localization caveat is disclosed once, conditioned on
+// whether the spans actually carry the in-process flowmap.fqn tag.
+func writeImpeachCorpus(dir string, frags []ingestFragment, spans []capture.Span) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	fmt.Println()
+	claimed := map[string]string{} // file stem -> "flow / service" that wrote it
+	for _, fr := range frags {
+		stem := effectStem(fr.fc.Slug, fr.fc.Service)
+		owner := fr.fc.Slug + " / " + fr.fc.Service
+		if prev, ok := claimed[stem]; ok && prev != owner {
+			return fmt.Errorf("corpus golden collision: %q and %q both map to %s.golden.json; rename a flow or service to disambiguate", prev, owner, stem)
+		}
+		claimed[stem] = owner
+		if err := golden.WriteSnapshot(fr.trace, dir, stem); err != nil {
+			return err
+		}
+		note := ""
+		if fr.fc.Synthesized {
+			note = " (synthetic root — no inbound entry span; presence still sound)"
+		}
+		fmt.Printf("wrote %s.golden.json (+ .flow.md)%s\n", filepath.Join(dir, stem), note)
+	}
+	if corpusHasFQNTags(spans) {
+		fmt.Println("localization: spans carry flowmap.fqn — impeach severance localizes to the precise severed call site (L1)")
+	} else {
+		fmt.Println("localization: spans carry no flowmap.fqn tag (set in-process by the harness only), so impeach severance over this corpus is L0 (coarse: the entry/effect pair), not L1 (the precise severed call site) — still a sound impeach input; candidates, L0 severance, and the downgrade ladder all hold")
+	}
+	return nil
+}
+
+// corpusHasFQNTags reports whether any span carries the in-process flowmap.fqn L1
+// localization tag (capture.FQNTagKey, set only by harness.OnStart). A from-collector
+// export lacks it, so the impeach corpus localizes at L0; a harness-exported one keeps
+// it and reaches L1. Detected from the spans, never assumed, so the caveat is honest.
+func corpusHasFQNTags(spans []capture.Span) bool {
+	for i := range spans {
+		if spans[i].Attr(capture.FQNTagKey) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // gateEffectGoldens enforces every committed golden against what was observed,
