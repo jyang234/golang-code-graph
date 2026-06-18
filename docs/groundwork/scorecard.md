@@ -1,11 +1,14 @@
 # Capability scorecard — an honest assessment
 
-> **`DESIGN RECORD`** · capability assessment, graded by evidence (re-grade on new evidence) · _reviewed 2026-06-16_
+> **`DESIGN RECORD`** · capability assessment, graded by evidence (re-grade on new evidence) · _reviewed 2026-06-18_
 
-**As of:** 2026-06-16, HEAD `45d70bd` (branch `claude/golang-code-graph-eval-hkzmdm`).
-This re-grade adds the static-frontier classifier, the strict-server reclaimer,
-and `--expect` commit-identity gate binding (all shipped since the 2026-06-13
-review), and records the determinism/fail-closed hardening wave.
+**As of:** 2026-06-18, branch `claude/phase-4-5-prime-directive-risk-er9gam`.
+This re-grade adds **behavioral impeachment** (Phases 0–5: the `observed ×
+proven-absent` counterexample finder, the corpus gate, and the audit-only `impeach`
+MCP lens), the producer-set **capture-fidelity provenance**, and the
+determinism/fail-closed hardening wave. The prior re-grade (2026-06-16, HEAD
+`45d70bd`) added the static-frontier classifier, the strict-server reclaimer, and
+`--expect` commit-identity gate binding.
 **Purpose:** what this toolset can actually do, graded by *evidence class*, with
 each capability's known limits beside its strengths. Re-grade when the
 evidence changes; the drill record (`drills.md`) and the test suite are the
@@ -39,6 +42,7 @@ no committed lock would be ⚠️, not ✅.
 | Graph stamping (`--stamp`) | ✅ | All four verify behaviors tested; goldens proven unstamped/unchanged | Caller-supplied only — verifies the claim chain, not the deploy pipeline's existence |
 | Static-frontier classifier (`flowmap frontier`) | ✅ | Classifier + attribution check locked on hand-authored graph fixtures and the `strictsvc`/`oapisvc`/`loansvc` services (`internal/static/frontier/frontier_test.go`, `frontier_classify_test.go`); the three-valued disclosure (confirmed-starved / unconfirmed / clean) is tested both ways so a 0-loss can't be misread | **Measurement, not a gate** — imports no verdict surface; attribution loss is a *lower bound*, not a proof; whole-service only (a scoped `--entry` build carries no frontier section by design) |
 | Strict-server seam reclaimer (`flowmap graph --reclaim`) | ✅ | Recovers exactly the strict-server dispatch edges, each tagged with `via` provenance, and **zero false positives** on non-seam services (`internal/static/reclaim/reclaim_test.go`); folding the edges in drives the frontier's attribution loss to 0 | Opt-in by design (default graph and goldens unchanged); covers only the oapi strict-server seam shape; promotion to default-on is gated on real-service prevalence evidence (not yet collected) |
+| Capture-fidelity provenance (producer-set + reconciled) | ✅ | The grade is producer-set (the harness marks captures `integration`, a deploy sets `production` via a resource attribute), self-described by the committed corpus, and reconciled in `impeach.Audit`: a caller-asserted grade that contradicts the capture fails CLOSED to unestablished; only `production`/`integration` may be asserted (`capture.AssertableGrade`, one source for the verify CLI and MCP); §12.6 tests | **No cryptographic attestation yet** — a mislabeled producer is trusted (a signing authority is the named next step); `synthetic`/absent never promote, by design |
 
 ## groundwork (the judge)
 
@@ -53,6 +57,8 @@ no committed lock would be ⚠️, not ✅.
 | Partial-effect fault answers | ✅ | Certainly/possibly split locked; scope statement prints even when sections are empty | Inherits effect_order's same-function limit |
 | Ground cards (pre-edit binding rules) | ✅ | The defining test seeds the violation the card warns about and asserts the named rules fire; same matchers as the checks | Binding ≠ exhaustive: only declared rules appear; an unconfigured hazard is invisible by definition |
 | MCP server | ✅ | Scripted-session tests: handshake, discovery, cards, isError tool results, -32601; fleet session: prefixed entrypoints, fleet-events join, explicit-hop errors; HTTP session: bearer auth, Origin rejection, 405/202/400 transport discipline, fail-closed exposure guard | Staleness flagged but reload is manual by design; fleet-events covers loaded services only; HTTP auth is one static bearer token (TLS/identity belong to a reverse proxy); no SSE streams; session ids are transcript labels only, never server state; first-of-kind surface with no field hours |
+| Behavioral impeachment gate (`verify --corpus`) | ✅ | Proven E2E over the `impeachsvc` fixture: a `must_not_reach` `require_proof` proof is SATISFIED statically but the committed corpus impeaches it (the missed-root DELETE), downgrading it to CANT-PROVE and BLOCKing — with causal isolation (the same policy+graph without the corpus passes; the breach is the sole block dimension); the self-extinguish loop, the witnessed-breach→VIOLATED upgrade, the `CorpusOrigin` live-vs-committed fence, and the contradicted-capture fail-closed are each locked (`internal/impeach`, `cmd/groundwork/verify_corpus_test.go`) | **Single fixture, lab-proven not field-proven**; a *counterexample finder, not an audit* — finds unsoundness only on exercised paths, never proves static sound; **bus + DB effects only** (outbound HTTP/RPC deferred); needs a committed OTel golden corpus (the largest adoption ask); **opt-in/observe-first** (`impeachment_gate.gate` — discloses from day one, blocks only once ratified); L1 localization sound for clean-final-segment first-party code (§12.5) |
+| Impeach MCP lens (audit-only) | ✅ | `disclose-the-witness-but-never-gate` (runs at `OriginLive`, so `GateBlockers` is structurally empty), byte-determinism across calls, fail-closed without `--corpus`/`--policy`, reload re-audits (IMPEACHMENT→VERSION-SKEW when the graph stamp stops matching), contradicted-capture caps below IMPEACHMENT — all locked (`cmd/groundwork/mcp_impeach_test.go`) | **Audit-only by construction** — never a gate (the loaded graph may be a local build; the gate is `verify --corpus` over CI graphs); needs `--corpus`+`--policy`; corpus is a load-once startup input (the card discloses it — restart to refresh); inherits the gate's coverage limits |
 | Effectiveness drills as ratchet | 📐 | E1–E3 committed; numbers reprint on every `-v` run | They measure that triage does its job well, not that its job covers everything |
 | Transcript instrument (`--log` + `transcript`) | ✅ | Byte-exact log-format test; summary semantics (id-attributed sessions surviving interleaved concurrent clients, hops through fleet-wide calls, corrections) locked by unit tests; -race concurrent-hammer test; strict decode fails closed on unknown lines | Counts measure usage, not value — E4's qualitative half (do conclusions cite card facts?) stays human-judged; no E4 field data yet |
 
@@ -72,6 +78,7 @@ no committed lock would be ⚠️, not ✅.
 | **Behavior at scale** (10⁵-node graphs, interface-heavy monoliths) | 📐 First real data point (2026-06-13): an 891-node / 107-HighFanOut service ran the CX engine with **no measurable overhead (~2s, OFF ≈ ON)** and **trust monotonicity held** (only VIOLATED→CANT-PROVE, never a new VIOLATED). Two honest limits it exposed: the interprocedural lifts abstain at HighFanOut chokepoints (their value is gated by dispatch precision, not soundness — see correctness-expansion-plan D-CX10), and a `require_proof` rule with an unbindable third-party sink reported HOLDS vacuously (fixed). Still ⚠️ above ~10³ nodes; the 10⁵ monolith remains unmeasured. |
 | **E4: does an agent actually do better with these tools?** | 📋 Designed with criteria and a results slot in `drills.md`; needs live human-judged sessions. Until run, "net positive for the agent" is a structural argument, not a measurement. |
 | **External adoption / sustained use** | ⚠️ Zero adopters outside the dogfood fixture. The behavioral pipeline's authoring cost in particular has no field evidence. |
+| **Behavioral impeachment in the field** | ⚠️ The mechanism is ✅ (locked, proven E2E) — but on **one** fixture (`impeachsvc`). It has never run against a diverse real corpus, so how often it finds a *real* missed edge (vs. produces only abstaining downgrades) is unmeasured. Its worst case is abstention, not a false impeachment, so the soundness risk is low; the **value** is the unproven part. The honest next step is running it against several third-party Go services and publishing where the verdicts landed, including the abstains. |
 | **Cross-service triage** | ⚠️ Per-service only; the contract diff and system rendering exist, but an incident walk across service boundaries does not. |
 | **Maintenance bus factor** | ⚠️ The obligations SSA analysis is subtle (the adversarial review found six semantic bugs in its first version — all fixed and locked, but the subtlety remains). It needs more than one fluent maintainer. |
 
@@ -87,6 +94,7 @@ tested and chosen, with the reasoning recorded in `review-fixes-plan.md`.
 ## The one-line summary
 
 **Everything buildable from inside this repo is built, locked, and where
-possible measured; the three claims that matter most to a real adopter —
-scale, agent benefit, sustained adoption — are exactly the three that cannot
-be proven from inside this repo, and they are graded accordingly.**
+possible measured; the claims that matter most to a real adopter — scale,
+agent benefit, sustained adoption, and the field *value* (not soundness) of
+behavioral impeachment — are exactly the ones that cannot be proven from inside
+this repo, and they are graded accordingly.**

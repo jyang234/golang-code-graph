@@ -1,6 +1,6 @@
 # Three seats, before and after — how Claude Code's behavior changes
 
-> **`ACTIVE`** · narrative guide (before/after) · _reviewed 2026-06-13_
+> **`ACTIVE`** · narrative guide (before/after) · _reviewed 2026-06-18_
 
 The fastest way to understand this toolset is not its feature list but its
 effect on the three people (and their agent) who touch a service: the
@@ -80,6 +80,11 @@ ends.**
   reversal *first*). Constraints become requirements before generation, and
   the plan includes its own **rule changes**: a new must-precede obligation,
   CODEOWNERS-reviewed like code, encoding the lesson at the feature's birth.
+  Where a committed behavioral corpus exists, the audit-only `impeach` lens adds
+  the one signal static analysis structurally cannot give: *where observed
+  behavior has already contradicted the graph's "this can't happen"* — so Claude
+  is warned off trusting a proven-absent claim at a seam the runtime has shown is
+  real, before it edits there. (It only ever discloses — the gate is `verify`.)
 - **Implementing:** Claude self-checks deterministically before pushing —
   regenerate the graph locally, run `verify`. Every classic agent mistake
   fails with a witness: the layering skip names the bypass path, the missing
@@ -122,7 +127,10 @@ even a re-signed forgery), its variance is confined to prose and judgment,
 and the verdict allocates its attention mechanically — NO-STRUCTURAL-SIGNAL
 means *all* context goes to logic, "exactly where logic review matters most."
 The independence is architectural, not behavioral: the judge shares nothing
-with the author — not the model, not the prompt, not the failure modes.
+with the author — not the model, not the prompt, not the failure modes. And when
+CI runs the gate with `--corpus`, the artifact can carry the strongest verdict it
+has — a *behaviorally-confirmed* `VIOLATED`: a `must_not_reach` breach the runtime
+itself witnessed, not a heuristic, with the observed trace as the evidence.
 
 **What doesn't change:** logic, values, taste, and any invariant nobody
 declared. The artifact is only as honest as the policy — which is why dead
@@ -148,7 +156,9 @@ rules and dead exceptions disclose themselves.
    is loud.
 
 And the standing honesty, in every seat: the model's judgment is unchanged;
-the instruments only report what they are plumbed to sense; and the claim
-that an agent *performs measurably better* with these tools is the one
-experiment (E4) that requires live sessions — designed, criteria named,
-results slot waiting.
+the instruments only report what they are plumbed to sense; the behavioral
+signals (the `impeach` lens, the corpus gate) are dormant until a service has
+committed a golden corpus, and even then they find counterexamples only on
+*exercised* paths — never a proof that the graph is right; and the claim that an
+agent *performs measurably better* with these tools is the one experiment (E4)
+that requires live sessions — designed, criteria named, results slot waiting.

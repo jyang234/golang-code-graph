@@ -336,6 +336,27 @@ gate the wrong code; `GROUNDWORK_REQUIRE_STAMP=1` makes the binding mandatory.
 Producer and judge are deployed in lockstep — the graph JSON is decoded strictly,
 so unknown fields fail loudly — so pin both to the same release.
 
+**Optional: arm the behavioral impeachment dimension.** Once you have committed
+golden snapshots (Part 1, step 3), feed them to the same gate so *observed*
+behavior can impeach a static negative the graph proved — a `must_not_reach`
+`require_proof` proof the runtime contradicts is downgraded to CANT-PROVE and
+BLOCKs, and a witnessed breach upgrades to a behaviorally-confirmed `VIOLATED`:
+
+```yaml
+      - name: pre-flight gate (with impeachment)
+        env: { GROUNDWORK_REQUIRE_STAMP: "1" }
+        run: groundwork verify policy.json base.graph.json branch.graph.json
+             --expect "$GITHUB_SHA" --corpus flows/ --capture integration
+```
+
+It is **observe-first**: disclosed from day one, but it only *blocks* once you set
+`impeachment_gate.gate` in the policy and a human ratifies — so you can watch what
+it finds before it can ever fail a merge. `--capture` asserts the corpus's fidelity
+grade (`production`/`integration`); a grade that contradicts what the corpus self-
+describes fails closed, so a test corpus can never mint a gating impeachment. This
+is a *counterexample finder, not an audit* — it finds unsoundness only on exercised
+paths and never proves the graph correct.
+
 ## 10. Route the policy through CODEOWNERS
 
 `policy.json` and the obligation rules in `.flowmap.yaml` are architectural truth:
@@ -353,18 +374,23 @@ into a permanent blind spot.
 
 ## 11. Serve it to agents over MCP (optional, high-leverage)
 
-`groundwork mcp` exposes triage/reach/ground/exceptions as MCP tools so a coding
-agent runs the **ground → edit → verify** loop itself:
+`groundwork mcp` exposes triage/reach/ground/fitness/exceptions as MCP tools so a
+coding agent runs the **ground → edit → verify** loop itself:
 
 ```sh
 groundwork mcp graph.json --policy policy.json                       # stdio, one service
+groundwork mcp graph.json --policy policy.json --corpus flows/       # + the audit-only `impeach` lens
 groundwork mcp --service pay=pay.json --service ledger=ledger.json   # the neighborhood's maps
 groundwork mcp pay.json --http 127.0.0.1:8137 --token "$T"           # team-shared (token required off loopback)
 ```
 
-The graph the server reads is still CI-generated — the agent reads it, never
-writes it. Run with `--log calls.jsonl` and read `groundwork transcript
-calls.jsonl` to see whether sessions actually cite card facts.
+Adding `--corpus` enables the audit-only `impeach` lens: it discloses where
+observed behavior has already contradicted the graph's "this can't happen," so the
+agent is warned off a proven-absent claim at a real seam *before* it edits — it
+**never gates** (the gate is `verify --corpus` in CI). The graph the server reads is
+still CI-generated — the agent reads it, never writes it. Run with `--log
+calls.jsonl` and read `groundwork transcript calls.jsonl` to see whether sessions
+actually cite card facts.
 
 ## What groundwork does *not* verify — state this up front
 

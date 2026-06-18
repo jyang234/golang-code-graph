@@ -1359,3 +1359,51 @@ encodes a deliberate honesty or determinism decision, not just a name.
   base/branch graphs and runs `verify`, optionally `--corpus` for the impeachment
   gate above), and the **impeachment** dimension folded into that structural run.
   Unified only by CODEOWNERS routing and the human-as-oracle — no AI in any of them.
+
+### Behavioral impeachment
+
+- **impeachment** — the join of captured behavior against the static graph that
+  asks the one question the analyzer cannot ask itself: *did we observe an effect
+  static proved couldn't happen?* It is a **counterexample finder for the
+  analyzer's own negatives** — it can find unsoundness only on *exercised* paths
+  and never proves static is sound. Not an audit; silence means "no counterexample
+  on what you ran," never "the graph is correct."
+- **impeachment candidate / witness** — an effect **observed** in the corpus where
+  static placed none (proved it unreachable or absent). The witness carries the
+  observed flow + entry, the static claim under test, and the localized site.
+- **downgrade ladder** — the five-rung classifier that decides whether a candidate
+  is a real **IMPEACHMENT** or a benign explanation. A candidate that fails any
+  rung downgrades to that rung's disclosure rather than minting a false
+  impeachment — fail-closed by construction (an unprovable candidate biases to
+  abstention, never to a confident pole).
+- **the downgrades** — the benign poles a candidate caps at: **VERSION-SKEW** (code
+  identity unestablished — can't prove the trace ran this code), **LABEL-MISMATCH**
+  (effect outside the one-source label vocabulary), **CROSS-SERVICE** (effect on a
+  foreign service's span), **CAPTURE-UNTRUSTED** (capture not graded
+  production/integration). Each is recorded whole, so the abstention is auditable.
+- **severance / localization** — *where* static lost the effect: the missed entry
+  registration (a **missed root**), the severed emitter, or the unmodeled effect.
+  **L0** is the coarse anchor; **L1** resolves it to the exact severed node on the
+  observed causal path when `flowmap.fqn` tags are present (sound for
+  clean-final-segment first-party code, §12.5). A blind-spot repair self-
+  extinguishes exactly this site.
+- **capture grade / provenance** — the self-declared capture fidelity
+  (**production** | **integration** | **synthetic**). Producer-set, never inferred;
+  only production/integration clear the capture-fidelity rung. A `--capture` the
+  caller asserts is reconciled against the corpus's own grade and fails CLOSED on a
+  contradiction, so a test corpus can never be laundered into a gating impeachment
+  (§12.6). Only production/integration may be asserted (`capture.AssertableGrade`).
+- **CorpusOrigin (live vs committed)** — the determinism fence: a **committed**
+  corpus (`*.golden.json`, byte-reproducible) may gate; a **live** corpus is
+  **audit-only by representation** — its verdicts are disclosed but can never move a
+  deterministic gate. This is why the MCP `impeach` lens runs `OriginLive`.
+- **impeach lens** — `groundwork mcp … --corpus`: the same audit served read-only to
+  an agent. It **discloses, never gates** (the loaded graph may be a local build);
+  the gate is `verify --corpus` over CI base/branch graphs.
+- **observe-first / self-extinguish / ratchet** — the loop's discipline. *Observe-
+  first*: an impeachment is disclosed from day one but blocks only once
+  `impeachment_gate.gate` is armed and a human ratifies. *Self-extinguish*: the
+  proposed repair (declare the blind spot) is verified to actually extinguish the
+  witness without minting a new false proof. *Ratchet*: ratifying co-commits the
+  allow-list entry and **enacts the seam back into the graph**, so the next build
+  abstains there — the graph learns where it was blind.
