@@ -1,0 +1,46 @@
+{
+  "flow": "POST /admin/notify",
+  "service": "impeachsvc",
+  "provenance": "integration",
+  "schema_version": "flowmap.trace/v1",
+  "root": {
+    "op": "HTTP POST /admin/notify",
+    "kind": "server",
+    "peer": "",
+    "tier": 1,
+    "children": [
+      {
+        "members": [
+          {
+            "op": "admin.notify",
+            "kind": "internal",
+            "peer": "",
+            "tier": 3,
+            "attrs": {
+              "flowmap.fqn": "example.com/impeachsvc/internal/admin.(*Admin).Notify"
+            },
+            "children": [
+              {
+                "members": [
+                  {
+                    "op": "PUBLISH ledger.purged",
+                    "kind": "producer",
+                    "peer": "Bus",
+                    "tier": 1,
+                    "attrs": {
+                      "flowmap.fqn": "example.com/impeachsvc/internal/eventbus.(*Bus).Publish"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "discards": {
+    "ids": "dropped",
+    "timing": "dropped"
+  }
+}

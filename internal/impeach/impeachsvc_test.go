@@ -17,9 +17,10 @@ import (
 // and the seam this whole fixture exists to manufacture inside a boundary we
 // control independent of the test.
 const (
-	impeachsvcGraph        = "testdata/impeachsvc.graph.json"
-	impeachTraceAdminPurge = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/delete_admin_ledger.golden.json"
-	impeachTraceLoanCreate = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_loan.golden.json"
+	impeachsvcGraph         = "testdata/impeachsvc.graph.json"
+	impeachTraceAdminPurge  = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/delete_admin_ledger.golden.json"
+	impeachTraceLoanCreate  = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_loan.golden.json"
+	impeachTraceAdminNotify = "../../testdata/fixtures/impeachsvc/flows/testdata/flows/post_admin_notify.golden.json"
 )
 
 // TestImpeachsvcCatchesUndisclosedMissedRoot is the end-to-end proof: the real
@@ -120,6 +121,52 @@ func TestImpeachsvcDiscoveredRouteAloneIsClean(t *testing.T) {
 	r := Audit("impeachsvc", graph.NewIndex(g), []*ir.CanonicalTrace{loadTrace(t, impeachTraceLoanCreate)}, Provenance{})
 	if len(r.Candidates) != 0 {
 		t.Errorf("discovered route alone produced candidates: %+v", r.Candidates)
+	}
+}
+
+// TestImpeachsvcCatchesBusPublishMissedRoot is the bus-vocabulary axis: the missed
+// admin route reaches a constant-named bus PUBLISH (not a DB effect), so this proves
+// the cell impeaches over the PUBLISH label vocabulary too — the label rung is not
+// DB-specific. Without provenance it caps at VERSION-SKEW (fail-closed, like every
+// stampless real capture); with the gated stamp + the corpus-carried integration
+// grade it promotes to a true IMPEACHMENT, localized L1 to the severed Notify node.
+func TestImpeachsvcCatchesBusPublishMissedRoot(t *testing.T) {
+	const notifyNode = "(*example.com/impeachsvc/internal/admin.Admin).Notify"
+	g, err := graph.LoadFile(impeachsvcGraph)
+	if err != nil {
+		t.Fatalf("load graph: %v", err)
+	}
+	notify := loadTrace(t, impeachTraceAdminNotify)
+
+	// Stampless: a real captured bus effect is a genuine contradiction the ladder
+	// caps at VERSION-SKEW until code identity is supplied — never a bare IMPEACHMENT.
+	bare := Audit("impeachsvc", graph.NewIndex(g), []*ir.CanonicalTrace{notify}, Provenance{})
+	w := candidateFor(t, bare, "PUBLISH ledger.purged")
+	if w.Claim.Reachability != ReachUnreachable {
+		t.Errorf("Reachability = %q, want %q (named bus effect, no discovered route reaches it)", w.Claim.Reachability, ReachUnreachable)
+	}
+	if w.Verdict != DowngradeVersionSkew {
+		t.Errorf("Verdict = %q, want %q (stampless real capture)", w.Verdict, DowngradeVersionSkew)
+	}
+	if w.Observed.Op != "PUBLISH ledger.purged" {
+		t.Errorf("Observed.Op = %q, want the canonical PUBLISH op", w.Observed.Op)
+	}
+	if w.Severance == nil || w.Severance.Level != LevelL1 || w.Severance.Site != notifyNode {
+		t.Errorf("want L1 localization to the severed Notify node, got %+v", w.Severance)
+	}
+
+	// With provenance the bus PUBLISH promotes to a full IMPEACHMENT — the label rung
+	// clears on the bus vocabulary exactly as it does for DB.
+	g.Stamp = "deadbeefcafe"
+	promoted := Audit("impeachsvc", graph.NewIndex(g), []*ir.CanonicalTrace{notify}, Provenance{TraceIdentity: "deadbeefcafe"})
+	pw := candidateFor(t, promoted, "PUBLISH ledger.purged")
+	if pw.Verdict != VerdictImpeachment {
+		t.Fatalf("Verdict = %q, want %q; ladder = %+v", pw.Verdict, VerdictImpeachment, pw.Rungs)
+	}
+	for _, rung := range pw.Rungs {
+		if rung.Name == RungLabel && !rung.Passed {
+			t.Errorf("label rung must clear on the bus PUBLISH vocabulary: %s", rung.Evidence)
+		}
 	}
 }
 

@@ -1,9 +1,11 @@
 version: 1
 service: impeachsvc
 
-# database/sql is the only boundary seam; the DB hint lets the static labeler read
-# the constant statements into "boundary:db <OP> <table>" edges. There is no bus
-# or outbound-HTTP seam in this fixture — its whole point is the route→DB
-# attribution gap created by the custom (unhinted) admin router.
+# Two boundary seams. The DB hint lets the static labeler read the constant SQL into
+# "boundary:db <OP> <table>" edges; the bus hint names (*eventbus.Bus).Publish as an
+# outbound-async PUBLISH effect. The missed admin router reaches BOTH (a DB DELETE and
+# a bus PUBLISH), so the impeachment cell is exercised over both label vocabularies —
+# the route→effect attribution gap is not DB-specific.
 classify:
   db: ["database/sql"]
+  busPublish: ["example.com/impeachsvc/internal/eventbus#Publish"]

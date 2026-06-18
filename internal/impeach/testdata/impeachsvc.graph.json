@@ -10,6 +10,11 @@
       "tier": 3
     },
     {
+      "fqn": "(*example.com/impeachsvc/internal/admin.Admin).Notify",
+      "sig": "func (*admin.Admin).Notify(w http.ResponseWriter, req *http.Request)",
+      "tier": 1
+    },
+    {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
       "sig": "func (*admin.Admin).PurgeLedger(w http.ResponseWriter, req *http.Request)",
       "tier": 2
@@ -23,6 +28,12 @@
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).table",
       "sig": "func (*admin.Admin).table() []admin.route",
       "tier": 3
+    },
+    {
+      "fqn": "(*example.com/impeachsvc/internal/eventbus.Bus).Publish",
+      "sig": "func (*eventbus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
+      "tier": 1,
+      "fallible": true
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/handler.App).Create",
@@ -76,7 +87,17 @@
     },
     {
       "fqn": "example.com/impeachsvc/internal/admin.New",
-      "sig": "func admin.New(loans *store.Loans) *admin.Admin",
+      "sig": "func admin.New(loans *store.Loans, bus *eventbus.Bus) *admin.Admin",
+      "tier": 3
+    },
+    {
+      "fqn": "example.com/impeachsvc/internal/eventbus.New",
+      "sig": "func eventbus.New() *eventbus.Bus",
+      "tier": 3
+    },
+    {
+      "fqn": "example.com/impeachsvc/internal/eventbus.tracer",
+      "sig": "func eventbus.tracer() trace.Tracer",
       "tier": 3
     },
     {
@@ -122,6 +143,12 @@
       "tier": 3
     },
     {
+      "from": "(*example.com/impeachsvc/internal/admin.Admin).Notify",
+      "to": "boundary:bus PUBLISH ledger.purged",
+      "tier": 1,
+      "boundary": "outbound-async"
+    },
+    {
       "from": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
       "to": "(*example.com/impeachsvc/internal/store.Loans).Purge",
       "tier": 2
@@ -130,6 +157,11 @@
       "from": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
       "to": "(*example.com/impeachsvc/internal/store.Loans).PurgeAudit",
       "tier": 2
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/eventbus.Bus).Publish",
+      "to": "example.com/impeachsvc/internal/eventbus.tracer",
+      "tier": 3
     },
     {
       "from": "(*example.com/impeachsvc/internal/handler.App).Create",
@@ -196,6 +228,11 @@
     },
     {
       "from": "example.com/impeachsvc.run",
+      "to": "example.com/impeachsvc/internal/eventbus.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/impeachsvc.run",
       "to": "example.com/impeachsvc/internal/handler.New",
       "tier": 3
     },
@@ -227,9 +264,9 @@
     {
       "fn": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
       "effect": "boundary:db DELETE ledger",
-      "effect_site": "internal/admin/admin.go:74",
+      "effect_site": "internal/admin/admin.go:77",
       "callee": "(*example.com/impeachsvc/internal/store.Loans).PurgeAudit",
-      "callee_site": "internal/admin/admin.go:75",
+      "callee_site": "internal/admin/admin.go:78",
       "always": true,
       "via": "(*example.com/impeachsvc/internal/store.Loans).Purge"
     }
