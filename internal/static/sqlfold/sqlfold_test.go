@@ -3,6 +3,7 @@ package sqlfold_test
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
@@ -15,9 +16,10 @@ import (
 
 // dbSite is a recovered DB call site: the enclosing method and the fold's verdict.
 type dbSite struct {
-	method    string
-	op, table string
-	ok        bool
+	method string
+	op     string
+	tables []string
+	ok     bool
 }
 
 // foldFixture analyzes the builder fixture and runs the fold over every
@@ -50,8 +52,8 @@ func foldFixture(t *testing.T) map[string]dbSite {
 				if len(args) == 0 {
 					continue
 				}
-				op, table, ok := sqlfold.Recover(args[0])
-				out[fn.Name()] = dbSite{method: fn.Name(), op: op, table: table, ok: ok}
+				op, tables, ok := sqlfold.Recover(args[0])
+				out[fn.Name()] = dbSite{method: fn.Name(), op: op, tables: tables, ok: ok}
 			}
 		}
 	}
@@ -66,10 +68,20 @@ func isDBQuery(name string) bool {
 	return false
 }
 
+// oneTable asserts the site recovered exactly one named table.
+func oneTable(s dbSite) string {
+	if len(s.tables) == 1 {
+		return s.tables[0]
+	}
+	return "<not-one:" + sliceStr(s.tables) + ">"
+}
+
+func sliceStr(ss []string) string { return strings.Join(ss, ",") }
+
 func TestFoldReadIsConstantSelect(t *testing.T) {
 	sites := foldFixture(t)
 	s := sites["GetMessage"]
-	if !s.ok || s.op != "SELECT" || s.table != "messages" {
+	if !s.ok || s.op != "SELECT" || oneTable(s) != "messages" {
 		t.Errorf("GetMessage: want SELECT messages (ok), got %+v", s)
 	}
 }
@@ -78,17 +90,18 @@ func TestFoldRecoversWriteRidingQueryRow(t *testing.T) {
 	// INSERT … RETURNING executed via QueryRowContext: the method name says read,
 	// only the recovered verb says write. The F-B case.
 	s := foldFixture(t)["CreateMessage"]
-	if !s.ok || s.op != "INSERT" || s.table != "messages" {
+	if !s.ok || s.op != "INSERT" || oneTable(s) != "messages" {
 		t.Errorf("CreateMessage: want INSERT messages (ok), got %+v", s)
 	}
 }
 
 func TestFoldPromotesWriteWithDynamicTable(t *testing.T) {
-	// "DELETE FROM " + table: the verb is constant, the table a hole. Write
-	// promotion recovers DELETE with an unnamed table.
+	// "DELETE FROM " + table where table is a PARAMETER (unbounded): the verb is
+	// constant, the table unresolvable. Write promotion recovers DELETE with no
+	// named table.
 	s := foldFixture(t)["DeleteByTable"]
-	if !s.ok || s.op != "DELETE" || s.table != "" {
-		t.Errorf("DeleteByTable: want DELETE with empty table (ok), got %+v", s)
+	if !s.ok || s.op != "DELETE" || len(s.tables) != 0 {
+		t.Errorf("DeleteByTable: want DELETE with no table (ok), got %+v", s)
 	}
 }
 
@@ -96,8 +109,33 @@ func TestFoldPromotesWriteUnderBranchedTail(t *testing.T) {
 	// The verb+table fragment is unconditional; the conditional SET-list tail must
 	// not block write promotion, and must not be read as part of the prefix.
 	s := foldFixture(t)["UpdatePartial"]
-	if !s.ok || s.op != "UPDATE" || s.table != "accounts" {
+	if !s.ok || s.op != "UPDATE" || oneTable(s) != "accounts" {
 		t.Errorf("UpdatePartial: want UPDATE accounts (ok), got %+v", s)
+	}
+}
+
+// Phase 2: the per-table store's table is a struct field set to one of a finite
+// set of string constants. The fold resolves the whole set and names both targets.
+func TestFoldResolvesFiniteConstantTableSet(t *testing.T) {
+	s := foldFixture(t)["DeleteParticipant"]
+	if !s.ok || s.op != "DELETE" {
+		t.Fatalf("DeleteParticipant: want DELETE (ok), got %+v", s)
+	}
+	if got := sliceStr(s.tables); got != "publishers,subscribers" {
+		t.Errorf("want resolved table set [publishers subscribers], got %v", s.tables)
+	}
+}
+
+// Phase 2 soundness: when a struct field is set from a runtime value (the value set
+// is not all-constant), the completeness gate must catch the non-constant write and
+// abstain on naming — the verb is still promoted (a write), the table left dynamic.
+func TestFoldAbstainsOnNonConstantTableField(t *testing.T) {
+	s := foldFixture(t)["DeleteDyn"]
+	if !s.ok || s.op != "DELETE" {
+		t.Fatalf("DeleteDyn: want DELETE (ok), got %+v", s)
+	}
+	if len(s.tables) != 0 {
+		t.Errorf("DeleteDyn: a non-constant table field must not be named, got %v", s.tables)
 	}
 }
 

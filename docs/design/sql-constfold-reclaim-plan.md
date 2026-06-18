@@ -7,8 +7,12 @@
 (`flowmap graph --reclaim-sql` / `flowmap frontier --reclaim-sql`); the committed
 fixture `testdata/fixtures/sqlbuildersvc` is its motivating measurement (6 B2
 markers → 2 with the fold, the two genuine-dynamic sites correctly retained).
-Phases 2–3 (finite-constant table naming, the B2a/B2b disclosure split) remain
-designed-not-built. This plan is the SQL-label analogue of the strict-server
+Phase 2 (finite-constant table naming) is **also shipped**: a write's dynamic table
+resolves to its complete constant set when provable — the fleet's `s.table ∈
+{publishers, subscribers}` fans out into `DELETE publishers` + `DELETE
+subscribers` — abstaining on every completeness gap. Phase 3 (the B2a/B2b
+disclosure split) remains designed-not-built. This plan is the SQL-label analogue
+of the strict-server
 *edge* reclaimer shipped in `frontier-instrumentation-plan.md` (component 3,
 `internal/static/reclaim`). It inherits that plan's doctrine wholesale (R1–R4, the
 A/B/B2/C taxonomy, opt-in + provenance discipline) and adds the one new soundness
@@ -290,10 +294,18 @@ tag (the groundwork decoder already round-trips a per-edge `via`,
    `sqlbuildersvc` fixture spanning all five outcomes (read / write-via-QueryRow /
    dynamic-table write / branched write / abstain) plus the dynamic-splice read
    guard.
-2. **Finite-constant table naming (optional, separable).** Resolve a small
-   constant-set identifier hole (`s.table ∈ {…}`) to name the write target. Verdict-
-   neutral on the fleet (the set is all-writes); purely a naming nicety. Build only
-   if a measured shape wants it.
+2. **Finite-constant table naming. ✅ DONE (opt-in).** A write whose table is a
+   hole resolves to the table's complete constant set via `resolveConstSet` /
+   `resolveField` (`internal/static/sqlfold/resolve.go`): a constant, a Phi union, or
+   a struct-field load proven all-constant by four completeness gates — (a) every
+   `FieldAddr` of the field used only as a constant store or a load, (b) no
+   whole-struct overwrite, (c) init-before-escape dominance (no zero-value leak),
+   and a set-size bound. A resolved set fans out into one write edge per table
+   (`DELETE publishers` + `DELETE subscribers`); any gate failure leaves the target
+   dynamic. Runs ONLY in the write branch, so it is verdict-neutral and
+   safe-direction — a naming miss can over-list or under-name a target but never
+   hide a write. `TestFoldResolvesFiniteConstantTableSet` and
+   `TestFoldAbstainsOnNonConstantTableField` pin both directions.
 3. **Disclosure reconciliation.** Update the frontier classifier's B2 split (§2) and
    the D3 disclosure so a B2a site reads "reclaimable by const-fold (`--reclaim-sql`)"
    instead of "hoist to a `const`," and a B2b residue keeps the consumer ask.

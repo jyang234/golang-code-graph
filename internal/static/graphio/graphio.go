@@ -317,12 +317,20 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 		for _, e := range n.Out {
 			edges := edgeOf(ext, hints, e, scope, o.foldSQL)
 			nodeEdges = append(nodeEdges, edges...)
-			if entry == "" && e.Site != nil && len(edges) == 1 && committedEffect(edges[0].To) {
-				directEffects[fn] = append(directEffects[fn], obligations.EffectSite{Label: edges[0].To, Site: e.Site})
-				if labelSites[edges[0].To] == nil {
-					labelSites[edges[0].To] = map[ssa.Instruction]bool{}
+			// Record every committed effect at this site. A site yields one edge in
+			// the default build; a fold-resolved finite-table write fans out into one
+			// edge per target, each a committed effect to track.
+			if entry == "" && e.Site != nil {
+				for _, ed := range edges {
+					if !committedEffect(ed.To) {
+						continue
+					}
+					directEffects[fn] = append(directEffects[fn], obligations.EffectSite{Label: ed.To, Site: e.Site})
+					if labelSites[ed.To] == nil {
+						labelSites[ed.To] = map[ssa.Instruction]bool{}
+					}
+					labelSites[ed.To][e.Site] = true
 				}
-				labelSites[edges[0].To][e.Site] = true
 			}
 		}
 		g.Nodes = append(g.Nodes, Node{
@@ -532,8 +540,12 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 	case hints.IsHTTP(callee):
 		return []Edge{{From: from, To: "boundary:" + httpLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
 	case hints.IsDB(callee):
-		label, via := dbLabel(e.Site, foldSQL)
-		return []Edge{{From: from, To: "boundary:db " + label, Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent, Via: via}}
+		labels, via := dbLabel(e.Site, foldSQL)
+		edges := make([]Edge, 0, len(labels))
+		for _, label := range labels {
+			edges = append(edges, Edge{From: from, To: "boundary:db " + label, Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent, Via: via})
+		}
+		return edges
 	case scope[callee]:
 		return []Edge{{From: from, To: callee.RelString(nil), Tier: tier, Concurrent: concurrent}}
 	default:

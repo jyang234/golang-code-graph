@@ -43,35 +43,56 @@ import (
 // leaned on a reclaimed verb is auditable and a reviewer can diff folded vs base.
 const Via = "sql-constfold"
 
-// Recover returns the SQL operation and (when constant) the table the fold can
-// soundly read off the query value q, plus whether it recovered anything. q is
-// the string argument the labeler could NOT fold at the call site (a non-constant
-// value); Recover traces it back through string concatenation and a fluent
-// strings.Builder accumulator to the constant fragments behind it.
+// Recover returns the SQL operation and the table(s) the fold can soundly read
+// off the query value q, plus whether it recovered anything. q is the string
+// argument the labeler could NOT fold at the call site (a non-constant value);
+// Recover traces it back through string concatenation and a fluent strings.Builder
+// accumulator to the constant fragments behind it.
 //
 // It emits a verb under exactly two disciplines (see the package doc): a mutating
 // verb proven by the constant leading prefix (a write, tail irrelevant), or a
 // SELECT proven by a wholly-constant statement (a read). Everything else abstains.
-func Recover(q ssa.Value) (op, table string, ok bool) {
+//
+// tables holds zero, one, or several table names. Empty means the verb is known
+// but the table is dynamic (a fold-promoted write to an unnamed target). More than
+// one means the table is a finite, provably-complete set of constants (phase 2):
+// each is a real possible write target, so the caller emits one edge per table —
+// an over-approximation in the safe direction (it can only over-list targets,
+// never hide a write). Table naming is verdict-NEUTRAL: read/write keys on op, not
+// the table, so a naming miss never changes a verdict.
+func Recover(q ssa.Value) (op string, tables []string, ok bool) {
 	frags, complete := assemble(q, map[ssa.Value]bool{})
-	skeleton := render(frags)
-	if strings.TrimSpace(skeleton) == "" {
-		return "", "", false
+	prefix := render(frags)
+	if strings.TrimSpace(prefix) == "" {
+		return "", nil, false
 	}
-	n := sql.Normalize(skeleton)
+	n := sql.Normalize(prefix)
 	// Write promotion: the leading prefix proves a mutating verb. Sound regardless
 	// of any variable tail — appending cannot turn a mutation into a non-mutation.
 	if sqlverb.Mutating(n.Operation) {
-		return n.Operation, n.Table, true
+		if n.Table != "" {
+			return n.Operation, []string{n.Table}, true // table was in the constant prefix
+		}
+		// The table is dynamic. Phase 2: name it only if it resolves to a finite,
+		// provably-complete set of constants; otherwise leave it unnamed. This runs
+		// ONLY in the write branch, where classification is already settled by the
+		// verb — so the resolution affects target NAMES only, never read/write.
+		if tbls, ok := resolveTable(frags, prefix, n.Operation); ok {
+			return n.Operation, tbls, true
+		}
+		return n.Operation, nil, true
 	}
 	// Read classification: only a wholly-constant statement with a recognized read
 	// verb. `complete` guarantees no unconstrained text splice (no smuggling); the
 	// explicit SELECT check keeps an unrecognized leading token (e.g. a WITH … CTE)
 	// from being laundered into a read.
 	if complete && n.Operation == "SELECT" {
-		return n.Operation, n.Table, true
+		if n.Table != "" {
+			return n.Operation, []string{n.Table}, true
+		}
+		return n.Operation, nil, true
 	}
-	return "", "", false
+	return "", nil, false
 }
 
 // fragKind is how a fragment entered the statement text.
@@ -86,6 +107,7 @@ const (
 type frag struct {
 	kind fragKind
 	text string
+	val  ssa.Value // for fHole: the runtime value, so phase 2 can try to resolve it
 }
 
 // render joins the leading fragments into a normalizer-ready skeleton. A
@@ -111,7 +133,7 @@ func render(frags []frag) string {
 // table) are always something execution is guaranteed to produce.
 func assemble(v ssa.Value, seen map[ssa.Value]bool) ([]frag, bool) {
 	if v == nil || seen[v] {
-		return []frag{{kind: fHole}}, false
+		return []frag{{kind: fHole, val: v}}, false
 	}
 	seen[v] = true
 	if s, ok := features.ConstString(v); ok {
@@ -141,7 +163,7 @@ func assemble(v ssa.Value, seen map[ssa.Value]bool) ([]frag, bool) {
 			}
 		}
 	}
-	return []frag{{kind: fHole}}, false
+	return []frag{{kind: fHole, val: v}}, false
 }
 
 // builderTerminal reports whether call is the accumulator's terminal — a

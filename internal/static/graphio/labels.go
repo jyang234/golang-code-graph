@@ -50,24 +50,40 @@ func httpLabel(site ssa.CallInstruction) string {
 // recovered label carries via=sqlfold.Via so the verdict that reads it is
 // auditable. The fold is sound-or-abstain, so a foldless build and a folded build
 // differ only by labels the fold could PROVE — never by a guess.
-func dbLabel(site ssa.CallInstruction, foldSQL bool) (label, via string) {
+func dbLabel(site ssa.CallInstruction, foldSQL bool) (labels []string, via string) {
 	args := features.StringArgs(site)
 	if len(args) >= 1 {
 		if stmt, ok := features.ConstString(args[0]); ok {
 			if op, table := sqlOpTable(stmt); op != "" {
-				return joinOpTable(op, table), ""
+				return []string{joinOpTable(op, table)}, ""
 			}
 		}
 		if foldSQL {
-			if op, table, ok := sqlfold.Recover(args[0]); ok {
-				return joinOpTable(op, table), sqlfold.Via
+			if op, tables, ok := sqlfold.Recover(args[0]); ok {
+				return dbFoldLabels(op, tables), sqlfold.Via
 			}
 		}
 	}
 	if c := site.Common().StaticCallee(); c != nil {
-		return c.Name(), ""
+		return []string{c.Name()}, ""
 	}
-	return "call", ""
+	return []string{"call"}, ""
+}
+
+// dbFoldLabels renders a recovered op + table set into one label per table (a
+// finite constant-set write fans out into one edge per possible target — an
+// over-approximation in the safe direction), or a single bare-verb label when the
+// table is dynamic. tables is already sorted by the fold, so the labels are
+// deterministic.
+func dbFoldLabels(op string, tables []string) []string {
+	if len(tables) == 0 {
+		return []string{op}
+	}
+	out := make([]string, 0, len(tables))
+	for _, t := range tables {
+		out = append(out, joinOpTable(op, t))
+	}
+	return out
 }
 
 // joinOpTable renders the DB label's "op table" form, dropping the table when it

@@ -34,5 +34,17 @@ func main() {
 		_ = s.ExecOpaque(ctx, r.URL.Query().Get("verb"), r.URL.Query().Get("table"))
 	})
 
+	pubs := store.NewPublisherStore(nil)
+	subs := store.NewSubscriberStore(nil)
+	http.HandleFunc("DELETE /participants", func(w http.ResponseWriter, r *http.Request) {
+		_ = pubs.DeleteParticipant(ctx, r.URL.Query().Get("id"))
+		_ = subs.DeleteParticipant(ctx, r.URL.Query().Get("id"))
+	})
+
+	dyn := store.NewDynParticipantStore(nil, "audit")
+	http.HandleFunc("DELETE /dyn", func(w http.ResponseWriter, r *http.Request) {
+		_ = dyn.DeleteDyn(ctx, r.URL.Query().Get("id"))
+	})
+
 	_ = http.ListenAndServe(":8080", nil)
 }

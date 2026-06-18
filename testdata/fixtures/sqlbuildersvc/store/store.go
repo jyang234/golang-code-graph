@@ -125,6 +125,60 @@ func (s *Store) ReadDynamicFilter(ctx context.Context, col, val string) error {
 	return err
 }
 
+// participantStore is the fleet's per-table store (§18 residue): the table name is
+// a struct field set to one of a finite set of string CONSTANTS at construction,
+// then interpolated into the statement text. The verb is constant (a write); the
+// table is a finite-constant set — the phase-2 naming target.
+type participantStore struct {
+	db    *sql.DB
+	table string
+}
+
+// NewPublisherStore and NewSubscriberStore are the two constructors: the only
+// values the table field ever holds are these two constants.
+func NewPublisherStore(db *sql.DB) *participantStore {
+	return &participantStore{db: db, table: "publishers"}
+}
+
+func NewSubscriberStore(db *sql.DB) *participantStore {
+	return &participantStore{db: db, table: "subscribers"}
+}
+
+// DeleteParticipant interpolates the per-store table. The verb DELETE const-folds
+// (a write); the table resolves to the finite set {publishers, subscribers}.
+func (p *participantStore) DeleteParticipant(ctx context.Context, id string) error {
+	w := newSQLWriter()
+	w.Write("DELETE FROM " + p.table + " WHERE id = ").Arg(id)
+	query, args := w.Build()
+	_, err := p.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+// dynParticipantStore's table field is set from a RUNTIME argument, so the field's
+// value set is not all-constant. The fold's completeness gate must catch the
+// non-constant write and ABSTAIN on naming the table — leaving the write target
+// dynamic rather than guessing an incomplete set.
+type dynParticipantStore struct {
+	db    *sql.DB
+	table string
+}
+
+// NewDynParticipantStore sets the table from a parameter — a non-constant write
+// that the completeness gate detects.
+func NewDynParticipantStore(db *sql.DB, table string) *dynParticipantStore {
+	return &dynParticipantStore{db: db, table: table}
+}
+
+// DeleteDyn is a write whose table cannot be soundly named (the field set is not
+// all-constant): the fold promotes the verb but leaves the table dynamic.
+func (p *dynParticipantStore) DeleteDyn(ctx context.Context, id string) error {
+	w := newSQLWriter()
+	w.Write("DELETE FROM " + p.table + " WHERE id = ").Arg(id)
+	query, args := w.Build()
+	_, err := p.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // ExecOpaque takes the verb itself as a runtime value: the leading fragment is a
 // hole, so there is no constant verb to read. The fold must ABSTAIN and leave the
 // effect opaque (fail closed).

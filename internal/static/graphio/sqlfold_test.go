@@ -62,8 +62,13 @@ func TestSQLFoldRecoversVerbsWithProvenance(t *testing.T) {
 	}
 	labels := dbLabels(g)
 
-	// Recovered labels, each provenance-tagged.
-	for _, want := range []string{"SELECT messages", "INSERT messages", "DELETE", "UPDATE accounts"} {
+	// Recovered labels, each provenance-tagged. The finite-constant table set fans
+	// out into one edge per resolved table (DELETE publishers / DELETE subscribers),
+	// while the parameter-table DELETE stays unnamed.
+	for _, want := range []string{
+		"SELECT messages", "INSERT messages", "DELETE", "UPDATE accounts",
+		"DELETE publishers", "DELETE subscribers",
+	} {
 		via, ok := labels[want]
 		if !ok {
 			t.Errorf("want recovered label %q; got %v", want, labels)
