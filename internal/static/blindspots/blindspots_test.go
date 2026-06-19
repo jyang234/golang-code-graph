@@ -81,7 +81,7 @@ func TestDetectEmitsNoDeclaredKind(t *testing.T) {
 
 func TestKindBoundaryClassification(t *testing.T) {
 	gated := []blindspots.Kind{blindspots.NonConstantBoundaryArg, blindspots.UnresolvedDispatch}
-	nonGated := []blindspots.Kind{blindspots.Reflect, blindspots.HighFanOut, blindspots.Unsafe, blindspots.Cgo, blindspots.Linkname, blindspots.UnresolvedCall, blindspots.ConcurrentDispatch}
+	nonGated := []blindspots.Kind{blindspots.Reflect, blindspots.HighFanOut, blindspots.Unsafe, blindspots.Cgo, blindspots.Linkname, blindspots.UnresolvedCall, blindspots.ConcurrentDispatch, blindspots.ExternalBoundaryCall}
 	for _, k := range gated {
 		if !k.Boundary() {
 			t.Errorf("%q should be a gated boundary blind spot", k)
@@ -284,6 +284,52 @@ func main() {
 	for i := 0; i < 8; i++ {
 		if got := blindspots.Detect(res, hints); !reflect.DeepEqual(bs, got) {
 			t.Fatalf("ConcurrentDispatch detection not deterministic on run %d", i)
+		}
+	}
+}
+
+// TestDetectExternalBoundaryCall pins the unclassified-external-dependency
+// surface over the loansvc fixture: a first-party handoff into a third-party
+// (non-stdlib) package that is not a classified boundary effect surfaces as an
+// ExternalBoundaryCall naming the package. loansvc calls golang.org/x/sync/errgroup
+// directly (a genuine concurrency dependency) — that must surface. It also
+// instruments with OpenTelemetry on nearly every function; those span/attribute
+// calls must NOT surface (the isInstrumentation exclusion), or the disclosure
+// would drown in per-span noise. And it must never gate.
+func TestDetectExternalBoundaryCall(t *testing.T) {
+	res, err := statictest.Analyze()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs := blindspots.Detect(res, features.NewHintSet(res.Config))
+
+	var sawErrgroup, sawOTel bool
+	for _, b := range bs {
+		if b.Kind != blindspots.ExternalBoundaryCall {
+			continue
+		}
+		switch {
+		case strings.Contains(b.Detail, "golang.org/x/sync/errgroup"):
+			sawErrgroup = true
+		case strings.Contains(b.Detail, "go.opentelemetry.io/"):
+			sawOTel = true
+		}
+		if b.Kind.Boundary() {
+			t.Errorf("ExternalBoundaryCall leaked into the gated boundary subset at %q", b.Site)
+		}
+	}
+	if !sawErrgroup {
+		t.Errorf("expected an ExternalBoundaryCall for golang.org/x/sync/errgroup; manifest=%+v", bs)
+	}
+	if sawOTel {
+		t.Errorf("OpenTelemetry instrumentation must be excluded from ExternalBoundaryCall (isInstrumentation), but one surfaced")
+	}
+	// A classified third-party boundary (database/sql is stdlib; the bus/HTTP hints
+	// cover the rest) must not double-emit as EBC: stdlib is excluded by rule, and
+	// any hinted callee is excluded. The non-gated subset carries every EBC.
+	for _, b := range blindspots.Boundary(bs) {
+		if b.Kind == blindspots.ExternalBoundaryCall {
+			t.Errorf("ExternalBoundaryCall must not gate; found in boundary subset: %+v", b)
 		}
 	}
 }

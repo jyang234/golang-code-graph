@@ -7,6 +7,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 )
 
 const goldensDir = "../../../testdata/groundwork/goldens"
@@ -213,6 +214,65 @@ func TestMustNotReachReachableThroughDynamic(t *testing.T) {
 	v := res.Violations()
 	if len(v) != 1 || v[0].To != "boundary:bus PUBLISH <dynamic>" {
 		t.Fatalf("want a reachable-through-dynamic violation, got %v", res.Findings)
+	}
+}
+
+// TestExternalBoundaryCallIsDisclosureOnly pins the consumer half of EBC's
+// contract: an ExternalBoundaryCall on the reachable cone must NOT blind a
+// must_not_reach proof, while a genuinely-blinding kind (reflect) at the same site
+// must. The external callee is the same out-of-module leaf the index already stops
+// at, so it hides no in-scope path — flagging it must not silently turn a PROVEN
+// into a CANT-PROVE. The two halves of the assertion share one graph so the only
+// variable is the blind-spot kind.
+func TestExternalBoundaryCallIsDisclosureOnly(t *testing.T) {
+	// svc.From -> svc.Mid only; the forbidden effect hangs off svc.Other, so it
+	// EXISTS in the graph (the target binds) but is unreachable from svc.From. The
+	// blind spot sits on svc.Mid, on From's cone — so it governs whether the no-path
+	// result is a proof or an abstention.
+	graphWith := func(kind string) *graph.Graph {
+		return &graph.Graph{
+			Algo: "rta",
+			Nodes: []graph.Node{
+				{FQN: "svc.From", Tier: 1}, {FQN: "svc.Mid", Tier: 2}, {FQN: "svc.Other", Tier: 1},
+			},
+			Edges: []graph.Edge{
+				{From: "svc.From", To: "svc.Mid"},
+				{From: "svc.Other", To: "boundary:bus PUBLISH topic", Boundary: "outbound-async"},
+			},
+			BlindSpots: []graph.BlindSpot{{
+				Kind: kind, Site: "svc.Mid",
+				Detail: "handoff at the leaf on the reachable cone",
+			}},
+		}
+	}
+	p := &policy.Policy{
+		Service: "svc", Version: 1,
+		MustNotReach: []policy.ReachRule{{
+			Name: "from-no-reach", From: []string{"svc.From"},
+			To: []string{"boundary:bus PUBLISH topic"},
+		}},
+	}
+	mustNotReachCautions := func(g *graph.Graph) int {
+		res := Check(p, graph.NewIndex(g))
+		n := 0
+		for _, c := range res.Cautions() {
+			if c.Rule == "must_not_reach" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// ExternalBoundaryCall on the cone: no path AND the frontier is not blind, so
+	// the rule is provenAbsent — a real proof, emitting no caution.
+	if n := mustNotReachCautions(graphWith(string(blindspots.ExternalBoundaryCall))); n != 0 {
+		t.Fatalf("ExternalBoundaryCall must be disclosure-only: want 0 must_not_reach cautions, got %d", n)
+	}
+	// reflect on the SAME cone genuinely blinds: no path, but the frontier is blind,
+	// so the rule is noPathFound — a caution. This proves the carve-out is the cause,
+	// not an unreachable target.
+	if n := mustNotReachCautions(graphWith(string(blindspots.Reflect))); n != 1 {
+		t.Fatalf("a blinding kind (reflect) on the cone must abstain: want 1 must_not_reach caution, got %d", n)
 	}
 }
 

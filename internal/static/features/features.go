@@ -106,7 +106,7 @@ func (e *Extractor) origin(caller, callee *ssa.Function) model.Origin {
 	if e.isFirstParty(cp) {
 		return model.OriginFirstParty
 	}
-	if isStdlib(cp) {
+	if IsStdlib(cp) {
 		return model.OriginStdlib
 	}
 	return model.OriginThirdParty
@@ -230,10 +230,13 @@ func PkgPath(fn *ssa.Function) string {
 	return fn.Pkg.Pkg.Path()
 }
 
-// isStdlib reports whether an import path is a standard-library package: its first
+// IsStdlib reports whether an import path is a standard-library package: its first
 // path segment contains no dot (so "net/http" and "database/sql" are stdlib,
-// "golang.org/x/sync" is not).
-func isStdlib(pkgPath string) bool {
+// "golang.org/x/sync" is not). Exported as the single source of truth for the
+// stdlib/third-party split shared by the Origin classifier (here) and the
+// blindspots ExternalBoundaryCall detector, so the two cannot disagree on what
+// counts as a third-party dependency boundary.
+func IsStdlib(pkgPath string) bool {
 	seg := pkgPath
 	if i := strings.IndexByte(pkgPath, '/'); i >= 0 {
 		seg = pkgPath[:i]

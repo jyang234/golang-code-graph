@@ -5,6 +5,7 @@ import (
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 )
 
 // verdict is the three-valued outcome of a must-not-reach rule. The distinction
@@ -174,11 +175,11 @@ func evalReach(ix *graph.Index, froms []string, toPatterns []string) (verdict, e
 // representative site for the caution message.
 func frontierBlindSiteWith(ix *graph.Index, cone []string, effects []graph.Edge) (string, bool) {
 	for _, fn := range cone {
-		if bs := ix.BlindSpotsAt(fn); len(bs) > 0 {
-			return fmt.Sprintf("%s at %s", bs[0].Kind, ShortName(fn)), true
+		if bs, ok := firstReachBlinding(ix.BlindSpotsAt(fn)); ok {
+			return fmt.Sprintf("%s at %s", bs.Kind, ShortName(fn)), true
 		}
-		if bs := ix.BlindSpotsAt(PkgOf(fn)); len(bs) > 0 {
-			return fmt.Sprintf("%s in %s", bs[0].Kind, PkgOf(fn)), true
+		if bs, ok := firstReachBlinding(ix.BlindSpotsAt(PkgOf(fn))); ok {
+			return fmt.Sprintf("%s in %s", bs.Kind, PkgOf(fn)), true
 		}
 	}
 	for _, e := range effects {
@@ -187,6 +188,27 @@ func frontierBlindSiteWith(ix *graph.Index, cone []string, effects []graph.Edge)
 		}
 	}
 	return "", false
+}
+
+// firstReachBlinding returns the first blind spot at a site that actually blinds
+// reachability, skipping ExternalBoundaryCall. An external boundary call names a
+// KNOWN third-party target whose body is the same out-of-module leaf the
+// reachability index already stops at (graph.Index drops external edges), so it
+// hides no in-scope first-party path: disclosing it must not turn the accepted
+// external-leaf scope into a fresh abstention, or every PROVEN over a path that
+// touches a vendored package would silently become CANT-PROVE. Every other kind
+// (an UNKNOWN func-value target that could dispatch back into first-party code, a
+// reflect call, an unsafe/cgo/linkname package) can hide an in-scope edge, so it
+// stays blinding. This is the consumer half of ExternalBoundaryCall's
+// disclosure-only contract (the producer comment in blindspots.Kind pins the other).
+func firstReachBlinding(bs []graph.BlindSpot) (graph.BlindSpot, bool) {
+	for _, b := range bs {
+		if b.Kind == string(blindspots.ExternalBoundaryCall) {
+			continue
+		}
+		return b, true
+	}
+	return graph.BlindSpot{}, false
 }
 
 // matchNodes returns the graph nodes whose FQN matches any pattern. The order is

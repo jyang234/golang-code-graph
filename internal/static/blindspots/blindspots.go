@@ -21,6 +21,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/config"
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
+	"github.com/jyang234/golang-code-graph/internal/static/ssabuild"
 )
 
 // Kind is a blind-spot category.
@@ -52,6 +53,26 @@ const (
 	// resolved `go` dispatch is NOT here — its body is in the graph and its
 	// concurrency rides the edge's Concurrent flag.
 	ConcurrentDispatch Kind = "ConcurrentDispatch"
+	// ExternalBoundaryCall is a call from first-party code into a THIRD-PARTY
+	// (non-stdlib) package that is not already a classified boundary effect
+	// (HTTP/DB/bus/telemetry). The callee is KNOWN — its package is named — but its
+	// body lies outside the analyzed module, so its downstream edges and effects are
+	// invisible (the cgate CustomerIO-SDK seam: the outbound HTTPS send happens
+	// inside the vendored client). It is the machine-verified "control leaves into
+	// package X here" disclosure, the unclassified-external-dependency surface a
+	// reviewer either classifies, annotates, or accepts as out of scope. Stdlib is
+	// excluded (the language platform, not a dependency boundary); classified
+	// boundaries are excluded (already disclosed as typed effects); and OpenTelemetry
+	// instrumentation is excluded as observability plumbing (see isInstrumentation).
+	//
+	// Unlike UnresolvedCall/ConcurrentDispatch (UNKNOWN target — could dispatch back
+	// into first-party code and reach a forbidden sink, so reach must abstain) this
+	// has a known external target that is the SAME leaf the reachability index
+	// already stops at (graph.Index drops external edges). So it is DISCLOSURE-ONLY:
+	// reach.frontierBlindSiteWith deliberately skips it, leaving every must_not_reach
+	// verdict unchanged — it discloses the accepted external-leaf boundary, it does
+	// not redefine it.
+	ExternalBoundaryCall Kind = "ExternalBoundaryCall"
 	// Reflect is reflective code, invisible to the call graph.
 	Reflect Kind = "reflect"
 	// HighFanOut is a dynamic-dispatch site the algorithm resolved to many
@@ -79,7 +100,7 @@ const (
 // above (a new const belongs here).
 func Kinds() []Kind {
 	return []Kind{
-		NonConstantBoundaryArg, UnresolvedDispatch, UnresolvedCall, ConcurrentDispatch, Reflect, HighFanOut, Unsafe, Cgo, Linkname, ImpeachmentSeam,
+		NonConstantBoundaryArg, UnresolvedDispatch, UnresolvedCall, ConcurrentDispatch, ExternalBoundaryCall, Reflect, HighFanOut, Unsafe, Cgo, Linkname, ImpeachmentSeam,
 	}
 }
 
@@ -227,6 +248,16 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 					Site:   site,
 					Detail: "reflective call; downstream edges are invisible to the static call graph",
 				})
+			case isExternalBoundary(res.Program, hints, callee):
+				// A handoff into a third-party package we do not analyze and have not
+				// classified as a typed boundary effect. Detail names the package, not
+				// the symbol, so multiple callees in one package at this site dedup to a
+				// single per-(site, package) disclosure.
+				out = append(out, BlindSpot{
+					Kind:   ExternalBoundaryCall,
+					Site:   site,
+					Detail: "hands off to external package " + features.PkgPath(callee) + "; its behavior is outside the analyzed module and invisible to the static call graph",
+				})
 			}
 			if e.Site != nil {
 				m := perSite[e.Site]
@@ -324,6 +355,36 @@ func unresolvedFuncValueCalls(fn *ssa.Function, site string, resolved map[ssa.Ca
 		}
 	}
 	return out
+}
+
+// isExternalBoundary reports whether a call to callee is an ExternalBoundaryCall:
+// a handoff into a third-party (non-stdlib) package whose behavior the analysis
+// does not see and that is not already a classified boundary effect. First-party
+// callees are ordinary in-graph edges; stdlib is the language platform, not a
+// dependency boundary (and reach already leafs it); a callee the hints classify as
+// telemetry/publish/consume/DB/HTTP is disclosed as a typed boundary effect, so
+// re-flagging it here would double-count. What remains — an unclassified
+// third-party dependency — is the surface this discloses.
+func isExternalBoundary(prog *ssabuild.Program, hints *features.HintSet, callee *ssa.Function) bool {
+	path := features.PkgPath(callee)
+	if path == "" || prog.IsFirstPartyPath(path) || features.IsStdlib(path) || isInstrumentation(path) {
+		return false
+	}
+	return !hints.IsTelemetry(callee) && !hints.IsPublish(callee) && !hints.IsConsume(callee) &&
+		!hints.IsDB(callee) && !hints.IsHTTP(callee)
+}
+
+// isInstrumentation reports whether a package is observability instrumentation
+// rather than a service-effect dependency boundary. OpenTelemetry is the one
+// built-in exclusion beyond stdlib: span/attribute/metric calls pepper nearly
+// every instrumented function, so flagging them as ExternalBoundaryCall would
+// bury the genuine seams (a payments/email SDK) under per-span noise and get the
+// disclosure muted (CLAUDE.md tenet 3). OTel is also already modeled on the
+// behavioral side (the OTLP capture), so it is plumbing here, not a hidden effect.
+// A team's own telemetry libs are excluded the normal way — via the telemetry
+// classify hint — so this stays a minimal, well-known default, not a grab-bag.
+func isInstrumentation(pkgPath string) bool {
+	return pkgPath == "go.opentelemetry.io/otel" || strings.HasPrefix(pkgPath, "go.opentelemetry.io/")
 }
 
 // packageDisclosures flags first-party packages that use unsafe, cgo, or a

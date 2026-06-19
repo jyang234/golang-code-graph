@@ -245,6 +245,17 @@ func Classify(in *Input) *Result {
 		if blindspots.Kind(bs.Kind).Ratified() {
 			continue
 		}
+		// ExternalBoundaryCall is a dependency-surface disclosure, not a severance
+		// frontier. It is high-volume (one per third-party dependency a function calls)
+		// and a KNOWN intentional boundary, not a cut in first-party reachability, so
+		// admitting it here would swamp ReclaimableShare — the metric of how reclaimable
+		// the SEVERANCE frontier is — with framework/SDK plumbing. It rides the
+		// blind-spots manifest and the render's blind channel instead; the frontier stays
+		// a measure of severance. (blindSpotBin still maps it to A for the exhaustiveness
+		// guard, but the marker loop never asks.)
+		if bs.Kind == string(blindspots.ExternalBoundaryCall) {
+			continue
+		}
 		// A ratified ImpeachmentSeam never reaches here (skipped above). An
 		// UnresolvedCall — or its goroutine sibling ConcurrentDispatch — that
 		// coincides with a structural marker is the low-level CAUSE of that seam and
@@ -406,13 +417,15 @@ func blindSpotBin(kind string) (Bin, bool) {
 		string(blindspots.Cgo), string(blindspots.Linkname),
 		string(blindspots.UnresolvedDispatch), string(blindspots.NonConstantBoundaryArg),
 		string(blindspots.ImpeachmentSeam), string(blindspots.UnresolvedCall),
-		string(blindspots.ConcurrentDispatch):
+		string(blindspots.ConcurrentDispatch), string(blindspots.ExternalBoundaryCall):
 		// UnresolvedCall and its goroutine sibling ConcurrentDispatch land in A
 		// whenever the marker loop emits them (a func-value call at a site no
 		// structural marker covers — irreducible to static, like reflect; a `go`
 		// dispatch is irreducible AND async); at a site a structural seam already
 		// covers, the loop dedups them instead, so this bin applies only to the
-		// standalone case.
+		// standalone case. ExternalBoundaryCall is mapped here ONLY to satisfy the
+		// exhaustiveness guard — the marker loop skips it (it is a dependency-surface
+		// disclosure, not a severance frontier), so this branch is never reached for it.
 		return BinA, true // runtime/irreducible frontier (a ratified seam is irreducible to static)
 	default:
 		return BinA, false // unrecognized — disclosed as A, but the guard test flags it
