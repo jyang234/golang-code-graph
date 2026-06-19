@@ -141,23 +141,25 @@ func MermaidDiff(base, branch *Graph, opts MermaidOptions) string {
 
 	// Pass A: choose which first-party nodes to show, and assign ids in union order.
 	// Only KEPT nodes are eligible for tier-hiding; an added/removed node is always
-	// shown.
+	// shown. Tally added/removed here so the over-cap summary reuses these counts
+	// rather than recomputing the union.
 	nodeID := map[string]string{}
 	shown := map[string]bool{}
-	hidden := 0
+	hidden, added, removed := 0, 0, 0
 	for _, fqn := range nodeKeys {
 		st := nodeStateOf(fqn)
+		switch st {
+		case stAdded:
+			added++
+		case stRemoved:
+			removed++
+		}
 		if st == stKept && !keepNode(pick(fqn), opts.MaxTier, emitsEffect, changedEndpoint) {
 			hidden++
 			continue
 		}
 		nodeID[fqn] = ids.get(frontier.ShortName(fqn))
 		shown[fqn] = true
-	}
-	// Above the cap a union render is an illegible hairball (a refactor PR is the
-	// worst case); summarize the delta instead of drawing it.
-	if opts.MaxNodes > 0 && len(shown) > opts.MaxNodes {
-		return diffOverview(base, branch, opts, len(shown))
 	}
 
 	// Boundary effect nodes, once per label, in canonical edge order, with their diff
@@ -180,14 +182,15 @@ func MermaidDiff(base, branch *Graph, opts MermaidOptions) string {
 		bnodes = append(bnodes, bnode{id: id, label: label, class: class, state: boundaryState[k.to]})
 	}
 
-	var b strings.Builder
-	b.WriteString("flowchart LR\n")
-	b.WriteString("    %% call-graph diff — base → branch (a view, never a gate)\n")
-	// Provenance caveats: a substrate mismatch (algo/tool) makes precision differences
-	// look like code changes; disclose it so the delta is not read as confidently-wrong.
-	for _, c := range provenanceCaveats(base, branch) {
-		b.WriteString("    %% ⚠ " + comment(c) + "\n")
+	// Cap on the FULL drawn-node count (first-party union + boundary effects), not the
+	// first-party count alone — a refactor-scale delta or a wide effect fan-out is the
+	// hairball worst case. Summarize the delta (reusing the pass-A counts) instead.
+	if opts.MaxNodes > 0 && len(shown)+len(bnodes) > opts.MaxNodes {
+		return diffOverview(base, branch, opts, len(shown)+len(bnodes), added, removed)
 	}
+
+	var b strings.Builder
+	writeDiffHeader(&b, base, branch)
 	if hidden > 0 {
 		b.WriteString("    %% " + plural(hidden, "unchanged node") +
 			" above tier " + strconv.Itoa(opts.MaxTier) + " hidden; changed nodes are always shown\n")
@@ -303,33 +306,31 @@ func hasViaEdge(g *Graph) bool {
 	return false
 }
 
-// diffOverview renders the over-cap summary: a refactor-scale delta is an illegible
-// red/green hairball, so disclose the added/removed counts and the provenance caveats
-// rather than drawing it. A valid, deterministic single-node diagram.
-func diffOverview(base, branch *Graph, opts MermaidOptions, shownCount int) string {
-	bn, brn := nodeIndex(base), nodeIndex(branch)
-	var added, removed int
-	for _, fqn := range unionNodeKeys(bn, brn) {
-		_, inB := bn[fqn]
-		_, inBr := brn[fqn]
-		switch stateOf(inB, inBr) {
-		case stAdded:
-			added++
-		case stRemoved:
-			removed++
-		}
-	}
-	ids := &idAlloc{used: map[string]bool{}}
-	var b strings.Builder
+// writeDiffHeader emits the shared diff header — the `flowchart LR` line, the
+// "base → branch" banner, and the provenance caveats — for both the full diff and the
+// over-cap summary, so the substrate-mismatch disclosure (the honesty channel for a
+// base↔branch skew) is emitted IDENTICALLY on both paths and cannot drift (CLAUDE.md:
+// one source of truth).
+func writeDiffHeader(b *strings.Builder, base, branch *Graph) {
 	b.WriteString("flowchart LR\n")
 	b.WriteString("    %% call-graph diff — base → branch (a view, never a gate)\n")
 	for _, c := range provenanceCaveats(base, branch) {
 		b.WriteString("    %% ⚠ " + comment(c) + "\n")
 	}
-	b.WriteString("    %% " + strconv.Itoa(shownCount) + " nodes in the union exceed the render cap (" +
+}
+
+// diffOverview renders the over-cap summary: a refactor-scale delta is an illegible
+// red/green hairball, so disclose the added/removed counts (reused from MermaidDiff's
+// pass A — not recomputed) and the provenance caveats rather than drawing it. A valid,
+// deterministic single-node diagram. drawn is the full first-party+boundary node count.
+func diffOverview(base, branch *Graph, opts MermaidOptions, drawn, added, removed int) string {
+	ids := &idAlloc{used: map[string]bool{}}
+	var b strings.Builder
+	writeDiffHeader(&b, base, branch)
+	b.WriteString("    %% " + strconv.Itoa(drawn) + " nodes exceed the render cap (" +
 		strconv.Itoa(opts.MaxNodes) + "); summarizing the delta instead\n")
 	msg := "⚠ large delta — " + strconv.Itoa(added) + " added, " + strconv.Itoa(removed) +
-		" removed across " + strconv.Itoa(shownCount) + " nodes. Too large to draw legibly; review the JSON diff or raise --max-nodes."
+		" removed across " + strconv.Itoa(drawn) + " nodes. Too large to draw legibly; review the JSON diff or raise --max-nodes."
 	b.WriteString("    " + ids.get("toobig") + `["` + mermaidText(msg) + `"]` + "\n")
 	b.WriteString(diffClassDefs)
 	return b.String()

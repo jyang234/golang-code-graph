@@ -83,7 +83,12 @@ jobs:
       - name: groundwork goldens currency
         run: |
           testdata/groundwork/regen.sh
-          git diff --exit-code testdata/groundwork/goldens
+          # regen.sh also writes the impeach trace-graph golden and graphio's reclaim
+          # render fixture; diff all the paths it touches so a stale committed graph
+          # (whose .callgraph.md view is locked to it) cannot ship green.
+          git diff --exit-code testdata/groundwork/goldens \
+            internal/impeach/testdata/impeachsvc.graph.json \
+            internal/static/graphio/testdata
       # Dogfood the stamp gate: a verdict must be bound to the code under review.
       # These assertions are verdict-independent — they check the identity binding
       # (a mismatched stamp, and a missing --expect under enforcement) both fail —

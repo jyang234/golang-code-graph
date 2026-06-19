@@ -8,12 +8,15 @@ package graphio
 // understanding, never a verdict.
 //
 // Where the sequence diagram shows one observed flow, this shows the static
-// over-approximation: every first-party call reachable from the scope, the typed
+// over-approximation: the first-party calls reachable from the scope, the typed
 // boundary effects (DB / bus / external) as shaped leaf nodes, and — the thing no
 // behavioral diagram can offer — the blind spots and frontier markers as explicit
 // terminal nodes, so a reviewer sees exactly where the analysis STOPS seeing
 // instead of mistaking an incomplete graph for a complete one (CLAUDE.md fail
-// closed / self-honesty about blind spots).
+// closed / self-honesty about blind spots). Above a node cap (MermaidOptions.MaxNodes)
+// the full graph is illegible, so the render becomes an INDEX of entry points to
+// scope at — but the blind-spot / frontier disclosures are still drawn, so the
+// honesty channel survives the cap.
 
 import (
 	"sort"
@@ -52,30 +55,71 @@ func (g *Graph) Mermaid(opts MermaidOptions) string {
 	return g.mermaid(opts, nil)
 }
 
+// bnode is a typed boundary effect node (DB / bus / external leaf). disc is a
+// disclosure node (a blind spot or frontier marker, the honesty channel); from is the
+// id of the first-party node it attaches to, or "" when that node is not drawn.
+type (
+	bnode struct{ id, label, class string }
+	disc  struct{ id, label, from string }
+)
+
+// writeFlowchartHeader emits the shared header — the `flowchart LR` line and the
+// `%% scope … algo` comment — for every static-graph view (full render and the
+// over-cap index alike), so the header format lives in ONE place (CLAUDE.md: one
+// source of truth) and the index can never drift from the full render's header.
+func writeFlowchartHeader(b *strings.Builder, scope, algo string) {
+	b.WriteString("flowchart LR\n")
+	if scope == "" {
+		scope = "whole graph"
+	}
+	b.WriteString("    %% static call graph — scope: " + comment(scope) + "; algo: " + comment(algo) + "\n")
+}
+
+// buildBoundaryNodes assigns ids to the distinct boundary effect nodes reached from a
+// shown source, in canonical edge order. Shared so the boundary set is built once.
+func buildBoundaryNodes(g *Graph, ids *idAlloc, shown map[string]bool) (map[string]string, []bnode) {
+	bIDs := map[string]string{}
+	var bnodes []bnode
+	for _, to := range orderedBoundaryTargets(g.Edges, shown) {
+		label, class := boundaryShape(to)
+		id := ids.get(class + "_" + label)
+		bIDs[to] = id
+		bnodes = append(bnodes, bnode{id: id, label: label, class: class})
+	}
+	return bIDs, bnodes
+}
+
+// buildDiscs assigns ids to the disclosure nodes (blind spots then frontier markers),
+// attaching each to its first-party site/owner when that node is drawn. It is the one
+// builder of the honesty channel, used by BOTH the full render and the over-cap index,
+// so a large graph can never silently drop a blind spot the small graph would show.
+func buildDiscs(g *Graph, ids *idAlloc, nodeID map[string]string) []disc {
+	var discs []disc
+	for _, b := range g.BlindSpots {
+		id := ids.get("blind_" + string(b.Kind))
+		discs = append(discs, disc{id: id, label: "⊥ " + mermaidText(string(b.Kind)) + "<br/>blind spot", from: nodeID[b.Site]})
+	}
+	if g.Frontier != nil {
+		for _, m := range g.Frontier.Markers {
+			id := ids.get("frontier_" + m.Kind)
+			label := "⌖ " + mermaidText(m.Kind) + "<br/>frontier " + mermaidText(string(m.Bin))
+			discs = append(discs, disc{id: id, label: label, from: nodeID[m.Owner]})
+		}
+	}
+	return discs
+}
+
 // mermaid is the shared renderer. notes are extra %% disclosure lines emitted in
 // the header (after the hidden-plumbing note) — MermaidRootedAt uses them to
-// disclose what a per-handler scoping pruned.
+// disclose what a per-handler scoping pruned. Above opts.MaxNodes (counting the FULL
+// drawn set — first-party + boundary effects + disclosures, not first-party alone)
+// it returns an index of entry points instead of an illegible hairball.
 func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 	ids := &idAlloc{used: map[string]bool{}}
 
 	// A node that emits a boundary effect is load-bearing: hiding it would drop the
 	// effect from the diagram, which the trust model forbids (keepNode enforces this).
 	emitsEffect := collectEmitsEffect(g.Edges)
-
-	// Above the node cap a full render is an illegible hairball, so emit an index of
-	// entry points to scope at instead. Counted before id assignment so the cheap
-	// path stays cheap.
-	if opts.MaxNodes > 0 {
-		shownCount := 0
-		for _, n := range g.Nodes {
-			if keepNode(n, opts.MaxTier, emitsEffect, nil) {
-				shownCount++
-			}
-		}
-		if shownCount > opts.MaxNodes {
-			return g.overview(opts, shownCount, notes)
-		}
-	}
 
 	// Pass A: assign ids to the first-party nodes we will show.
 	nodeID := make(map[string]string, len(g.Nodes))
@@ -90,47 +134,20 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 		shown[n.FQN] = true
 	}
 
-	// Boundary effect nodes, created once per distinct label, in canonical edge order
-	// and only when their source is shown.
-	type bnode struct {
-		id, label, class string
-	}
-	bIDs := map[string]string{}
-	var bnodes []bnode
-	for _, to := range orderedBoundaryTargets(g.Edges, shown) {
-		label, class := boundaryShape(to)
-		id := ids.get(class + "_" + label)
-		bIDs[to] = id
-		bnodes = append(bnodes, bnode{id: id, label: label, class: class})
-	}
+	bIDs, bnodes := buildBoundaryNodes(g, ids, shown)
+	discs := buildDiscs(g, ids, nodeID)
 
-	// Disclosure nodes: graph-completeness blind spots and frontier markers, the
-	// honesty channel. Each hangs off the first-party node it is attributed to (its
-	// site / owner) when that node is shown, else stands alone — but it is ALWAYS
-	// drawn, so the diagram cannot launder a blind spot into clean reachability.
-	type disc struct {
-		id, label, from string // from = source node id, or "" for a standalone
-	}
-	var discs []disc
-	for _, b := range g.BlindSpots {
-		id := ids.get("blind_" + string(b.Kind))
-		discs = append(discs, disc{id: id, label: "⊥ " + mermaidText(string(b.Kind)) + "<br/>blind spot", from: nodeID[b.Site]})
-	}
-	if g.Frontier != nil {
-		for _, m := range g.Frontier.Markers {
-			id := ids.get("frontier_" + m.Kind)
-			label := "⌖ " + mermaidText(m.Kind) + "<br/>frontier " + mermaidText(string(m.Bin))
-			discs = append(discs, disc{id: id, label: label, from: nodeID[m.Owner]})
-		}
+	// Cap on the FULL drawn-node count — first-party + boundary effects + disclosures.
+	// Counting first-party alone under-counts: a thin handler over many distinct
+	// effects (or many blind spots) stays "under cap" yet still draws a hairball and
+	// can exceed a Mermaid host's node limit. The disclosures still ride the index, so
+	// the honesty channel survives the cap.
+	if opts.MaxNodes > 0 && len(shown)+len(bnodes)+len(discs) > opts.MaxNodes {
+		return g.overview(opts, ids, len(shown)+len(bnodes)+len(discs), discs, notes)
 	}
 
 	var b strings.Builder
-	b.WriteString("flowchart LR\n")
-	scope := g.Entrypoint
-	if scope == "" {
-		scope = "whole graph"
-	}
-	b.WriteString("    %% static call graph — scope: " + comment(scope) + "; algo: " + comment(g.Algo) + "\n")
+	writeFlowchartHeader(&b, g.Entrypoint, g.Algo)
 	if hidden > 0 {
 		b.WriteString("    %% " + plural(hidden, "first-party node") +
 			" above tier " + strconv.Itoa(opts.MaxTier) + " hidden as plumbing; pass --show-plumbing to include\n")
@@ -206,16 +223,13 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 // points a reviewer can scope to with --root, so the too-big case stays a useful,
 // valid, deterministic diagram instead of a broken one. A scoped graph that is still
 // too big (one fan-out-heavy handler) steers to raising the cap or narrowing instead.
-func (g *Graph) overview(opts MermaidOptions, shownCount int, notes []string) string {
-	ids := &idAlloc{used: map[string]bool{}}
+// The disclosure nodes are ALWAYS drawn here too (passed in by the caller), so the
+// honesty channel is never dropped just because the graph crossed the cap. It shares
+// the caller's id allocator so the index's ids cannot collide with the disclosures'.
+func (g *Graph) overview(opts MermaidOptions, ids *idAlloc, drawn int, discs []disc, notes []string) string {
 	var b strings.Builder
-	b.WriteString("flowchart LR\n")
-	scope := g.Entrypoint
-	if scope == "" {
-		scope = "whole graph"
-	}
-	b.WriteString("    %% static call graph — scope: " + comment(scope) + "; algo: " + comment(g.Algo) + "\n")
-	b.WriteString("    %% " + strconv.Itoa(shownCount) + " first-party nodes exceed the render cap (" +
+	writeFlowchartHeader(&b, g.Entrypoint, g.Algo)
+	b.WriteString("    %% " + strconv.Itoa(drawn) + " nodes exceed the render cap (" +
 		strconv.Itoa(opts.MaxNodes) + "); rendering an index instead — scope with --root or raise --max-nodes\n")
 	for _, n := range notes {
 		b.WriteString("    %% " + comment(n) + "\n")
@@ -224,13 +238,19 @@ func (g *Graph) overview(opts MermaidOptions, shownCount int, notes []string) st
 	root := ids.get("toobig")
 	if g.Entrypoint == "" && len(g.Entrypoints) > 0 {
 		b.WriteString("    " + root + `["` +
-			mermaidText("⚠ "+strconv.Itoa(shownCount)+" nodes — too large to draw legibly. Scope to one entry point:") + `"]` + "\n")
+			mermaidText("⚠ "+strconv.Itoa(drawn)+" nodes — too large to draw legibly. Scope to one entry point:") + `"]` + "\n")
 		eps := append([]Entrypoint(nil), g.Entrypoints...)
+		// (Name, Fn, Kind) is a TOTAL order, so sort.Slice (which is not stable) cannot
+		// permute entries that tie on a prefix — the index bytes stay deterministic even
+		// when two entry points share a (Name, Fn).
 		sort.Slice(eps, func(i, j int) bool {
 			if eps[i].Name != eps[j].Name {
 				return eps[i].Name < eps[j].Name
 			}
-			return eps[i].Fn < eps[j].Fn
+			if eps[i].Fn != eps[j].Fn {
+				return eps[i].Fn < eps[j].Fn
+			}
+			return eps[i].Kind < eps[j].Kind
 		})
 		const maxList = 60
 		for i, e := range eps {
@@ -244,7 +264,13 @@ func (g *Graph) overview(opts MermaidOptions, shownCount int, notes []string) st
 		}
 	} else {
 		b.WriteString("    " + root + `["` +
-			mermaidText("⚠ "+strconv.Itoa(shownCount)+" nodes in this scope — too large to draw legibly. Narrow the scope, or raise --max-nodes to render anyway.") + `"]` + "\n")
+			mermaidText("⚠ "+strconv.Itoa(drawn)+" nodes in this scope — too large to draw legibly. Narrow the scope, or raise --max-nodes to render anyway.") + `"]` + "\n")
+	}
+	// The honesty channel survives the cap: blind spots and frontier markers are drawn
+	// standalone (the first-party nodes they attach to are not in the index), so a large
+	// graph's "where the analysis goes dark" markers are never silently dropped.
+	for _, d := range discs {
+		b.WriteString("    " + d.id + `(["` + d.label + `"]):::blind` + "\n")
 	}
 	b.WriteString(classDefs)
 	return b.String()
