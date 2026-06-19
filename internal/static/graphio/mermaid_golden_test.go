@@ -52,6 +52,7 @@ func TestCallGraphMermaidGoldens(t *testing.T) {
 			// tier-3 plumbing), so the committed view is exactly what a reviewer sees.
 			got := render.Fence(g.Mermaid(MermaidOptions{MaxTier: 2}))
 
+			assertValidMermaid(t, got)
 			mdPath := strings.TrimSuffix(gj, ".graph.json") + ".callgraph.md"
 			assertGolden(t, mdPath, got)
 		})

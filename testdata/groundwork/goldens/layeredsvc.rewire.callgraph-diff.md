@@ -17,9 +17,9 @@ flowchart LR
     store_Store_SelectUser["store.Store.SelectUser ⚠"]:::kept
     store_Store_UpdateUser["store.Store.UpdateUser ⚠"]:::kept
     layeredsvc_main["layeredsvc.main"]:::kept
-    db_db_INSERT_audit_log[("db INSERT audit_log")]:::db
-    db_db_SELECT_users[("db SELECT users")]:::db
-    db_db_UPDATE_users[("db UPDATE users")]:::db
+    db_db_INSERT_audit_log[("db INSERT audit_log")]:::kept
+    db_db_SELECT_users[("db SELECT users")]:::kept
+    db_db_UPDATE_users[("db UPDATE users")]:::kept
     app_Service_GetProfile --> store_Store_SelectUser
     app_Service_UpdateProfile --> store_Store_InsertAudit
     app_Service_UpdateProfile --> store_Store_UpdateUser

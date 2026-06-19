@@ -141,5 +141,7 @@ func TestMermaidRootedGolden(t *testing.T) {
 	if !ok {
 		t.Fatal("POST /loan-application should resolve in the loansvc graph")
 	}
-	assertGolden(t, "../../../testdata/groundwork/goldens/loansvc.post_loan_application.callgraph.md", render.Fence(out))
+	fenced := render.Fence(out)
+	assertValidMermaid(t, fenced)
+	assertGolden(t, "../../../testdata/groundwork/goldens/loansvc.post_loan_application.callgraph.md", fenced)
 }

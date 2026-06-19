@@ -138,6 +138,13 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 	for _, d := range discs {
 		b.WriteString("    " + d.id + `(["` + d.label + `"]):::blind` + "\n")
 	}
+	// A flowchart with no nodes is not valid Mermaid (a node-less `flowchart LR`
+	// renders as an error). A whole-graph render of an empty/library graph, or a
+	// scope that filtered everything, hits this — emit a placeholder so the output
+	// stays a valid, self-explaining diagram rather than a broken one.
+	if len(nodeID) == 0 && len(bnodes) == 0 && len(discs) == 0 {
+		b.WriteString(`    empty["(no nodes in scope)"]` + "\n")
+	}
 
 	// Edges, in canonical Edge order. A boundary edge draws to its effect node; a
 	// first-party edge draws only when both endpoints are shown.

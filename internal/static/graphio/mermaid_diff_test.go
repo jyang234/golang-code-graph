@@ -17,6 +17,7 @@ func TestMermaidDiffGolden(t *testing.T) {
 	base := loadGraph(t, "../../../testdata/groundwork/goldens/layeredsvc.branch-good.graph.json")
 	branch := loadGraph(t, "../../../testdata/groundwork/goldens/layeredsvc.branch-skip.graph.json")
 	got := render.Fence(MermaidDiff(base, branch, MermaidOptions{MaxTier: 2}))
+	assertValidMermaid(t, got)
 	assertGolden(t, "../../../testdata/groundwork/goldens/layeredsvc.rewire.callgraph-diff.md", got)
 }
 

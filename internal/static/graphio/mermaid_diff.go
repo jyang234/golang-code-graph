@@ -204,11 +204,11 @@ func MermaidDiff(base, branch *Graph, opts MermaidOptions) string {
 	}
 	for _, bn := range bnodes {
 		open, close := boundaryDelims(bn.class)
-		cls := bn.class
-		if bn.state != stKept {
-			cls = classFor(bn.state) // a changed effect node recolors; shape stays
-		}
-		b.WriteString("    " + bn.id + open + `"` + prefixFor(bn.state) + mermaidText(bn.label) + `"` + close + ":::" + cls + "\n")
+		// Color follows the DIFF state, never the effect kind: a kept effect node is
+		// neutral grey (the delta owns the color budget), a changed one recolors. The
+		// shape (cylinder/hexagon/stadium) still conveys db/bus/external. Using the
+		// kind class here would also reference a classDef the diff palette never defines.
+		b.WriteString("    " + bn.id + open + `"` + prefixFor(bn.state) + mermaidText(bn.label) + `"` + close + ":::" + classFor(bn.state) + "\n")
 	}
 
 	// Edges, in union order; collect link indices per state for linkStyle coloring.
@@ -276,7 +276,26 @@ func provenanceCaveats(base, branch *Graph) []string {
 		out = append(out, "producer tool differs (base "+base.Tool+" vs branch "+branch.Tool+
 			"): 'same code → same graph' holds only within one tool version")
 	}
+	// A reclaimer (--reclaim / --reclaim-sql) ADDS provenance-tagged `via` edges that
+	// a plain build never had; diffing a reclaimed branch against an un-reclaimed base
+	// (or vice versa) paints those recovered edges as added/removed. The flag is not in
+	// the graph, but its footprint is: any `via`-tagged edge. Disclose an asymmetry.
+	if hasViaEdge(base) != hasViaEdge(branch) {
+		out = append(out, "reclaimer state differs (one side carries provenance-tagged 'via' edges, "+
+			"the other does not): reclaimer-recovered edges show as added/removed, not code changes")
+	}
 	return out
+}
+
+// hasViaEdge reports whether any edge carries a reclaimer `via` tag — the footprint
+// of a --reclaim/--reclaim-sql build, used to flag a base↔branch reclaimer mismatch.
+func hasViaEdge(g *Graph) bool {
+	for _, e := range g.Edges {
+		if e.Via != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // boundaryTargetStates precomputes the diff state of every boundary target in two
