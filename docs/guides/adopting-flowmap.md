@@ -53,8 +53,25 @@ flowchart — typed boundary effects (DB / bus / external) as shaped leaf nodes,
 and the blind spots and frontier markers as explicit terminal nodes so a
 reviewer sees where the analysis stops. Scope it to one handler with
 `--root "POST /loans"`, or color a base→branch delta with
-`--diff base.graph.json`. Like the JSON graph, the flowchart is a view, never a
-gate.
+`--diff base.graph.json`. A whole-service render is illegible, so above
+`--max-nodes` (default 300) it emits an index of entry points to `--root` at
+instead — `--root` is the reviewable unit. Like the JSON graph, the flowchart is
+a view, never a gate.
+
+**Mermaid compatibility.** The flowchart uses a deliberately conservative Mermaid
+dialect — `flowchart`, `subgraph`, `classDef` + `:::` class assignment, the
+`[(…)]` / `{{…}}` / `([…])` node shapes, `==>` / `-.->` edges, and `<br/>` in
+labels — supported by mermaid ≥ 8.8 with HTML labels enabled (the default). That
+covers GitHub's native rendering and GitLab ≥ 13.3; on older self-hosted GitLab,
+upgrade mermaid or browse the `.md` as a build artifact. Data in labels is
+HTML-escaped, both so it renders correctly and as a guard against markup
+injection into a reviewer's rendered view. A test-suite "dialect floor" fails CI
+if a less-portable construct is ever introduced.
+
+**Output stability.** `--mermaid`, `--root`, `--diff`, `--show-plumbing`, and
+`--max-nodes` are the committed CLI surface; treat the rendered Markdown as a
+view (diff-reviewable, never gated), and pin a flowmap version in CI so the diff
+sides share one renderer.
 
 ## 3. Write a flow test
 

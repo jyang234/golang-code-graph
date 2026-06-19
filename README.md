@@ -95,6 +95,7 @@ $ flowmap graph svc/ --algo vta            # refine interface-dense dispatch (de
 $ flowmap graph svc/ --reclaim             # also recover edges lost at framework dispatch seams (opt-in, sound)
 $ flowmap graph svc/ --mermaid             # human-readable Mermaid flowchart (a view, never gated); --show-plumbing keeps tier-3 nodes
 $ flowmap graph svc/ --mermaid --root "POST /loans"        # scope the flowchart to one handler's reach (keeps blind-spot + frontier markers)
+$ flowmap graph svc/ --mermaid --max-nodes 300             # above the cap, render an index of entry points to --root at, not a hairball (0 = uncapped)
 $ flowmap graph svc/ --mermaid --diff base.graph.json      # color the base→branch delta (added/removed nodes and edges)
 $ flowmap frontier svc/                    # classify where static reachability stops (A/B/B2/C) — measurement, not a gate
 $ flowmap boundary svc/                    # gated inter-service contract

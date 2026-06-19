@@ -129,6 +129,7 @@ func cmdGraph(args []string) error {
 	showPlumbing := fs.Bool("show-plumbing", false, "with --mermaid, include low-salience plumbing nodes (tier 3: telemetry, compute-only closures) instead of collapsing them")
 	diffBase := fs.String("diff", "", "with --mermaid, render the delta from this BASE graph JSON to the analyzed branch (added/removed nodes and edges colored); a view, never a gate")
 	rootAt := fs.String("root", "", `with --mermaid, scope to one entry point at RENDER time (e.g. "POST /loan-application") — unlike --entry this keeps the frontier markers in the per-handler view`)
+	maxNodes := fs.Int("max-nodes", 300, "with --mermaid, cap how many nodes a diagram draws; above the cap it renders an index of entry points to --root at instead of an illegible hairball (0 = uncapped)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -160,7 +161,7 @@ func cmdGraph(args []string) error {
 		if *showPlumbing {
 			maxTier = 0
 		}
-		opts := graphio.MermaidOptions{MaxTier: maxTier}
+		opts := graphio.MermaidOptions{MaxTier: maxTier, MaxNodes: *maxNodes}
 		if *rootAt != "" && *diffBase != "" {
 			return fmt.Errorf("graph --root and --diff are mutually exclusive: --root renders one handler's reach, --diff renders a base→branch delta; a rooted diff is not supported")
 		}
@@ -213,17 +214,24 @@ func cmdGraph(args []string) error {
 }
 
 // loadGraphJSON decodes a committed graph JSON (a `flowmap graph` artifact) into a
-// graphio.Graph for the --diff base side. It is a permissive decode of the public
-// fields the flowchart renders (nodes, edges, blind spots, frontier); the strict,
-// trust-boundary validation lives in groundwork's own loader, not on a view path.
+// graphio.Graph for the --diff base side. It decodes STRICTLY (DisallowUnknownFields)
+// so a base produced by a NEWER flowmap — carrying a field this build does not model —
+// is REJECTED rather than silently decoded with that field dropped, which would
+// produce a confidently-wrong delta. (The reverse skew, an older base missing a field,
+// is surfaced by the diff's tool-mismatch caveat when both sides are stamped.) The
+// full trust-boundary validation still lives in groundwork's own loader; this is the
+// view path's forward-compatibility guard.
 func loadGraphJSON(path string) (*graphio.Graph, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
 	var g graphio.Graph
-	if err := json.Unmarshal(raw, &g); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
+	if err := dec.Decode(&g); err != nil {
+		return nil, fmt.Errorf("decode %s (a base from a newer flowmap, or not a graph JSON?): %w", path, err)
 	}
 	return &g, nil
 }

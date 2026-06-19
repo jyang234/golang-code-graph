@@ -1,0 +1,85 @@
+{
+  "algo": "rta",
+  "caveats": [
+    "rta from 2 discovered root(s)"
+  ],
+  "nodes": [
+    {
+      "fqn": "(*example.com/reclaimsvc.store).Delete",
+      "sig": "func (*main.store).Delete(ctx context.Context)",
+      "tier": 1
+    },
+    {
+      "fqn": "(*example.com/reclaimsvc.wrapper).Admin",
+      "sig": "func (*main.wrapper).Admin(w http.ResponseWriter, r *http.Request)",
+      "tier": 1
+    },
+    {
+      "fqn": "(*example.com/reclaimsvc.wrapper).Admin$1",
+      "sig": "func(w http.ResponseWriter, r *http.Request)",
+      "tier": 3
+    },
+    {
+      "fqn": "(*example.com/reclaimsvc.wrapper).Admin$2",
+      "sig": "func()",
+      "tier": 3
+    },
+    {
+      "fqn": "example.com/reclaimsvc.authMW",
+      "sig": "func main.authMW(next http.Handler) http.Handler",
+      "tier": 3
+    },
+    {
+      "fqn": "example.com/reclaimsvc.authMW$1",
+      "sig": "func(w http.ResponseWriter, r *http.Request)",
+      "tier": 3
+    },
+    {
+      "fqn": "example.com/reclaimsvc.main",
+      "sig": "func main.main()",
+      "tier": 1
+    },
+    {
+      "fqn": "example.com/reclaimsvc.runLater",
+      "sig": "func main.runLater(f func())",
+      "tier": 3
+    }
+  ],
+  "edges": [
+    {
+      "from": "(*example.com/reclaimsvc.store).Delete",
+      "to": "boundary:db DELETE ledger",
+      "tier": 1,
+      "boundary": "outbound-sync"
+    },
+    {
+      "from": "(*example.com/reclaimsvc.wrapper).Admin",
+      "to": "(*example.com/reclaimsvc.wrapper).Admin$1",
+      "tier": 2,
+      "via": "strict-server"
+    },
+    {
+      "from": "(*example.com/reclaimsvc.wrapper).Admin",
+      "to": "example.com/reclaimsvc.authMW",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/reclaimsvc.wrapper).Admin",
+      "to": "example.com/reclaimsvc.runLater",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/reclaimsvc.wrapper).Admin$1",
+      "to": "(*example.com/reclaimsvc.store).Delete",
+      "tier": 3
+    }
+  ],
+  "blind_spots": [],
+  "entrypoints": [
+    {
+      "kind": "http",
+      "name": "POST /admin",
+      "fn": "(*example.com/reclaimsvc.wrapper).Admin"
+    }
+  ]
+}

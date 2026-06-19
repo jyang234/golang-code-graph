@@ -71,6 +71,14 @@ flowmap graph testdata/fixtures/impeachsvc >internal/impeach/testdata/impeachsvc
 strip_tool internal/impeach/testdata/impeachsvc.graph.json
 echo "wrote internal/impeach/testdata/impeachsvc.graph.json"
 
+# reclaimsvc built WITH --reclaim is graphio's reclaimed-graph render fixture: a
+# strict-server seam reclaimed into a via=strict-server edge, so the via-edge render
+# path has golden coverage. It lives in graphio's own testdata (not a groundwork
+# golden, so it stays out of the section manifest).
+flowmap graph --reclaim testdata/fixtures/reclaimsvc >internal/static/graphio/testdata/reclaimsvc.reclaimed.graph.json
+strip_tool internal/static/graphio/testdata/reclaimsvc.reclaimed.graph.json
+echo "wrote internal/static/graphio/testdata/reclaimsvc.reclaimed.graph.json"
+
 # The human-readable Mermaid flowchart views (*.callgraph.md) are a PURE function
 # of the graph JSON above — their golden harness decodes the committed .graph.json
 # and re-renders, so it needs no flowmap run here. Rebase the views in lockstep so a

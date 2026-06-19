@@ -64,6 +64,31 @@ func validateMermaid(diagram string) error {
 				"Mermaid's HTML-label mode would drop it (escape via mermaidText): %q", i+1, label, ln)
 		}
 	}
+
+	// Dialect floor: every content line must be one of the constructs we deliberately
+	// emit (see the Mermaid-compatibility note in docs/guides/adopting-flowmap.md). A
+	// line we don't recognize means a new Mermaid feature crept in — fail here so its
+	// cross-host compatibility (notably older GitLab-pinned mermaid) is reviewed before
+	// it ships, rather than silently breaking a reviewer's rendered view.
+	for i, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		switch {
+		case i == 0, trimmed == "":
+		case strings.HasPrefix(trimmed, "%%"),
+			strings.HasPrefix(trimmed, "classDef "),
+			strings.HasPrefix(trimmed, "linkStyle "),
+			strings.HasPrefix(trimmed, "subgraph "),
+			trimmed == "direction LR",
+			trimmed == "end":
+		case strings.Contains(ln, "-->"), strings.Contains(ln, "==>"), strings.Contains(ln, ".->"):
+			// an edge (optionally with an inline node declaration / label)
+		case strings.Contains(ln, `"`):
+			// a node declaration; its label was checked above
+		default:
+			return fmt.Errorf("line %d is not a recognized Mermaid construct (dialect floor — "+
+				"vet cross-host compatibility before adding): %q", i+1, ln)
+		}
+	}
 	for _, r := range refs {
 		if !defined[r.class] {
 			return fmt.Errorf("class %q is referenced but no classDef defines it: %q", r.class, r.line)

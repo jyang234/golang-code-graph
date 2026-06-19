@@ -16,6 +16,7 @@ package graphio
 // closed / self-honesty about blind spots).
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,14 @@ type MermaidOptions struct {
 	// nothing — the library renders the complete graph by default, and the CLI opts
 	// into denoising for humans.
 	MaxTier int
+
+	// MaxNodes, when > 0, caps how many first-party nodes a single diagram will draw.
+	// A real service's whole-graph render is an illegible hairball (and exceeds the
+	// node limits some Mermaid hosts enforce), so above the cap the renderer emits an
+	// INDEX instead — the entry points to scope at with --root — rather than a broken
+	// diagram. The zero value (0) is uncapped, so the library renders everything by
+	// default and the CLI opts into a legible cap for humans.
+	MaxNodes int
 }
 
 // Mermaid renders g as a Mermaid flowchart per opts. The output begins with
@@ -52,6 +61,21 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 	// A node that emits a boundary effect is load-bearing: hiding it would drop the
 	// effect from the diagram, which the trust model forbids (keepNode enforces this).
 	emitsEffect := collectEmitsEffect(g.Edges)
+
+	// Above the node cap a full render is an illegible hairball, so emit an index of
+	// entry points to scope at instead. Counted before id assignment so the cheap
+	// path stays cheap.
+	if opts.MaxNodes > 0 {
+		shownCount := 0
+		for _, n := range g.Nodes {
+			if keepNode(n, opts.MaxTier, emitsEffect, nil) {
+				shownCount++
+			}
+		}
+		if shownCount > opts.MaxNodes {
+			return g.overview(opts, shownCount, notes)
+		}
+	}
 
 	// Pass A: assign ids to the first-party nodes we will show.
 	nodeID := make(map[string]string, len(g.Nodes))
@@ -173,6 +197,55 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 		b.WriteString("    " + d.from + " -. blind .-> " + d.id + "\n")
 	}
 
+	b.WriteString(classDefs)
+	return b.String()
+}
+
+// overview renders the over-cap INDEX: rather than an illegible whole-graph
+// hairball, it discloses the size and — for an unscoped graph — lists the entry
+// points a reviewer can scope to with --root, so the too-big case stays a useful,
+// valid, deterministic diagram instead of a broken one. A scoped graph that is still
+// too big (one fan-out-heavy handler) steers to raising the cap or narrowing instead.
+func (g *Graph) overview(opts MermaidOptions, shownCount int, notes []string) string {
+	ids := &idAlloc{used: map[string]bool{}}
+	var b strings.Builder
+	b.WriteString("flowchart LR\n")
+	scope := g.Entrypoint
+	if scope == "" {
+		scope = "whole graph"
+	}
+	b.WriteString("    %% static call graph — scope: " + comment(scope) + "; algo: " + comment(g.Algo) + "\n")
+	b.WriteString("    %% " + strconv.Itoa(shownCount) + " first-party nodes exceed the render cap (" +
+		strconv.Itoa(opts.MaxNodes) + "); rendering an index instead — scope with --root or raise --max-nodes\n")
+	for _, n := range notes {
+		b.WriteString("    %% " + comment(n) + "\n")
+	}
+
+	root := ids.get("toobig")
+	if g.Entrypoint == "" && len(g.Entrypoints) > 0 {
+		b.WriteString("    " + root + `["` +
+			mermaidText("⚠ "+strconv.Itoa(shownCount)+" nodes — too large to draw legibly. Scope to one entry point:") + `"]` + "\n")
+		eps := append([]Entrypoint(nil), g.Entrypoints...)
+		sort.Slice(eps, func(i, j int) bool {
+			if eps[i].Name != eps[j].Name {
+				return eps[i].Name < eps[j].Name
+			}
+			return eps[i].Fn < eps[j].Fn
+		})
+		const maxList = 60
+		for i, e := range eps {
+			if i >= maxList {
+				more := ids.get("more")
+				b.WriteString("    " + root + " --> " + more + `["` +
+					mermaidText("… and "+strconv.Itoa(len(eps)-maxList)+" more entry points") + `"]` + "\n")
+				break
+			}
+			b.WriteString("    " + root + " --> " + ids.get("ep_"+e.Name) + `["` + mermaidText(e.Name) + `"]` + "\n")
+		}
+	} else {
+		b.WriteString("    " + root + `["` +
+			mermaidText("⚠ "+strconv.Itoa(shownCount)+" nodes in this scope — too large to draw legibly. Narrow the scope, or raise --max-nodes to render anyway.") + `"]` + "\n")
+	}
 	b.WriteString(classDefs)
 	return b.String()
 }

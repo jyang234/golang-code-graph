@@ -645,3 +645,27 @@ func TestBehaviorIngestSynthesizedLifeline(t *testing.T) {
 		t.Errorf("expected the slug as the fallback lifeline:\n%s", b)
 	}
 }
+
+// TestLoadGraphJSONStrict pins the --diff base forward-compatibility guard: a base
+// from a NEWER flowmap (an unknown field) is rejected rather than silently decoded
+// with that field dropped, which would produce a confidently-wrong delta. A clean
+// same-version graph still loads.
+func TestLoadGraphJSONStrict(t *testing.T) {
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "good.json")
+	if err := os.WriteFile(good, []byte(`{"algo":"rta","nodes":[{"fqn":"a.F","tier":1}],"edges":[],"blind_spots":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadGraphJSON(good); err != nil {
+		t.Errorf("a clean same-version graph must load: %v", err)
+	}
+
+	newer := filepath.Join(dir, "newer.json")
+	if err := os.WriteFile(newer, []byte(`{"algo":"rta","nodes":[],"edges":[],"blind_spots":[],"future_field":42}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadGraphJSON(newer); err == nil {
+		t.Error("a base with an unknown field (newer flowmap) must be rejected, not silently decoded")
+	}
+}

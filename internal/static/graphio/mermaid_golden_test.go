@@ -28,29 +28,38 @@ var updateGolden = flag.Bool("update", false, "rewrite the .callgraph.md mermaid
 // blindsvc (reflect/unsafe blind spots AND frontier markers — the honesty channel),
 // obligsvc and layeredsvc (clean layered graphs), and impeachsvc (the missed-root
 // fixture, whose DB DELETE is reachable in the graph but from no entrypoint).
-var callGraphGoldens = []string{
-	"../../../testdata/groundwork/goldens/loansvc.graph.json",
-	"../../../testdata/groundwork/goldens/blindsvc.graph.json",
-	"../../../testdata/groundwork/goldens/obligsvc.graph.json",
-	"../../../testdata/groundwork/goldens/layeredsvc.graph.json",
-	"../../../internal/impeach/testdata/impeachsvc.graph.json",
+var callGraphGoldens = []struct {
+	path    string
+	maxTier int
+}{
+	{"../../../testdata/groundwork/goldens/loansvc.graph.json", 2},
+	{"../../../testdata/groundwork/goldens/blindsvc.graph.json", 2},
+	{"../../../testdata/groundwork/goldens/obligsvc.graph.json", 2},
+	{"../../../testdata/groundwork/goldens/layeredsvc.graph.json", 2},
+	{"../../../internal/impeach/testdata/impeachsvc.graph.json", 2},
+	// reclaimsvc built with --reclaim: a strict-server seam reclaimed into a
+	// via=strict-server edge. Rendered with plumbing shown (maxTier 0) so the
+	// reclaimed edge — onto a tier-3 closure — is visible, golden-covering the via
+	// render path. Graphio-local (not a groundwork golden, so out of the manifest).
+	{"testdata/reclaimsvc.reclaimed.graph.json", 0},
 }
 
 func TestCallGraphMermaidGoldens(t *testing.T) {
-	for _, gj := range callGraphGoldens {
+	for _, g := range callGraphGoldens {
+		gj := g.path
 		name := strings.TrimSuffix(filepath.Base(gj), ".graph.json")
 		t.Run(name, func(t *testing.T) {
 			raw, err := os.ReadFile(gj)
 			if err != nil {
 				t.Fatalf("read graph golden: %v", err)
 			}
-			var g Graph
-			if err := json.Unmarshal(raw, &g); err != nil {
+			var g2 Graph
+			if err := json.Unmarshal(raw, &g2); err != nil {
 				t.Fatalf("decode %s: %v", gj, err)
 			}
-			// MaxTier 2 mirrors the CLI default (`flowmap graph --mermaid` collapses
-			// tier-3 plumbing), so the committed view is exactly what a reviewer sees.
-			got := render.Fence(g.Mermaid(MermaidOptions{MaxTier: 2}))
+			// maxTier 2 mirrors the CLI default (collapse tier-3 plumbing) for most
+			// goldens; the reclaim fixture uses 0 to keep its via edge visible.
+			got := render.Fence(g2.Mermaid(MermaidOptions{MaxTier: g.maxTier}))
 
 			assertValidMermaid(t, got)
 			mdPath := strings.TrimSuffix(gj, ".graph.json") + ".callgraph.md"

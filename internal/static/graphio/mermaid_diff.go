@@ -154,6 +154,11 @@ func MermaidDiff(base, branch *Graph, opts MermaidOptions) string {
 		nodeID[fqn] = ids.get(frontier.ShortName(fqn))
 		shown[fqn] = true
 	}
+	// Above the cap a union render is an illegible hairball (a refactor PR is the
+	// worst case); summarize the delta instead of drawing it.
+	if opts.MaxNodes > 0 && len(shown) > opts.MaxNodes {
+		return diffOverview(base, branch, opts, len(shown))
+	}
 
 	// Boundary effect nodes, once per label, in canonical edge order, with their diff
 	// state from the precomputed map.
@@ -296,6 +301,38 @@ func hasViaEdge(g *Graph) bool {
 		}
 	}
 	return false
+}
+
+// diffOverview renders the over-cap summary: a refactor-scale delta is an illegible
+// red/green hairball, so disclose the added/removed counts and the provenance caveats
+// rather than drawing it. A valid, deterministic single-node diagram.
+func diffOverview(base, branch *Graph, opts MermaidOptions, shownCount int) string {
+	bn, brn := nodeIndex(base), nodeIndex(branch)
+	var added, removed int
+	for _, fqn := range unionNodeKeys(bn, brn) {
+		_, inB := bn[fqn]
+		_, inBr := brn[fqn]
+		switch stateOf(inB, inBr) {
+		case stAdded:
+			added++
+		case stRemoved:
+			removed++
+		}
+	}
+	ids := &idAlloc{used: map[string]bool{}}
+	var b strings.Builder
+	b.WriteString("flowchart LR\n")
+	b.WriteString("    %% call-graph diff — base → branch (a view, never a gate)\n")
+	for _, c := range provenanceCaveats(base, branch) {
+		b.WriteString("    %% ⚠ " + comment(c) + "\n")
+	}
+	b.WriteString("    %% " + strconv.Itoa(shownCount) + " nodes in the union exceed the render cap (" +
+		strconv.Itoa(opts.MaxNodes) + "); summarizing the delta instead\n")
+	msg := "⚠ large delta — " + strconv.Itoa(added) + " added, " + strconv.Itoa(removed) +
+		" removed across " + strconv.Itoa(shownCount) + " nodes. Too large to draw legibly; review the JSON diff or raise --max-nodes."
+	b.WriteString("    " + ids.get("toobig") + `["` + mermaidText(msg) + `"]` + "\n")
+	b.WriteString(diffClassDefs)
+	return b.String()
 }
 
 // boundaryTargetStates precomputes the diff state of every boundary target in two
