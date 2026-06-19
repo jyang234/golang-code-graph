@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -157,6 +158,53 @@ type Annotation struct {
 	Kind string `yaml:"kind,omitempty"`
 	Note string `yaml:"note"`
 	By   string `yaml:"by,omitempty"`
+}
+
+// ResolveAnnotationKind binds one annotation to a single blind-spot kind given the
+// DISTINCT kinds detected at its site. It is the single source of truth for the
+// annotation→blind-spot binding rule, shared by the producer-side merge (graphio,
+// which embeds the bound annotation in the graph) and the read-only MCP `annotate`
+// proposer (which validates a proposed annotation against the live manifest). One
+// rule in one place means the proposer can never suggest an annotation the build
+// would reject, or vice versa — parity is guarded by a test on each side.
+//
+// Fail closed: a site with no detected blind spot is an orphan (a stale FQN or
+// moved code); an empty requestedKind binds a site that has exactly one kind but is
+// ambiguous on a multi-kind site; a named kind must be present at the site. The
+// returned error names the site and the kinds actually present, so a caller (or an
+// agent) can correct the annotation without another round-trip.
+func ResolveAnnotationKind(site, requestedKind string, kindsAtSite []string) (string, error) {
+	distinct := sortedUnique(kindsAtSite)
+	if len(distinct) == 0 {
+		return "", fmt.Errorf("no blind spot detected at site %q — a stale annotation or moved code", site)
+	}
+	if requestedKind == "" {
+		if len(distinct) != 1 {
+			return "", fmt.Errorf("site %q carries %d blind-spot kinds (%s); set kind to disambiguate", site, len(distinct), strings.Join(distinct, ", "))
+		}
+		return distinct[0], nil
+	}
+	for _, k := range distinct {
+		if k == requestedKind {
+			return requestedKind, nil
+		}
+	}
+	return "", fmt.Errorf("no %q blind spot at site %q (present: %s)", requestedKind, site, strings.Join(distinct, ", "))
+}
+
+// sortedUnique returns the distinct values of ss in lexical order — a
+// run-independent ordering so an ambiguity/absence error message is deterministic.
+func sortedUnique(ss []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // DeclaredBlindSpot is one ratified seam (plan §8). Site is the FQN to blind (the

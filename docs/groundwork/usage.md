@@ -783,14 +783,20 @@ derived with the exact matchers the checks use, so the card never promises a
 guardrail that does not bind.
 
 `groundwork mcp <graph.json> [--policy …] [--corpus <dir>] [--capture <grade>] [--expect …] [--log calls.jsonl]`
-serves ten tools over
+serves eleven tools over
 MCP stdio (newline-delimited JSON-RPC, protocol 2024-11-05, no third-party
 dependencies): `ground`, `reach`, `triage` (with the `fail` what-if framing,
-including effects possibly committed before the fault), `exceptions`,
+including effects possibly committed before the fault), `annotate` (propose
+human/AI context for a blind spot — validates against the live manifest and
+returns ready-to-commit `.flowmap.yaml`, writing nothing), `exceptions`,
 `entrypoints` (what the route/event symptoms can address), `fleet-events`,
 `chains` (the cross-service effect-chain cards — fleet-wide, like
 `fleet-events`), `fitness`, `impeach`, and
 `reload`.
+
+`annotate` is **read-only**, like every tool here: it never writes a file (the
+server's no-write-tools invariant holds — the agent persists the snippet itself),
+and an annotation is disclosure-only, so it can never move a count or a verdict.
 
 The `impeach` tool is **audit-only and never a gate** (it is always listed, but
 returns an error unless the server was started with both `--corpus` and `--policy`).

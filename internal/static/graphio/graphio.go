@@ -245,32 +245,18 @@ func mergeAnnotations(manifest []blindspots.BlindSpot, cfg *config.Config) ([]An
 	if cfg == nil || len(cfg.Static.Annotations) == 0 {
 		return nil, nil
 	}
-	// Index the manifest: kinds present at each site, and the total count per site.
-	kindsAt := map[string]map[string]bool{}
+	// Index the manifest: the kinds present at each site (deduped by the resolver).
+	kindsAt := map[string][]string{}
 	for _, b := range manifest {
-		m := kindsAt[b.Site]
-		if m == nil {
-			m = map[string]bool{}
-			kindsAt[b.Site] = m
-		}
-		m[string(b.Kind)] = true
+		kindsAt[b.Site] = append(kindsAt[b.Site], string(b.Kind))
 	}
 	byKey := map[[2]string]Annotation{}
 	for i, a := range cfg.Static.Annotations {
-		kinds := kindsAt[a.Site]
-		if len(kinds) == 0 {
-			return nil, fmt.Errorf("flowmap config: static.annotations[%d] (%s): no blind spot detected at this site — a stale annotation or moved code", i, a.Site)
-		}
-		kind := a.Kind
-		if kind == "" {
-			if len(kinds) != 1 {
-				return nil, fmt.Errorf("flowmap config: static.annotations[%d] (%s): site has %d blind-spot kinds; set kind to disambiguate", i, a.Site, len(kinds))
-			}
-			for k := range kinds {
-				kind = k
-			}
-		} else if !kinds[kind] {
-			return nil, fmt.Errorf("flowmap config: static.annotations[%d] (%s): no %q blind spot at this site", i, a.Site, kind)
+		// The binding rule lives in config.ResolveAnnotationKind so the producer here
+		// and the read-only MCP `annotate` proposer cannot drift (parity test below).
+		kind, err := config.ResolveAnnotationKind(a.Site, a.Kind, kindsAt[a.Site])
+		if err != nil {
+			return nil, fmt.Errorf("flowmap config: static.annotations[%d]: %w", i, err)
 		}
 		// Collapse duplicate (site, kind) annotations to the lexically-smallest note
 		// — an intrinsic tie-break, never arrival order (CLAUDE.md determinism).

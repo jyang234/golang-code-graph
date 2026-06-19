@@ -74,8 +74,8 @@ func TestServeMCPSession(t *testing.T) {
 	if pv, _ := got[0].Result["protocolVersion"].(string); pv != "2024-11-05" {
 		t.Errorf("initialize protocolVersion = %q", pv)
 	}
-	if tools, _ := got[1].Result["tools"].([]any); len(tools) != 10 {
-		t.Errorf("tools/list = %d tools, want 10", len(tools))
+	if tools, _ := got[1].Result["tools"].([]any); len(tools) != 11 {
+		t.Errorf("tools/list = %d tools, want 11", len(tools))
 	}
 	if !strings.Contains(text(got[2]), "Binding rules") || !strings.Contains(text(got[2]), "partial-effect") {
 		t.Errorf("ground card missing binding rules: %q", text(got[2]))
