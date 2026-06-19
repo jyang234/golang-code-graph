@@ -91,6 +91,22 @@ func TestMergeAnnotationsDedupTieBreakIsIntrinsic(t *testing.T) {
 	if fwd, rev := mk("aaa", "zzz"), mk("zzz", "aaa"); fwd != rev || fwd.Note != "aaa" {
 		t.Fatalf("dedup tie-break is arrival-dependent or not lexically-smallest: %+v vs %+v", fwd, rev)
 	}
+
+	// EQUAL notes must still tie-break on intrinsic content (By, then Claim), never
+	// on config-array position — otherwise the kept By/Claim would depend on file order.
+	eq := func(by1, by2 string) Annotation {
+		got, err := mergeAnnotations(manifest, annCfg(
+			config.Annotation{Site: "ex.com/svc.Decode", Kind: "reflect", Note: "same", By: by1},
+			config.Annotation{Site: "ex.com/svc.Decode", Kind: "reflect", Note: "same", By: by2},
+		))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("collision must collapse to one: %+v err=%v", got, err)
+		}
+		return got[0]
+	}
+	if fwd, rev := eq("alice", "bob"), eq("bob", "alice"); fwd != rev || fwd.By != "alice" {
+		t.Fatalf("equal-note tie-break is arrival-dependent or not lexically-smallest By: %+v vs %+v", fwd, rev)
+	}
 }
 
 // TestMergeAnnotationsEmptyConfig: no annotations ⇒ nil, never an error.

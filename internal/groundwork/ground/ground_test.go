@@ -57,6 +57,39 @@ func TestAnnotationEchoedOnCard(t *testing.T) {
 	}
 }
 
+// TestAnnotationNotDuplicatedAcrossSameSeam pins the dedup fix: when a site carries
+// more than one blind spot of the same kind (a function with two ExternalBoundaryCall
+// handoffs to different packages), the shared annotation is collected and rendered
+// ONCE, not once per blind spot.
+func TestAnnotationNotDuplicatedAcrossSameSeam(t *testing.T) {
+	g := &graph.Graph{
+		Algo:  "rta",
+		Nodes: []graph.Node{{FQN: "svc.Send"}},
+		BlindSpots: []graph.BlindSpot{
+			{Kind: "ExternalBoundaryCall", Site: "svc.Send", Detail: "hands off to acme"},
+			{Kind: "ExternalBoundaryCall", Site: "svc.Send", Detail: "hands off to stripe"},
+		},
+		Annotations: []graph.Annotation{
+			{Site: "svc.Send", Kind: "ExternalBoundaryCall", Note: "the SDK behind this seam POSTs out", By: "dev"},
+		},
+	}
+	card, err := For(graph.NewIndex(g), nil, "svc.Send")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(card.Annotations) != 1 {
+		t.Errorf("annotation collected %d times, want 1: %+v", len(card.Annotations), card.Annotations)
+	}
+	out := card.Render()
+	if n := strings.Count(out, "the SDK behind this seam POSTs out"); n != 1 {
+		t.Errorf("annotation rendered %d times, want 1:\n%s", n, out)
+	}
+	// Both blind-spot rows still appear — dedup is on the annotation, not the spots.
+	if n := strings.Count(out, "ExternalBoundaryCall svc.Send"); n != 2 {
+		t.Errorf("both blind-spot rows must still render (want 2), got %d:\n%s", n, out)
+	}
+}
+
 // GX-5 landed criterion: the binding-rules section names exactly the rules
 // that demonstrably fire on the function — cross-checked by seeding a
 // violation at the function and asserting the named rule catches it.

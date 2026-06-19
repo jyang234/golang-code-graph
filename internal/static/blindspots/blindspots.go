@@ -162,6 +162,19 @@ func (k Kind) Boundary() bool {
 	return k == NonConstantBoundaryArg || k == UnresolvedDispatch
 }
 
+// IsDisclosureOnlyFrontier reports whether a blind spot of this kind discloses a
+// KNOWN out-of-module leaf the analysis already stops at — so it must NOT act as a
+// reachability or severance frontier. Such a kind neither blinds a must_not_reach
+// proof (fitness.firstReachBlinding skips it) nor enters the frontier marker set /
+// ReclaimableShare (frontier.Classify skips it): the effect it names is the same
+// leaf the call graph already terminates at, hiding no in-scope path and severing
+// nothing. ExternalBoundaryCall is the one such kind today. Centralized here so the
+// two skip sites read one predicate instead of each re-deciding by literal Kind —
+// a future disclosure-only kind flips this and both honor it.
+func (k Kind) IsDisclosureOnlyFrontier() bool {
+	return k == ExternalBoundaryCall
+}
+
 // BlindSpot is one disclosed gap. Fields are JSON-tagged for the gated artifact.
 type BlindSpot struct {
 	Kind   Kind   `json:"kind"`

@@ -233,6 +233,20 @@ type Annotation struct {
 	Claim string `json:"claim,omitempty"`
 }
 
+// annotationLess is the total intrinsic order used to break dedup ties on a
+// colliding (site, kind): compare Note, then By, then Claim. Totality matters —
+// falling back to arrival order on equal notes would make the kept by/claim depend
+// on config-file position, not content.
+func annotationLess(a, b Annotation) bool {
+	if a.Note != b.Note {
+		return a.Note < b.Note
+	}
+	if a.By != b.By {
+		return a.By < b.By
+	}
+	return a.Claim < b.Claim
+}
+
 // mergeAnnotations matches each config annotation to a blind spot already in the
 // manifest and returns the bound annotations, sorted by (Site, Kind) for a
 // byte-identical result. An annotation is CONTEXT on a detected gap, so it must
@@ -259,11 +273,13 @@ func mergeAnnotations(manifest []blindspots.BlindSpot, cfg *config.Config) ([]An
 		if err != nil {
 			return nil, fmt.Errorf("flowmap config: static.annotations[%d]: %w", i, err)
 		}
-		// Collapse duplicate (site, kind) annotations to the lexically-smallest note
-		// — an intrinsic tie-break, never arrival order (CLAUDE.md determinism).
+		// Collapse duplicate (site, kind) annotations to the lexically-smallest
+		// (Note, By, Claim) — a TOTAL intrinsic tie-break, never arrival order: two
+		// entries with the same note but different by/claim still resolve on content,
+		// not config-file position (CLAUDE.md determinism).
 		cand := Annotation{Site: a.Site, Kind: kind, Note: a.Note, By: a.By, Claim: a.Claim}
 		key := [2]string{a.Site, kind}
-		if cur, ok := byKey[key]; !ok || cand.Note < cur.Note {
+		if cur, ok := byKey[key]; !ok || annotationLess(cand, cur) {
 			byKey[key] = cand
 		}
 	}

@@ -350,6 +350,43 @@ func (ix *Index) AnnotationsAt(site, kind string) []Annotation {
 // Annotations returns the graph's whole annotation manifest (disclosure only).
 func (ix *Index) Annotations() []Annotation { return ix.g.Annotations }
 
+// DistinctAnnotationsAt collects the annotations for a set of blind spots WITHOUT
+// duplication: annotations are keyed by (Site, Kind), so two blind spots sharing a
+// seam (e.g. one function with two ExternalBoundaryCall handoffs to different
+// packages — same Site and Kind, different Detail) contribute their shared
+// annotation once, not once per spot. Order follows spots (sort it first for a
+// deterministic card).
+func (ix *Index) DistinctAnnotationsAt(spots []BlindSpot) []Annotation {
+	seen := map[[2]string]bool{}
+	var out []Annotation
+	for _, s := range spots {
+		key := [2]string{s.Site, s.Kind}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ix.AnnotationsAt(s.Site, s.Kind)...)
+	}
+	return out
+}
+
+// SortBlindSpots orders a blind-spot slice canonically by (Kind, Site, Detail) —
+// the consumer-side counterpart of blindspots.SortBlindSpots. Detail is part of the
+// key so two spots sharing (Kind, Site) but naming different effects (two
+// ExternalBoundaryCall packages, two DynamicEffect labels) have a total, intrinsic
+// order rather than one left to the input sequence.
+func SortBlindSpots(bs []BlindSpot) {
+	sort.Slice(bs, func(i, j int) bool {
+		if bs[i].Kind != bs[j].Kind {
+			return bs[i].Kind < bs[j].Kind
+		}
+		if bs[i].Site != bs[j].Site {
+			return bs[i].Site < bs[j].Site
+		}
+		return bs[i].Detail < bs[j].Detail
+	})
+}
+
 // BlindSpots returns the whole graph-completeness blind-spot manifest.
 func (ix *Index) BlindSpots() []BlindSpot { return ix.g.BlindSpots }
 

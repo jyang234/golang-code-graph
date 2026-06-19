@@ -112,17 +112,11 @@ func For(ix *graph.Index, p *policy.Policy, fqn string) (Card, error) {
 	// reach — then the entrypoint count is an over-approximation (F3).
 	c.CoverOverApprox = ix.CrossesHighFanOut(reaching)
 
-	sort.Slice(c.BlindSpots, func(i, j int) bool {
-		if c.BlindSpots[i].Kind != c.BlindSpots[j].Kind {
-			return c.BlindSpots[i].Kind < c.BlindSpots[j].Kind
-		}
-		return c.BlindSpots[i].Site < c.BlindSpots[j].Site
-	})
-	// Collect annotations in the now-sorted blind-spot order, so the card's context
-	// is deterministic and aligned with the spots it explains.
-	for _, s := range c.BlindSpots {
-		c.Annotations = append(c.Annotations, ix.AnnotationsAt(s.Site, s.Kind)...)
-	}
+	graph.SortBlindSpots(c.BlindSpots)
+	// Collect annotations once per (Site, Kind) in the now-sorted blind-spot order,
+	// so the card's context is deterministic and a seam with several blind spots
+	// (e.g. two external handoffs) does not repeat its shared annotation.
+	c.Annotations = ix.DistinctAnnotationsAt(c.BlindSpots)
 	return c, nil
 }
 
@@ -229,10 +223,14 @@ func (c Card) Render() string {
 	section("Reachable boundary effects", c.Effects)
 	if len(c.BlindSpots) > 0 {
 		fmt.Fprintf(&b, "🕳️  Blind spots touching this card's claims (%d)\n", len(c.BlindSpots))
+		shown := map[[2]string]bool{} // print a seam's annotation under its first row only
 		for _, s := range c.BlindSpots {
 			fmt.Fprintf(&b, "- %s %s\n", s.Kind, s.Site)
-			for _, a := range graph.MatchAnnotations(c.Annotations, s.Site, s.Kind) {
-				b.WriteString(graph.AnnotationLine(a))
+			if key := [2]string{s.Site, s.Kind}; !shown[key] {
+				shown[key] = true
+				for _, a := range graph.MatchAnnotations(c.Annotations, s.Site, s.Kind) {
+					b.WriteString(graph.AnnotationLine(a))
+				}
 			}
 		}
 	}

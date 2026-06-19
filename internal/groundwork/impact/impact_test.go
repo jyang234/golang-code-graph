@@ -11,6 +11,29 @@ import (
 
 const goldensDir = "../../../testdata/groundwork/goldens"
 
+// TestTriageAnnotationNotDuplicated pins the dedup fix on the triage/reach card:
+// a seam with two same-kind blind spots echoes its shared annotation once.
+func TestTriageAnnotationNotDuplicated(t *testing.T) {
+	g := &graph.Graph{
+		Algo:  "rta",
+		Nodes: []graph.Node{{FQN: "svc.Send"}},
+		BlindSpots: []graph.BlindSpot{
+			{Kind: "ExternalBoundaryCall", Site: "svc.Send", Detail: "hands off to acme"},
+			{Kind: "ExternalBoundaryCall", Site: "svc.Send", Detail: "hands off to stripe"},
+		},
+		Annotations: []graph.Annotation{
+			{Site: "svc.Send", Kind: "ExternalBoundaryCall", Note: "POSTs out to a vendor", By: "dev"},
+		},
+	}
+	card := ForNodes(graph.NewIndex(g), []string{"svc.Send"})
+	if len(card.Annotations) != 1 {
+		t.Errorf("annotation collected %d times, want 1: %+v", len(card.Annotations), card.Annotations)
+	}
+	if n := strings.Count(card.Render(), "POSTs out to a vendor"); n != 1 {
+		t.Errorf("annotation rendered %d times, want 1:\n%s", n, card.Render())
+	}
+}
+
 // TestAnnotationEchoedOnTriageCard pins Phase 2 for the triage/reach surface: a
 // blind spot's human/AI context rides the card a responder reads, beneath the spot
 // it explains.

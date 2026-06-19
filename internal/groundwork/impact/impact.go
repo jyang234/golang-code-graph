@@ -14,7 +14,6 @@ package impact
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
@@ -154,18 +153,11 @@ func ForNodes(ix *graph.Index, fqns []string) Card {
 			addBlind([]graph.BlindSpot{{Kind: "DynamicEffect", Site: e.From, Detail: strings.TrimPrefix(e.To, "boundary:")}})
 		}
 	}
-	sort.Slice(blind, func(i, j int) bool {
-		if blind[i].Kind != blind[j].Kind {
-			return blind[i].Kind < blind[j].Kind
-		}
-		return blind[i].Site < blind[j].Site
-	})
-	// Annotation context for those blind spots, collected in the sorted order so the
-	// card is deterministic and the context aligns with the spots it explains.
-	var annot []graph.Annotation
-	for _, s := range blind {
-		annot = append(annot, ix.AnnotationsAt(s.Site, s.Kind)...)
-	}
+	graph.SortBlindSpots(blind)
+	// Annotation context for those blind spots, collected once per (Site, Kind) in
+	// the sorted order so the card is deterministic and a seam with several blind
+	// spots does not repeat its shared annotation.
+	annot := ix.DistinctAnnotationsAt(blind)
 
 	return Card{
 		Suspects:    suspects,

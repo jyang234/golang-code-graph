@@ -191,19 +191,19 @@ func frontierBlindSiteWith(ix *graph.Index, cone []string, effects []graph.Edge)
 }
 
 // firstReachBlinding returns the first blind spot at a site that actually blinds
-// reachability, skipping ExternalBoundaryCall. An external boundary call names a
-// KNOWN third-party target whose body is the same out-of-module leaf the
-// reachability index already stops at (graph.Index drops external edges), so it
-// hides no in-scope first-party path: disclosing it must not turn the accepted
-// external-leaf scope into a fresh abstention, or every PROVEN over a path that
-// touches a vendored package would silently become CANT-PROVE. Every other kind
-// (an UNKNOWN func-value target that could dispatch back into first-party code, a
-// reflect call, an unsafe/cgo/linkname package) can hide an in-scope edge, so it
-// stays blinding. This is the consumer half of ExternalBoundaryCall's
-// disclosure-only contract (the producer comment in blindspots.Kind pins the other).
+// reachability, skipping the disclosure-only kinds. A disclosure-only kind
+// (ExternalBoundaryCall) names a KNOWN out-of-module leaf the reachability index
+// already stops at (graph.Index drops external edges), so it hides no in-scope
+// first-party path: disclosing it must not turn the accepted external-leaf scope
+// into a fresh abstention, or every PROVEN over a path that touches a vendored
+// package would silently become CANT-PROVE. Every other kind (an UNKNOWN func-value
+// target that could dispatch back into first-party code, a reflect call, an
+// unsafe/cgo/linkname package) can hide an in-scope edge, so it stays blinding. The
+// disclosure-only set is defined once on blindspots.Kind and shared with the
+// frontier marker loop (the producer half of the same contract).
 func firstReachBlinding(bs []graph.BlindSpot) (graph.BlindSpot, bool) {
 	for _, b := range bs {
-		if b.Kind == string(blindspots.ExternalBoundaryCall) {
+		if blindspots.Kind(b.Kind).IsDisclosureOnlyFrontier() {
 			continue
 		}
 		return b, true
