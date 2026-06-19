@@ -88,7 +88,7 @@ func WriteSnapshot(got *ir.CanonicalTrace, dir, stem string) error {
 	if err := os.WriteFile(path+".golden.json", b, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(path+".flow.md", []byte(render.Mermaid(got)), 0o644)
+	return os.WriteFile(path+".flow.md", []byte(render.Fence(render.Mermaid(got))), 0o644)
 }
 
 // changeSet renders the prioritized structural diff (the authoritative,

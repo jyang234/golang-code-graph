@@ -1,3 +1,4 @@
+```mermaid
 sequenceDiagram
     participant Client as Client
     participant impeachsvc as impeachsvc
@@ -5,3 +6,4 @@ sequenceDiagram
     Client->>impeachsvc: HTTP POST /admin/notify
     impeachsvc->>impeachsvc: admin.notify
     impeachsvc->>Bus: PUBLISH ledger.purged
+```

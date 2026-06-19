@@ -157,7 +157,7 @@ func cmdGraph(args []string) error {
 		if *showPlumbing {
 			maxTier = 0
 		}
-		_, err = os.Stdout.WriteString(g.Mermaid(graphio.MermaidOptions{MaxTier: maxTier}))
+		_, err = os.Stdout.WriteString(render.Fence(g.Mermaid(graphio.MermaidOptions{MaxTier: maxTier})))
 		return err
 	}
 	// The stamp is caller-supplied, never derived: deriving it (from git HEAD,
@@ -536,7 +536,7 @@ func updateEffectGoldens(dir string, frags []ingestFragment) error {
 		if err := os.WriteFile(stem+".effects.json", b, 0o644); err != nil {
 			return err
 		}
-		if err := os.WriteFile(stem+".flow.md", []byte(render.Mermaid(fr.trace)), 0o644); err != nil {
+		if err := os.WriteFile(stem+".flow.md", []byte(render.Fence(render.Mermaid(fr.trace))), 0o644); err != nil {
 			return err
 		}
 		fmt.Printf("wrote %s.effects.json (+ .flow.md)\n", stem)
@@ -709,7 +709,7 @@ func writeSystemDiagrams(dir string, flows []wholeFlow, rootSvc string) error {
 			md = out
 			stem = filepath.Join(dir, golden.Slug(wf.slug)+"."+golden.Slug(rootSvc)+".system")
 		}
-		if err := os.WriteFile(stem+".flow.md", []byte(md), 0o644); err != nil {
+		if err := os.WriteFile(stem+".flow.md", []byte(render.Fence(md)), 0o644); err != nil {
 			return err
 		}
 		note := ""
@@ -758,7 +758,7 @@ func writeSystemContext(dir string, flows []wholeFlow, contractDirs string, chor
 
 	g := syscontext.Build(traces, statics, syscontext.Options{Choreography: choreography})
 	path := filepath.Join(dir, "system.context.md")
-	if err := os.WriteFile(path, []byte(render.SystemGraph(g)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(render.Fence(render.SystemGraph(g))), 0o644); err != nil {
 		return err
 	}
 	overlay := ""

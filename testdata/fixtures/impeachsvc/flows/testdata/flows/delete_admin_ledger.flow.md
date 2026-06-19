@@ -1,3 +1,4 @@
+```mermaid
 sequenceDiagram
     participant Client as Client
     participant impeachsvc as impeachsvc
@@ -6,3 +7,4 @@ sequenceDiagram
     impeachsvc->>impeachsvc: admin.purge
     impeachsvc->>postgres: DB postgres DELETE ledger
     impeachsvc->>postgres: DB postgres DELETE audit_log
+```

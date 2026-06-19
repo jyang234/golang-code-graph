@@ -71,6 +71,13 @@ flowmap graph testdata/fixtures/impeachsvc >internal/impeach/testdata/impeachsvc
 strip_tool internal/impeach/testdata/impeachsvc.graph.json
 echo "wrote internal/impeach/testdata/impeachsvc.graph.json"
 
+# The human-readable Mermaid flowchart views (*.callgraph.md) are a PURE function
+# of the graph JSON above — their golden harness decodes the committed .graph.json
+# and re-renders, so it needs no flowmap run here. Rebase the views in lockstep so a
+# graph-shape change (or a renderer change) shows up as a reviewable .md diff.
+go test ./internal/static/graphio -run TestCallGraphMermaidGoldens -update >/dev/null
+echo "wrote *.callgraph.md (call-graph flowchart views)"
+
 # Boundary contracts for the `diff` demo. flowmap boundary writes in-place, so we
 # generate, copy to the goldens dir, and drop the in-fixture file. The branch
 # contract is the base with the PUT route removed (breaking), a /healthz route

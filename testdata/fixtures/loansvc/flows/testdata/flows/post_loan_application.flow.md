@@ -1,3 +1,4 @@
+```mermaid
 sequenceDiagram
     participant Client as Client
     participant loansvc as loansvc
@@ -19,3 +20,4 @@ sequenceDiagram
     loansvc->>loansvc: disburse
     loansvc->>postgres: DB postgres INSERT ledger
     loansvc->>postgres: DB postgres INSERT audit_log
+```

@@ -111,8 +111,8 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("flow.md not written: %v", err)
 	}
-	if len(md) == 0 || string(md[:15]) != "sequenceDiagram" {
-		t.Errorf("flow.md is not a Mermaid diagram: %q", md)
+	if !strings.HasPrefix(string(md), "```mermaid\nsequenceDiagram") {
+		t.Errorf("flow.md is not a fenced Mermaid diagram: %q", md)
 	}
 	// A re-compare against the just-written golden passes.
 	if err := Compare(tr, dir, tr.Flow, false); err != nil {

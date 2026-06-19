@@ -1,3 +1,4 @@
+```mermaid
 sequenceDiagram
     participant Client as Client
     participant impeachsvc as impeachsvc
@@ -5,3 +6,4 @@ sequenceDiagram
     Client->>impeachsvc: HTTP POST /loan
     impeachsvc->>impeachsvc: create
     impeachsvc->>postgres: DB postgres INSERT loans
+```
