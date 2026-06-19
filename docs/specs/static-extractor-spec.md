@@ -100,7 +100,9 @@ Per function, from `go/types`: parameters and result types, error-returning, rec
 
 Emitted alongside the graph so a reviewer never operates on false completeness:
 
-- **Unresolved dynamic call sites** — interface/func-value calls not resolved to a concrete callee.
+- **Unresolved dynamic call sites** — interface/func-value calls not resolved to a concrete callee (`UnresolvedCall`; the boundary-level form is `UnresolvedDispatch`).
+- **`ConcurrentDispatch`** — the goroutine sibling of `UnresolvedCall`: an unresolved func-value call whose dispatching instruction is a `go` statement. The concurrency is a verified SSA fact, so the machine states "an asynchronous body is hidden here" rather than the generic "a call is hidden"; same graph-completeness gap, recovered shape.
+- **`ExternalBoundaryCall`** — a hand-off from first-party code into a THIRD-PARTY (non-stdlib) package that is not already a classified boundary effect (HTTP/DB/bus/telemetry): the unclassified external-dependency surface. The callee is KNOWN (its package is named) but its body is outside the analyzed module. **Disclosure-only**: it names a leaf the call graph already stops at, so unlike the unresolved kinds it does NOT blind a `must_not_reach` proof and does NOT enter the frontier/severance metric (`blindspots.Kind.IsDisclosureOnlyFrontier`). Stdlib, classified boundaries, and observability instrumentation (OpenTelemetry built-in, plus `static.externalBoundaryExempt` prefixes) are excluded.
 - **Over-approximation** — interfaces with many implementers where the algorithm added many candidate edges (flag high fan-out).
 - **`reflect`** usage — invisible to the call graph.
 - **`unsafe` / `go:linkname` / cgo** boundaries — can hide edges.
@@ -121,6 +123,20 @@ Fail-closed validation, so a seam can never be a silent or malformed disclosure:
 - **`kind`** defaults to `ImpeachmentSeam` and, when set, must name a recognized `blindspots.Kind`; an unrecognized kind is a config error, never a silent passthrough onto the gated artifact.
 
 The merge dedups by `(kind, site)` keeping the lexically-smallest `Detail` — an **intrinsic** tie-break (never arrival order), so the merged manifest is byte-identical regardless of declaration order. An `ImpeachmentSeam` is **not** part of the gated boundary subset (`Boundary()` excludes it) and is **excluded from the blind-spot ratchet** (`review.newBlindSpots`) and from the frontier reclaim markers (`frontier.Classify`): a ratified seam is a reviewed disclosure, not undisclosed-dynamism drift, so ratcheting on it would make the enactment self-defeating (the seam would re-block the very change that ratified it).
+
+### 7.2 Annotations — human/AI context on a blind spot
+
+A blind spot states *where* the analysis stops; an **annotation** supplies *what* lies beyond it — the behavior behind a vendored SDK, the work inside a goroutine — that the machine cannot see. Configured as `static.annotations`, each a `{site, kind?, note, by?, claim?}`, and folded into the graph's `annotations` section by `graphio.mergeAnnotations`, keyed by `(site, kind)` to the blind-spot manifest above.
+
+**Disclosure-only, by construction.** An annotation never closes a blind spot, changes a count, or moves a verdict — it decorates the disclosure channel (the Mermaid render, and groundwork's `ground`/`triage` cards), nothing more. The merge runs *after* the manifest is final and writes a separate section; no reachability, gate, or count reads it.
+
+Fail-closed and deterministic:
+
+- **`site`** and **`note`** are required (an annotation with nothing to attach to, or no context, is drift — enforced at config load).
+- The `(site, kind)` must match a detected blind spot. `kind` may be omitted when the site has exactly one; a multi-kind site requires it; an annotation matching no blind spot **fails the build** (a stale FQN cannot silently attach to a vanished site). The binding rule is `config.ResolveAnnotationKind`, shared with the read-only MCP `annotate` proposer so a proposal it accepts is one the build accepts.
+- Collisions on `(site, kind)` dedup to the lexically-smallest `(note, by, claim)` — a **total** intrinsic tie-break, never config-array position.
+
+**`claim` (optional)** is a falsifiable, machine-checkable form of the note: the canonical effect key the seam is asserted to hide (`PUBLISH email.sent`, `db DELETE ledger`). Against a behavioral corpus, groundwork's `impeach` lens grades it **CONFIRMED** (the corpus observed that exact effect severed at the site), **UNCONFIRMED** (the seam is witnessed but the claimed effect was not observed — asymmetric: a sample's silence is never proof of absence, so never "false"), or **WITNESSED/UNWITNESSED** for an unclaimed annotation. The grading is audit-only: even a CONFIRMED claim is a stronger *disclosure*, never a proof, and never feeds a gate.
 
 ---
 
