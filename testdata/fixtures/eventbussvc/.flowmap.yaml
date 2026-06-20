@@ -1,0 +1,6 @@
+service: eventbussvc
+classify:
+  busPublish:
+    - "example.com/eventbussvc/bus#Publish"
+  db:
+    - "database/sql"

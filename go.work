@@ -9,6 +9,7 @@ use (
 	./testdata/fixtures/loansvc
 	./testdata/fixtures/oapisvc
 	./testdata/fixtures/strictsvc
+	./testdata/fixtures/eventbussvc
 	./testdata/fixtures/impeachsvc
 	./testdata/fixtures/dispatchsvc
 	./testdata/fixtures/reflectsvc
