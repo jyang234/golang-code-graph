@@ -58,6 +58,12 @@ type MermaidOptions struct {
 	// touches the gated JSON manifest, only this human-readable view. The zero value
 	// keeps the denoise-with-a-count default.
 	ShowAllBlindSpots bool
+
+	// pinRoot, when set, force-keeps that one FQN against tier-collapse — the explicit
+	// --root node, which may itself be a plumbing-tier dispatcher (a pure decode/dispatch
+	// shim with no effect of its own). Set in-package by MermaidRootedAt; not a CLI knob
+	// (you cannot pin a root without rooting).
+	pinRoot string
 }
 
 // Mermaid renders g as a Mermaid flowchart per opts. The output begins with
@@ -270,17 +276,44 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 		emitsEffect[site] = true
 	}
 
+	// An explicit --root is a user selection: pin it into view even when it is
+	// plumbing-tier (a pure decode/dispatch shim with no effect of its own), so its
+	// subtree never renders parentless — collapsing the rooted node drops its outgoing
+	// edges and orphans the branches it dispatches to. Same mechanism mermaid_diff uses
+	// to force-keep the very nodes it is diffing (the force arg keepNode already takes).
+	var force map[string]bool
+	if opts.pinRoot != "" {
+		force = map[string]bool{opts.pinRoot: true}
+	}
+
 	// Pass A: assign ids to the first-party nodes we will show.
 	nodeID := make(map[string]string, len(g.Nodes))
 	shown := make(map[string]bool, len(g.Nodes))
 	hidden := 0
 	for _, n := range g.Nodes {
-		if !keepNode(n, opts.MaxTier, emitsEffect, nil) {
+		if !keepNode(n, opts.MaxTier, emitsEffect, force) {
 			hidden++
 			continue
 		}
 		nodeID[n.FQN] = ids.get(frontier.ShortName(n.FQN))
 		shown[n.FQN] = true
+	}
+
+	// Disclose the pin only when it actually RESCUED the root from collapse — i.e. the
+	// root would have been hidden WITHOUT the pin (above tier AND not an effect emitter).
+	// keepNode(..., nil) is exactly that "would this be kept" test, reused so the
+	// keep-decision stays one source of truth: the note never misfires for a
+	// plumbing-tier root that was already kept as an effect-bearing site (a dispatcher
+	// that itself sends). Never a silent change to what the default shows.
+	if opts.pinRoot != "" {
+		for _, n := range g.Nodes {
+			if n.FQN == opts.pinRoot {
+				if !keepNode(n, opts.MaxTier, emitsEffect, nil) {
+					notes = append(notes, "root "+frontier.ShortName(n.FQN)+" is plumbing-tier (pure dispatcher); pinned into view")
+				}
+				break
+			}
+		}
 	}
 
 	bIDs, bnodes := buildBoundaryNodes(g, ids, shown)

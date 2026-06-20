@@ -110,6 +110,7 @@ func (g *Graph) MermaidRootedAt(root string, opts MermaidOptions) (string, bool)
 		notes = append(notes, plural(droppedFrontier, "frontier marker")+
 			" outside this handler's reach shown only in the whole-graph view")
 	}
+	opts.pinRoot = rootFn
 	return sub.mermaid(opts, notes), true
 }
 
