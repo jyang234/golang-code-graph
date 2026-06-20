@@ -125,6 +125,7 @@ fast = {
     "fqn": f"{H}.GetUserFast",
     "sig": "func (*handler.Server).GetUserFast(w http.ResponseWriter, r *http.Request)",
     "tier": 1,
+    "package": "example.com/layeredsvc/internal/handler",
 }
 
 def branch(target, out):

@@ -8,271 +8,320 @@
       "fqn": "(*example.com/obligsvc/internal/store.Store).Acquire",
       "sig": "func (*store.Store).Acquire() error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/obligsvc/internal/store.Store).BeginTx",
       "sig": "func (*store.Store).BeginTx() (*store.Tx, error)",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/obligsvc/internal/store.Store).BeginTxC",
       "sig": "func (*store.Store).BeginTxC() (*store.Tx, *store.TxError)",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/obligsvc/internal/store.Store).Release",
       "sig": "func (*store.Store).Release()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/store"
     },
     {
       "fqn": "(*example.com/obligsvc/internal/store.Tx).Commit",
       "sig": "func (*store.Tx).Commit() error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/obligsvc/internal/store.Tx).Rollback",
       "sig": "func (*store.Tx).Rollback()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/store"
     },
     {
       "fqn": "example.com/obligsvc.main",
       "sig": "func main.main()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc"
     },
     {
       "fqn": "example.com/obligsvc.main$1",
       "sig": "func(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.CallTaken",
       "sig": "func app.CallTaken()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DeferredPublish",
       "sig": "func app.DeferredPublish()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DeferredPublishAudited",
       "sig": "func app.DeferredPublishAudited()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.Disburse",
       "sig": "func app.Disburse(approved bool)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DisburseAndCharge",
       "sig": "func app.DisburseAndCharge(id string) error",
       "tier": 1,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DisburseAndChargeRisky",
       "sig": "func app.DisburseAndChargeRisky(id string, approved bool) error",
       "tier": 1,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DisburseRacy",
       "sig": "func app.DisburseRacy(approved bool)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DisburseViaHelper",
       "sig": "func app.DisburseViaHelper(id string) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.DispatchSend",
       "sig": "func app.DispatchSend() error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.HoldSem",
       "sig": "func app.HoldSem(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.OpenSend",
       "sig": "func app.OpenSend()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.Transfer",
       "sig": "func app.Transfer(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferAnnotate",
       "sig": "func app.TransferAnnotate(s *store.Store) (err error)",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferAnnotate$1",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferAnnotate$2",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferClosure",
       "sig": "func app.TransferClosure(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferClosure$1",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferConcrete",
       "sig": "func app.TransferConcrete(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferConcrete$1",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferDefer",
       "sig": "func app.TransferDefer(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferDeferHelper",
       "sig": "func app.TransferDeferHelper(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferMaybeHelper",
       "sig": "func app.TransferMaybeHelper(s *store.Store, ok bool) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferOwn",
       "sig": "func app.TransferOwn(s *store.Store) (*store.Tx, error)",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferRecoverNamed",
       "sig": "func app.TransferRecoverNamed(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.TransferViaHelper",
       "sig": "func app.TransferViaHelper(s *store.Store) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.annotate",
       "sig": "func app.annotate(err error) error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.closeTx",
       "sig": "func app.closeTx(tx *store.Tx)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.credit",
       "sig": "func app.credit(t *store.Tx) error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.debit",
       "sig": "func app.debit(t *store.Tx) error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.finishMaybe",
       "sig": "func app.finishMaybe(tx *store.Tx, ok bool)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.finishTx",
       "sig": "func app.finishTx(tx *store.Tx, err error) error",
       "tier": 2,
+      "package": "example.com/obligsvc/internal/app",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/app.handle",
       "sig": "func app.handle()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.publishApproved",
       "sig": "func app.publishApproved()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.sendFanout",
       "sig": "func app.sendFanout()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.sendFanoutOpen",
       "sig": "func app.sendFanoutOpen()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/app.sendFanoutTaken",
       "sig": "func app.sendFanoutTaken()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/app"
     },
     {
       "fqn": "example.com/obligsvc/internal/audit.Write",
       "sig": "func audit.Write(event string)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/audit"
     },
     {
       "fqn": "example.com/obligsvc/internal/billing.Charge",
       "sig": "func billing.Charge(id string) error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/billing",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/bus.Publish",
       "sig": "func bus.Publish(event string)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/obligsvc/internal/bus"
     },
     {
       "fqn": "example.com/obligsvc/internal/gate.Validate",
       "sig": "func gate.Validate() error",
       "tier": 3,
+      "package": "example.com/obligsvc/internal/gate",
       "fallible": true
     },
     {
       "fqn": "example.com/obligsvc/internal/outbound.Send",
       "sig": "func outbound.Send(event string)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/obligsvc/internal/outbound"
     }
   ],
   "edges": [

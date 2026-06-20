@@ -219,9 +219,15 @@ type Obligation struct {
 
 // Node is one first-party function.
 type Node struct {
-	FQN      string `json:"fqn"`
-	Sig      string `json:"sig"`
-	Tier     int    `json:"tier"`
+	FQN  string `json:"fqn"`
+	Sig  string `json:"sig"`
+	Tier int    `json:"tier"`
+	// Package is the producer's typed import path for the node's defining package
+	// (empty for a synthetic node, and for a graph built before the field existed).
+	// Decoded on this side of the trust boundary like every other field —
+	// DisallowUnknownFields would reject it otherwise. Disclosure-only: no verdict,
+	// count, layer assignment, or reachability computation reads it.
+	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
 }
 

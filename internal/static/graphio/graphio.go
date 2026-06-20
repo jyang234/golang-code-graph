@@ -180,9 +180,19 @@ type Entrypoint struct {
 
 // Node is one first-party function.
 type Node struct {
-	FQN      string `json:"fqn"`
-	Sig      string `json:"sig"`
-	Tier     int    `json:"tier"`
+	FQN  string `json:"fqn"`
+	Sig  string `json:"sig"`
+	Tier int    `json:"tier"`
+	// Package is the node's defining Go import path — the typed package fact a
+	// consumer would otherwise have to recover by string-splitting FQN (a display
+	// string: paren-wrapped receivers, "$1" closure suffixes, generics, promoted
+	// methods), where the first-party/test/external distinction is a typing fact a
+	// parse cannot reliably reconstruct. Pure function of the node (features.PkgPath
+	// of fn.Pkg) and disclosure-only — same trust class as BlindSpot.Package: no
+	// verdict, count, edge, tier, or reachability computation reads it, so it cannot
+	// move a pole. Empty only for a synthetic node with no defining package (a
+	// wrapper with nil fn.Pkg); omitempty spares exactly those.
+	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
 }
 
@@ -543,6 +553,7 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 			FQN:      fn.RelString(nil),
 			Sig:      signatures.Of(fn),
 			Tier:     nodeTier(ext, fn, rootFns[fn], nodeEdges),
+			Package:  features.PkgPath(fn),
 			Fallible: fallible(fn),
 		})
 		g.Edges = append(g.Edges, nodeEdges...)

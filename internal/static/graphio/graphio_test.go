@@ -94,6 +94,39 @@ func TestGraphHasFirstPartyNodesWithSignatures(t *testing.T) {
 	}
 }
 
+// TestNodePackageIsTypedImportPath proves every first-party node carries its
+// defining import path as a typed field, so a consumer never has to recover the
+// package by string-splitting the display FQN. A paren-wrapped receiver-method
+// node and a plain package-function node both resolve to the import path of their
+// defining package — the value the FQN-parse heuristic cannot get right across
+// receivers, closures, and generics.
+func TestNodePackageIsTypedImportPath(t *testing.T) {
+	g, err := graphio.Build(analyzeFixture(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFQN := map[string]graphio.Node{}
+	for _, n := range g.Nodes {
+		byFQN[n.FQN] = n
+	}
+	// A receiver-method node: FQN is paren-wrapped, Package is the bare import path.
+	if got := byFQN["(*example.com/loansvc/internal/handler.App).Create"].Package; got != "example.com/loansvc/internal/handler" {
+		t.Errorf("receiver-method node Package = %q, want the handler import path", got)
+	}
+	// A package-level function node.
+	if got := byFQN["example.com/loansvc/internal/store.New"].Package; got != "example.com/loansvc/internal/store" {
+		t.Errorf("package-function node Package = %q, want the store import path", got)
+	}
+	// Every first-party node carries a non-empty package — the property a parse
+	// cannot guarantee. (All graph nodes are first-party functions with a defining
+	// package; a synthetic wrapper with nil fn.Pkg is not in the graph.)
+	for _, n := range g.Nodes {
+		if n.Package == "" {
+			t.Errorf("node %q carries no Package", n.FQN)
+		}
+	}
+}
+
 // TestNodeTierFromOutgoingEdges proves a non-root function is tiered by what it
 // does, not by what it is: a function that publishes surfaces as tier 1 and a
 // pure-compute constructor stays tier 3. Before node-tier-from-edges, every

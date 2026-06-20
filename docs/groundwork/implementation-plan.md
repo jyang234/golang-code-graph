@@ -18,7 +18,7 @@ Read the design record first: [`distilled-learnings.md`](distilled-learnings.md)
 `groundwork` consumes two artifacts flowmap already emits as canonical JSON:
 
 - **`flowmap graph <dir>`** → the call-graph view:
-  - `nodes[]`: `{fqn, sig, tier, fallible}`
+  - `nodes[]`: `{fqn, sig, tier, package, fallible}`
   - `edges[]`: `{from, to, tier, boundary?, concurrent?}` where
     `boundary ∈ {outbound-sync, outbound-async, inbound}` and `to` is either an
     FQN or a typed boundary node — `boundary:bus PUBLISH loan.approved`,

@@ -83,7 +83,7 @@ graph JSON between them:
 
 - **flowmap is the producer.** `flowmap graph <service>` builds the call graph
   (`go/packages → go/ssa → go/callgraph`) and emits it as canonical JSON — nodes
-  (`fqn`, `sig`, `tier`, `fallible`), edges (caller→callee, with `boundary` and
+  (`fqn`, `sig`, `tier`, `package`, `fallible`), edges (caller→callee, with `boundary` and
   `concurrent` flags), a blind-spot manifest, and the level-2 disclosure
   sections computed from each function's CFG and the discovered roots:
   `obligations` (path-obligation verdicts), `effect_order` (partial-effect
@@ -1085,7 +1085,7 @@ it. Top-level sections:
 
 | Section | What it is | Notes |
 |---|---|---|
-| `nodes[]` | `{fqn, sig, tier, fallible}` per first-party function | sorted by fqn |
+| `nodes[]` | `{fqn, sig, tier, package?, fallible}` per first-party function | sorted by fqn; `package` is the node's defining import path (the typed package fact, not an FQN parse), disclosure-only |
 | `edges[]` | `{from, to, tier, boundary?, concurrent?, via?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed; `via` names the reclaimer (`flowmap --reclaim`) that recovered the edge at a dispatch seam — a verdict over it self-discloses as reclaim-informed |
 | `blind_spots[]` | `{kind, site, detail, severity?, package?}` — where the graph's knowledge stops | the soundness frontier; `severity` (`effect-bearing`\|`trivial`) and `package` ride `ExternalBoundaryCall` only — the signal/noise tier, disclosure-only |
 | `obligations[]` | `{rule, kind, fn, site, status, detail}` per anchored site | statuses are an open vocabulary: **fail closed on ones you don't recognize** |
@@ -1120,7 +1120,7 @@ encodes a deliberate honesty or determinism decision, not just a name.
   every edge one possible call. Computed from source, with no tests run and no
   instrumentation. The substrate everything else composes from.
 - **node** — one first-party function in the graph, carrying `fqn`, `sig`,
-  `tier`, and `fallible`.
+  `tier`, `package` (its defining import path), and `fallible`.
 - **edge** — one possible caller→callee call, optionally flagged `boundary`
   (touches the outside world), `concurrent` (crosses a goroutine spawn), or
   `via` (recovered by a reclaimer).
