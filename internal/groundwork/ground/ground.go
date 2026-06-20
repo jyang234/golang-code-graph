@@ -223,16 +223,9 @@ func (c Card) Render() string {
 	section("Reachable boundary effects", c.Effects)
 	if len(c.BlindSpots) > 0 {
 		fmt.Fprintf(&b, "🕳️  Blind spots touching this card's claims (%d)\n", len(c.BlindSpots))
-		shown := map[[2]string]bool{} // print a seam's annotation under its first row only
-		for _, s := range c.BlindSpots {
-			fmt.Fprintf(&b, "- %s %s\n", s.Kind, s.Site)
-			if key := [2]string{s.Site, s.Kind}; !shown[key] {
-				shown[key] = true
-				for _, a := range graph.MatchAnnotations(c.Annotations, s.Site, s.Kind) {
-					b.WriteString(graph.AnnotationLine(a))
-				}
-			}
-		}
+		graph.WriteBlindSpots(&b, c.BlindSpots, c.Annotations, func(s graph.BlindSpot) string {
+			return "- " + s.Kind + " " + s.Site
+		})
 	}
 	return b.String()
 }

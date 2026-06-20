@@ -199,28 +199,6 @@ const (
 	SeverityTrivial Severity = "trivial"
 )
 
-// externalPackagePrefix is the literal Detail prefix Detect writes before an
-// ExternalBoundaryCall's target package; ExternalPackage parses it back. Kept beside
-// the writer so the two cannot drift (CLAUDE.md: one source of truth).
-const externalPackagePrefix = "hands off to external package "
-
-// ExternalPackage returns the third-party package path an ExternalBoundaryCall's
-// Detail names, or "" when detail is not in that form. Render-only: it recovers for
-// display the package Detect embedded in the prose, so a boundary disclosure node can
-// be labeled with its dependency (§21.B). The structural tier (BlindSpot.Severity) is
-// the reliable distinguisher; this is the human-readable enrichment beside it, so a
-// parse miss degrades to the tier alone rather than a silent collision.
-func ExternalPackage(detail string) string {
-	rest, ok := strings.CutPrefix(detail, externalPackagePrefix)
-	if !ok {
-		return ""
-	}
-	if i := strings.IndexByte(rest, ';'); i >= 0 {
-		rest = rest[:i]
-	}
-	return strings.TrimSpace(rest)
-}
-
 // BlindSpot is one disclosed gap. Fields are JSON-tagged for the gated artifact.
 type BlindSpot struct {
 	Kind   Kind   `json:"kind"`
@@ -228,10 +206,15 @@ type BlindSpot struct {
 	Detail string `json:"detail"`
 	// Severity is the signal/noise tier, set ONLY for ExternalBoundaryCall (empty for
 	// every other kind, and for an EBC from a graph built before the tier existed).
-	// Disclosure-only — see the Severity type. It is a pure function of the target
-	// package (which Detail names), so it never adds an independent ordering dimension
-	// to SortBlindSpots, and two spots equal on (Kind, Site, Detail) are equal on it.
+	// Disclosure-only — see the Severity type. It is a pure function of (Kind, Site,
+	// Package), so it never adds an independent ordering dimension to SortBlindSpots, and
+	// two spots equal on those are equal on it.
 	Severity Severity `json:"severity,omitempty"`
+	// Package is the third-party package an ExternalBoundaryCall hands off to, carried
+	// as STRUCTURED data (not re-parsed from Detail prose) so a renderer can label the
+	// boundary node with its dependency (§21.B). Set only for ExternalBoundaryCall; the
+	// same name also appears in Detail's human prose. Empty for every other kind.
+	Package string `json:"package,omitempty"`
 }
 
 // Boundary returns the gated boundary subset of a manifest.
@@ -325,11 +308,13 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 				if hints.IsExternalBoundaryTrivial(callee) {
 					sev = SeverityTrivial
 				}
+				pkg := features.PkgPath(callee)
 				out = append(out, BlindSpot{
 					Kind:     ExternalBoundaryCall,
 					Site:     site,
-					Detail:   externalPackagePrefix + features.PkgPath(callee) + "; its behavior is outside the analyzed module and invisible to the static call graph",
+					Detail:   "hands off to external package " + pkg + "; its behavior is outside the analyzed module and invisible to the static call graph",
 					Severity: sev,
+					Package:  pkg,
 				})
 			}
 			if e.Site != nil {

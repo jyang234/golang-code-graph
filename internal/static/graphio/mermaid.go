@@ -123,7 +123,7 @@ func blindSpotLabel(b blindspots.BlindSpot) string {
 		return base + "<br/>blind spot"
 	}
 	var parts []string
-	if pkg := frontier.ShortName(blindspots.ExternalPackage(b.Detail)); pkg != "" {
+	if pkg := shortPkg(b.Package); pkg != "" {
 		parts = append(parts, "→ "+pkg)
 	}
 	if b.Severity != "" {
@@ -133,6 +133,22 @@ func blindSpotLabel(b blindspots.BlindSpot) string {
 		return base + "<br/>blind spot"
 	}
 	return base + "<br/>" + mermaidText(strings.Join(parts, " · "))
+}
+
+// shortPkg renders a package path compactly for a label: its last two path segments
+// ("github.com/aws/aws-sdk-go-v2/service/sns" → "service/sns", "golang.org/x/sync/
+// errgroup" → "sync/errgroup"). Two segments, not one, so two dependencies that share
+// only a leaf name (".../service/sns" vs ".../other/sns") stay distinguishable —
+// frontier.ShortName (last segment only) would collapse them. Returns "" for "".
+func shortPkg(path string) string {
+	if path == "" {
+		return ""
+	}
+	segs := strings.Split(path, "/")
+	if len(segs) <= 2 {
+		return path
+	}
+	return strings.Join(segs[len(segs)-2:], "/")
 }
 
 func buildDiscs(g *Graph, ids *idAlloc, nodeID map[string]string) []disc {

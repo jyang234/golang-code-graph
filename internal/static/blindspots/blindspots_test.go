@@ -415,7 +415,7 @@ func TestExternalBoundaryCallSeverityTier(t *testing.T) {
 		if b.Severity != blindspots.SeverityEffectBearing && b.Severity != blindspots.SeverityTrivial {
 			t.Errorf("EBC must carry a tier, got %q at %s", b.Severity, b.Site)
 		}
-		if blindspots.ExternalPackage(b.Detail) == "golang.org/x/sync/errgroup" {
+		if b.Package == "golang.org/x/sync/errgroup" {
 			sawErrgroup = true
 			if b.Severity != blindspots.SeverityEffectBearing {
 				t.Errorf("errgroup orchestrates effect-bearing closures; want effect-bearing, got %q", b.Severity)
@@ -435,29 +435,33 @@ func TestExternalBoundaryCallSeverityTier(t *testing.T) {
 		t.Errorf("trivial tier must not change the EBC count (disclosure-only): base=%d tagged=%d", len(base), len(tagged))
 	}
 	for _, b := range tagged {
-		if blindspots.ExternalPackage(b.Detail) == "golang.org/x/sync/errgroup" && b.Severity != blindspots.SeverityTrivial {
+		if b.Package == "golang.org/x/sync/errgroup" && b.Severity != blindspots.SeverityTrivial {
 			t.Errorf("config trivial prefix should tag errgroup trivial, got %q", b.Severity)
 		}
 	}
 }
 
-// TestExternalPackageRoundTrips pins the Detail⇄package parse used to label boundary
-// nodes (§21.B): ExternalPackage recovers exactly what Detect embedded, and rejects a
-// Detail of another shape rather than returning a bogus package.
-func TestExternalPackageRoundTrips(t *testing.T) {
+// TestExternalPackageStructured pins §21.B: the target package rides as STRUCTURED
+// data on the blind spot (Package), set for every ExternalBoundaryCall and empty for
+// every other kind, and the same path also appears in the human Detail prose — so a
+// renderer labels the boundary node from the field, never by parsing the prose.
+func TestExternalPackageStructured(t *testing.T) {
 	res, err := statictest.Analyze()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, b := range blindspots.Detect(res, features.NewHintSet(res.Config)) {
 		if b.Kind != blindspots.ExternalBoundaryCall {
-			if got := blindspots.ExternalPackage(b.Detail); got != "" {
-				t.Errorf("ExternalPackage must return \"\" for a %s Detail, got %q", b.Kind, got)
+			if b.Package != "" {
+				t.Errorf("%s blind spot must carry no Package, got %q", b.Kind, b.Package)
 			}
 			continue
 		}
-		if got := blindspots.ExternalPackage(b.Detail); got == "" || strings.Contains(got, ";") {
-			t.Errorf("ExternalPackage(%q) = %q, want the bare package path", b.Detail, got)
+		if b.Package == "" {
+			t.Errorf("ExternalBoundaryCall at %s must carry a Package", b.Site)
+		}
+		if !strings.Contains(b.Detail, b.Package) {
+			t.Errorf("Detail %q must name the structured Package %q", b.Detail, b.Package)
 		}
 	}
 }

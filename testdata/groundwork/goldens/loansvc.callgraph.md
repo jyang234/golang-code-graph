@@ -36,7 +36,7 @@ flowchart LR
     db_db_SELECT_applicants[("db SELECT applicants")]:::db
     db_db_SELECT_loans[("db SELECT loans")]:::db
     bus_bus_CONSUME_payment_settled{{"bus CONSUME payment.settled"}}:::bus
-    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>→ errgroup · effect-bearing"]):::blind
+    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>→ sync/errgroup · effect-bearing"]):::blind
     frontier_dynamic_bus(["⌖ dynamic-bus<br/>frontier A"]):::blind
     frontier_severed_closure(["⌖ severed-closure<br/>frontier A"]):::blind
     frontier_severed_closure1(["⌖ severed-closure<br/>frontier A"]):::blind

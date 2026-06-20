@@ -127,6 +127,27 @@ func AnnotationLine(a Annotation) string {
 	return line + "\n"
 }
 
+// WriteBlindSpots writes each blind spot in spots — its row via rowFmt (no trailing
+// newline; this adds one) — and then, once per (Site, Kind) seam under its first row,
+// that seam's annotation lines from anns. It is the single home of the "annotation
+// under the seam's first row, deduped by (Site, Kind)" rule that the reach, ground, and
+// impact lenses all render, so the three cannot drift (CLAUDE.md: one source of truth);
+// only the per-row text, supplied by rowFmt, differs between them.
+func WriteBlindSpots(w io.Writer, spots []BlindSpot, anns []Annotation, rowFmt func(BlindSpot) string) {
+	shown := map[[2]string]bool{}
+	for _, s := range spots {
+		_, _ = fmt.Fprintln(w, rowFmt(s))
+		key := [2]string{s.Site, s.Kind}
+		if shown[key] {
+			continue
+		}
+		shown[key] = true
+		for _, a := range MatchAnnotations(anns, s.Site, s.Kind) {
+			_, _ = io.WriteString(w, AnnotationLine(a))
+		}
+	}
+}
+
 // FrontierSection mirrors flowmap's disclosed frontier: the per-site markers, the
 // aggregate count of routes whose severance could not be confirmed (so a consumer
 // cannot misread a 0 attribution loss as a proof of no severance), and the coverage
@@ -243,6 +264,10 @@ type BlindSpot struct {
 	// the spot so a reader separates the effect-bearing seams from the framework noise.
 	// Disclosure-only: no verdict, count, or reachability computation reads it (§21.A).
 	Severity string `json:"severity,omitempty"`
+	// Package is the third-party package an ExternalBoundaryCall hands off to (empty for
+	// other kinds). Decoded on this side of the trust boundary like every other field so
+	// the strict reader accepts it; disclosure-only.
+	Package string `json:"package,omitempty"`
 }
 
 // externalBoundaryKind is the wire Kind value of an ExternalBoundaryCall blind spot.

@@ -472,7 +472,8 @@
       "kind": "ExternalBoundaryCall",
       "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
       "detail": "hands off to external package golang.org/x/sync/errgroup; its behavior is outside the analyzed module and invisible to the static call graph",
-      "severity": "effect-bearing"
+      "severity": "effect-bearing",
+      "package": "golang.org/x/sync/errgroup"
     }
   ],
   "entrypoints": [

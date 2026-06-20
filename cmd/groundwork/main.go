@@ -413,21 +413,13 @@ func cmdReach(args []string) error {
 		// bare "N" is readable. Annotations are keyed by (site, kind); print a seam's
 		// context once, under its first row, exactly as ground.Render does.
 		fmt.Printf("blind spots on this function: %d%s\n", len(bs), graph.EBCTierNote(bs))
-		anns := ix.DistinctAnnotationsAt(bs)
-		shown := map[[2]string]bool{}
-		for _, b := range bs {
-			line := "  ⚠ " + b.Kind + " — " + b.Detail
+		graph.WriteBlindSpots(os.Stdout, bs, ix.DistinctAnnotationsAt(bs), func(b graph.BlindSpot) string {
+			row := "  ⚠ " + b.Kind + " — " + b.Detail
 			if b.Severity != "" {
-				line += " [" + b.Severity + "]"
+				row += " [" + b.Severity + "]"
 			}
-			fmt.Println(line)
-			if key := [2]string{b.Site, b.Kind}; !shown[key] {
-				shown[key] = true
-				for _, a := range graph.MatchAnnotations(anns, b.Site, b.Kind) {
-					fmt.Print(graph.AnnotationLine(a))
-				}
-			}
-		}
+			return row
+		})
 	}
 	return nil
 }

@@ -87,6 +87,7 @@ func TestMermaidRootedCarriesAnnotationsAndBoundaryLabel(t *testing.T) {
 		Site:     eval, // reachable from POST /create (create → eval)
 		Detail:   "hands off to external package github.com/customerio/go-customerio; its behavior is outside the analyzed module and invisible to the static call graph",
 		Severity: blindspots.SeverityEffectBearing,
+		Package:  "github.com/customerio/go-customerio",
 	}}
 	g.Annotations = []Annotation{{Site: eval, Kind: "ExternalBoundaryCall", Note: "POSTs to track.customer.io", By: "dev@x"}}
 

@@ -17,7 +17,7 @@ flowchart LR
     bus_bus_PUBLISH__dynamic_{{"bus PUBLISH &lt;dynamic&gt;"}}:::bus
     db_db_INSERT_audit_log[("db INSERT audit_log")]:::db
     db_db_INSERT_ledger[("db INSERT ledger")]:::db
-    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>→ errgroup · effect-bearing"]):::blind
+    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>→ sync/errgroup · effect-bearing"]):::blind
     frontier_dynamic_bus(["⌖ dynamic-bus<br/>frontier A"]):::blind
     frontier_severed_closure(["⌖ severed-closure<br/>frontier A"]):::blind
     frontier_severed_closure1(["⌖ severed-closure<br/>frontier A"]):::blind
