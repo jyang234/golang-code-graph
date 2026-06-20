@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	"github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
@@ -165,5 +166,42 @@ func TestApplyReclaimersClosesSeam(t *testing.T) {
 				t.Errorf("reclaimed graph must carry no seam marker, got %+v", m)
 			}
 		}
+	}
+}
+
+// TestStrictServerReconnectedButDisclosed pins the duality a C3 consumer asks about:
+// after --reclaim, the strict-server dispatch→closure edge is RECONNECTED (the frontier
+// is closed, TestApplyReclaimersClosesSeam) yet a residual func() blind spot still
+// rides the manifest — the per-route MiddlewareFunc application over the (nil-in-prod)
+// HandlerMiddlewares slice. That residual is correctly LEFT AS SIGNAL (empty Severity,
+// not tiered trivial): a middleware value is read from a field assigned elsewhere and
+// CAN bear an effect, so demoting it would over-claim benignity. Its Detail names the
+// DEFINED type (api.MiddlewareFunc), so a census can group these framework-dispatch
+// seams by type without the producer pre-judging them. The component edge is recovered;
+// the disclosure is honest about what the middleware hop still hides.
+func TestStrictServerReconnectedButDisclosed(t *testing.T) {
+	res := analyzeFixture(t, "strictsvc")
+	g, err := graphio.Build(res, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if added := graphio.ApplyReclaimers(g, res); added != 3 {
+		t.Fatalf("want 3 edges folded in, got %d", added)
+	}
+	var residual int
+	for _, b := range g.BlindSpots {
+		if b.Kind != blindspots.UnresolvedCall {
+			continue
+		}
+		if !strings.Contains(b.Detail, "MiddlewareFunc") {
+			t.Errorf("residual strict-server seam should name the defined MiddlewareFunc type, got %q", b.Detail)
+		}
+		if b.Severity == blindspots.SeverityTrivial {
+			t.Errorf("a middleware-application seam can bear an effect; it must NOT be tiered trivial, got %q", b.Severity)
+		}
+		residual++
+	}
+	if residual == 0 {
+		t.Fatal("strict-server reclaim should reconnect the closure yet still DISCLOSE the residual middleware seam; found none")
 	}
 }

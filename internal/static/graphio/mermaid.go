@@ -140,6 +140,13 @@ func annotationNotes(g *Graph) []string {
 func blindSpotLabel(b blindspots.BlindSpot) string {
 	base := "⊥ " + mermaidText(string(b.Kind))
 	if b.Kind != blindspots.ExternalBoundaryCall {
+		// A func() dispatch seam tagged with a plumbing tier (a trivial
+		// context.CancelFunc) names the tier, so a --show-plumbing render is honest about
+		// why it was collapsible rather than showing a bare label; an untiered seam keeps
+		// the plain label.
+		if b.Severity != "" {
+			return base + "<br/>" + mermaidText(string(b.Severity))
+		}
 		return base + "<br/>blind spot"
 	}
 	var parts []string

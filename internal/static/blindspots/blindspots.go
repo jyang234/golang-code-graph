@@ -12,6 +12,7 @@ package blindspots
 
 import (
 	"fmt"
+	"go/types"
 	"sort"
 	"strings"
 
@@ -211,12 +212,15 @@ func (k Kind) IsDisclosureOnlyFrontier() bool {
 	return k == ExternalBoundaryCall
 }
 
-// Severity is the signal/noise TIER an ExternalBoundaryCall carries. It exists so a
-// bare blind-spot count (dominated ~85% by framework/utility handoffs) is readable:
-// a reviewer separates the effect-bearing seams from the pure-compute plumbing
-// without re-deriving it (§21.A). It is DISCLOSURE-ONLY — no verdict, ratchet, or
-// reachability computation reads it; it (mis)prioritizes attention, never gates, and
-// a trivial-tagged spot is still detected and counted.
+// Severity is the signal/noise TIER a blind spot carries. It exists so a bare
+// blind-spot count (dominated by framework/utility handoffs and stdlib plumbing) is
+// readable: a reviewer separates the effect-bearing seams from the pure-compute
+// plumbing without re-deriving it (§21.A). Carried by every ExternalBoundaryCall, and
+// — for the same de-noising reason — by the benign subset of the func() dispatch
+// channel (a context.CancelFunc UnresolvedCall/ConcurrentDispatch tagged trivial). It
+// is DISCLOSURE-ONLY — no verdict, ratchet, or reachability computation reads it; it
+// (mis)prioritizes attention, never gates, and a trivial-tagged spot is still detected
+// and counted.
 type Severity string
 
 const (
@@ -227,11 +231,12 @@ const (
 	// stays in the signal tier rather than being silently demoted (fail toward
 	// disclosure).
 	SeverityEffectBearing Severity = "effect-bearing"
-	// SeverityTrivial tags an ExternalBoundaryCall into pure-compute / framework
-	// plumbing (uuid generation, an HTTP router's helpers, codegen runtime) — disclosed
-	// for completeness but not the effect surface. Driven by the known-benign set
-	// (HintSet.IsExternalBoundaryTrivial: a built-in default plus any
-	// static.externalBoundaryTrivial prefixes).
+	// SeverityTrivial tags pure-compute / framework / stdlib plumbing — disclosed for
+	// completeness but not the effect surface. For an ExternalBoundaryCall it is the
+	// known-benign dependency set (HintSet.IsExternalBoundaryTrivial: a built-in default
+	// plus any static.externalBoundaryTrivial prefixes); for a func() dispatch seam it is
+	// a recognized benign stdlib func type (features.NamedTypeIs against context.CancelFunc
+	// — stdlib context teardown that reaches no first-party code).
 	SeverityTrivial Severity = "trivial"
 )
 
@@ -240,11 +245,16 @@ type BlindSpot struct {
 	Kind   Kind   `json:"kind"`
 	Site   string `json:"site"`
 	Detail string `json:"detail"`
-	// Severity is the signal/noise tier, set ONLY for ExternalBoundaryCall (empty for
-	// every other kind, and for an EBC from a graph built before the tier existed).
-	// Disclosure-only — see the Severity type. It is a pure function of (Kind, Site,
-	// Package), so it never adds an independent ordering dimension to SortBlindSpots, and
-	// two spots equal on those are equal on it.
+	// Severity is the signal/noise tier. It is set for every ExternalBoundaryCall, and
+	// for the benign subset of the func() dispatch channel (an UnresolvedCall /
+	// ConcurrentDispatch whose callee's defined type is a recognized benign stdlib func
+	// — context.CancelFunc — is tagged trivial). It is empty for every other kind, for
+	// an effect-bearing-or-unclassified func() seam, and for an EBC from a graph built
+	// before the tier existed. Disclosure-only — see the Severity type. It is a pure
+	// function of (Kind, Site, Package) for an EBC and of (Kind, Site, Detail) for a
+	// func() seam (the callee type that drives it is named in Detail), so it never adds
+	// an independent ordering dimension to SortBlindSpots: two spots equal on the sort
+	// key are equal on it.
 	Severity Severity `json:"severity,omitempty"`
 	// Package is the third-party package an ExternalBoundaryCall hands off to, carried
 	// as STRUCTURED data (not re-parsed from Detail prose) so a renderer can label the
@@ -407,10 +417,15 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 // Each gap is reported with the shape the SSA proves rather than one flattened
 // kind: a `go` dispatch (*ssa.Go, read via the shared features.IsConcurrentSite)
 // is a ConcurrentDispatch — the machine states the hidden body is asynchronous —
-// and every other zero-resolution func value is an UnresolvedCall. Both carry the
-// func value's signature when known, so even the irreducible residue names its
-// type instead of "unknown". This only re-labels sites already flagged; it adds
-// and removes none, so reachability and every verdict are unchanged.
+// and every other zero-resolution func value is an UnresolvedCall. Both name the
+// func value's DEFINED type when it has one (e.g. "context.CancelFunc"), else its
+// bare signature ("func()"), so even the irreducible residue names its type instead
+// of "unknown" — and so the benign-stdlib tier below stays a pure function of the
+// (Kind, Site, Detail) sort key. A recognized benign stdlib func type (currently
+// context.CancelFunc) is tagged Severity trivial — disclosure hygiene so a census of
+// genuine dynamic-dispatch gaps is not drowned by stdlib cleanup; it never drops the
+// spot. This only re-labels/tiers sites already flagged; it adds and removes none, so
+// reachability and every verdict are unchanged.
 func unresolvedFuncValueCalls(fn *ssa.Function, site string, resolved map[ssa.CallInstruction]map[string]bool) []BlindSpot {
 	var out []BlindSpot
 	for _, b := range fn.Blocks {
@@ -429,26 +444,64 @@ func unresolvedFuncValueCalls(fn *ssa.Function, site string, resolved map[ssa.Ca
 			if len(resolved[call]) != 0 {
 				continue
 			}
+			// Resolve the func value's DEFINED type once (alias-safe: under Go 1.24
+			// gotypesalias=1 a CancelFunc reached through a type alias presents as
+			// *types.Alias, so unwrap before the *types.Named assertion). This single
+			// resolution feeds both the disclosure name and the benign tier, so the two
+			// cannot derive the type differently.
+			named, _ := types.Unalias(cc.Value.Type()).(*types.Named)
 			sig := ""
-			if s := cc.Signature(); s != nil {
-				sig = " of type " + s.String()
+			if name := funcValueTypeName(named, cc.Signature()); name != "" {
+				sig = " of type " + name
+			}
+			// A recognized benign stdlib func value (context.CancelFunc — stdlib context
+			// teardown that reaches no first-party code, bears no effect) is plumbing-tier
+			// noise; everything else stays unclassified (the signal a census keeps). Keyed
+			// on the value's defined type, which is named in Detail above, so equal
+			// (Kind, Site, Detail) implies equal Severity (determinism). The tier is
+			// disclosure-only — a pathologically reassigned CancelFunc holding a
+			// first-party func would be mis-tiered, but the spot still rides the manifest,
+			// so the only effect is attention ordering (same trust class as the EBC tier).
+			sev := Severity("")
+			if features.NamedTypeIs(named, "context", "CancelFunc") {
+				sev = SeverityTrivial
 			}
 			if features.IsConcurrentSite(call) {
 				out = append(out, BlindSpot{
-					Kind:   ConcurrentDispatch,
-					Site:   site,
-					Detail: "a goroutine (`go`) dispatches a func value" + sig + " resolved to no callee; the concurrent body and its downstream edges are invisible to the static call graph",
+					Kind:     ConcurrentDispatch,
+					Site:     site,
+					Detail:   "a goroutine (`go`) dispatches a func value" + sig + " resolved to no callee; the concurrent body and its downstream edges are invisible to the static call graph",
+					Severity: sev,
 				})
 				continue
 			}
 			out = append(out, BlindSpot{
-				Kind:   UnresolvedCall,
-				Site:   site,
-				Detail: "a func-value call" + sig + " resolved to no callee; the invoked function and its downstream edges are invisible to the static call graph",
+				Kind:     UnresolvedCall,
+				Site:     site,
+				Detail:   "a func-value call" + sig + " resolved to no callee; the invoked function and its downstream edges are invisible to the static call graph",
+				Severity: sev,
 			})
 		}
 	}
 	return out
+}
+
+// funcValueTypeName names the static type of a func-value call's callee for disclosure:
+// the resolved DEFINED type when the value has one — e.g. "context.CancelFunc" — else the
+// bare signature "func()". named is the value's already-resolved *types.Named (nil for an
+// unnamed func value, computed once at the call site so naming and tiering share it); sig
+// is the fallback signature. Naming the defined type (not just its underlying signature)
+// is what puts the benign-tier key into Detail, so the Severity tier stays a pure function
+// of the sort key. The unnamed case is byte-identical to the bare signature, so an
+// ordinary func() seam reads exactly as before.
+func funcValueTypeName(named *types.Named, sig *types.Signature) string {
+	if named != nil {
+		return named.String()
+	}
+	if sig != nil {
+		return sig.String()
+	}
+	return ""
 }
 
 // isExternalBoundary reports whether a call to callee is an ExternalBoundaryCall:

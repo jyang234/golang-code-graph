@@ -160,6 +160,40 @@ func TestRunGraphStampsToolVersion(t *testing.T) {
 	}
 }
 
+// TestRunGraphRollup: --rollup package emits the component (C3) view as JSON, and as a
+// Mermaid flowchart under --mermaid; an unknown rollup kind and the --root combination
+// are rejected before any output.
+func TestRunGraphRollup(t *testing.T) {
+	jsonOut := captureStdout(t, func() {
+		if err := run([]string{"graph", "--rollup", "package", fixtureDir()}); err != nil {
+			t.Fatalf("graph --rollup package: %v", err)
+		}
+	})
+	if !strings.Contains(jsonOut, `"components"`) || !strings.Contains(jsonOut, `"kind": "call"`) {
+		t.Errorf("rollup JSON must carry components and call edges; got:\n%s", firstLines(jsonOut, 8))
+	}
+
+	mermaidOut := captureStdout(t, func() {
+		if err := run([]string{"graph", "--rollup", "package", "--mermaid", fixtureDir()}); err != nil {
+			t.Fatalf("graph --rollup package --mermaid: %v", err)
+		}
+	})
+	if !strings.Contains(mermaidOut, "flowchart LR") || !strings.Contains(mermaidOut, "component (C3) rollup") {
+		t.Errorf("rollup --mermaid must render a component flowchart; got:\n%s", firstLines(mermaidOut, 5))
+	}
+
+	silenceStdout(t)
+	if err := run([]string{"graph", "--rollup", "bogus", fixtureDir()}); err == nil {
+		t.Error(`--rollup bogus must be rejected (only "package" is supported)`)
+	}
+	if err := run([]string{"graph", "--rollup", "package", "--root", "POST /loan-application", fixtureDir()}); err == nil {
+		t.Error("--rollup and --root are mutually exclusive and must be rejected")
+	}
+	if err := run([]string{"graph", "--rollup", "package", "--entry", "POST /loan-application", fixtureDir()}); err == nil {
+		t.Error("--rollup and --entry are mutually exclusive (whole-service view) and must be rejected")
+	}
+}
+
 func firstLines(s string, n int) string {
 	lines := strings.SplitN(s, "\n", n+1)
 	if len(lines) > n {

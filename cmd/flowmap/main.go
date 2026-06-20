@@ -129,9 +129,10 @@ func cmdGraph(args []string) error {
 	asMermaid := fs.Bool("mermaid", false, "render the graph as a human-readable Mermaid flowchart instead of JSON (a view, never gated); scope with --entry")
 	showPlumbing := fs.Bool("show-plumbing", false, "with --mermaid, include low-salience plumbing nodes (tier 3: telemetry, compute-only closures) instead of collapsing them")
 	allBlindSpots := fs.Bool("all-blind-spots", false, "with --mermaid, draw every blind-spot/frontier disclosure node (trivial boundaries and those orphaned onto collapsed plumbing) instead of rolling the plumbing-tier ones into a counted header note; restores the full honesty channel without un-collapsing plumbing nodes")
-	diffBase := fs.String("diff", "", "with --mermaid, render the delta from this BASE graph JSON to the analyzed branch (added/removed nodes and edges colored); a view, never a gate")
+	diffBase := fs.String("diff", "", "with --mermaid or --rollup, render the delta from this BASE graph JSON to the analyzed branch (added/removed elements; --rollup splits code vs disclosure); a view, never a gate")
 	rootAt := fs.String("root", "", `with --mermaid, scope to one entry point at RENDER time (e.g. "POST /loan-application") — unlike --entry this keeps the frontier markers in the per-handler view`)
 	maxNodes := fs.Int("max-nodes", 300, "with --mermaid, cap how many nodes a diagram draws; above the cap it renders an index of entry points to --root at instead of an illegible hairball (0 = uncapped)")
+	rollup := fs.String("rollup", "", `emit a component-level (C3) rollup grouping nodes by package: "package". Default output is the rollup JSON; with --mermaid it renders the component flowchart, with --diff BASE the component delta (code-vs-disclosure split)`)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -155,6 +156,9 @@ func cmdGraph(args []string) error {
 	warnSkippedAnnotations(os.Stderr, g)
 	if *reclaimFlag {
 		graphio.ApplyReclaimers(g, res)
+	}
+	if *rollup != "" {
+		return cmdGraphRollup(*rollup, g, *asMermaid, *diffBase, *rootAt, *entry)
 	}
 	if *asMermaid {
 		// The Mermaid flowchart is a deterministic view of the graph, so it carries
@@ -211,6 +215,54 @@ func cmdGraph(args []string) error {
 	// so the committed goldens regenerate byte-identically, the unstamped convention.
 	g.Tool = buildinfo.Version(version)
 	b, err := g.Marshal()
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(b)
+	return err
+}
+
+// cmdGraphRollup emits the component-level (C3) rollup of g: the package grouping,
+// the component→component dependencies, and the external-system effects (resolved +
+// disclosed). Default output is canonical JSON; --mermaid renders the flowchart;
+// --diff BASE renders the component delta. The rollup is a VIEW like --mermaid, so it
+// carries no stamp/tool provenance (those gate-adjacent fields ride the graph JSON).
+func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, rootAt, entry string) error {
+	if kind != "package" {
+		return fmt.Errorf(`graph --rollup: only "package" is supported, got %q`, kind)
+	}
+	if rootAt != "" {
+		return fmt.Errorf("graph --rollup and --root are mutually exclusive: --rollup is the component (C3) view, --root scopes the call-graph render")
+	}
+	// The rollup is a WHOLE-SERVICE view: an --entry build prunes nodes/edges to the
+	// entry cone and drops the unscoped disclosure sections, so a blind effect whose site
+	// is out of cone would silently vanish from the component view — a hidden disclosure.
+	// Refuse rather than emit a confidently-incomplete C3 map (fail closed).
+	if entry != "" {
+		return fmt.Errorf("graph --rollup and --entry are mutually exclusive: the component (C3) rollup is a whole-service view; an entry-scoped build would silently drop out-of-cone components and disclosed effects")
+	}
+	if diffBase != "" {
+		base, err := loadGraphJSON(diffBase)
+		if err != nil {
+			return fmt.Errorf("--diff base graph: %w", err)
+		}
+		if asMermaid {
+			_, err = os.Stdout.WriteString(render.Fence(graphio.RollupMermaidDiff(base, g)))
+			return err
+		}
+		return emitCanonJSON(graphio.RollupDiff(base, g))
+	}
+	if asMermaid {
+		_, err := os.Stdout.WriteString(render.Fence(g.RollupByPackage().Mermaid()))
+		return err
+	}
+	return emitCanonJSON(g.RollupByPackage())
+}
+
+// emitCanonJSON writes v as canonical JSON to stdout — the same deterministic encoding
+// the graph artifact uses, so a rollup is byte-identical across runs.
+func emitCanonJSON(v any) error {
+	b, err := canonjson.Marshal(v)
 	if err != nil {
 		return err
 	}
@@ -1041,7 +1093,7 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--reclaim* close sound seams/SQL labels)
+  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL labels)
   frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises

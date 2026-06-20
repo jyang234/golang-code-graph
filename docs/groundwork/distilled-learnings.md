@@ -20,7 +20,7 @@ it closes the loop the model can't see.
 
 ## What the graph deterministically IS (and isn't)
 
-The file is a static call graph: nodes (`fqn`, `sig`, `tier`, `fallible`),
+The file is a static call graph: nodes (`fqn`, `sig`, `tier`, `package`, `fallible`),
 edges (caller→callee, with `concurrent` and `boundary` flags), and blind spots.
 
 **Exactly recoverable** (not heuristics — they fall out of the data):

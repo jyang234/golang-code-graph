@@ -8,60 +8,71 @@
       "fqn": "(*example.com/blindsvc/internal/bus.Bus).Publish",
       "sig": "func (*bus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
       "tier": 1,
+      "package": "example.com/blindsvc/internal/bus",
       "fallible": true
     },
     {
       "fqn": "(*example.com/blindsvc/internal/handler.Server).Create",
       "sig": "func (*handler.Server).Create(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/blindsvc/internal/handler"
     },
     {
       "fqn": "(*example.com/blindsvc/internal/handler.Server).Publish",
       "sig": "func (*handler.Server).Publish(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/blindsvc/internal/handler"
     },
     {
       "fqn": "(*example.com/blindsvc/internal/notify.Notifier).Created",
       "sig": "func (*notify.Notifier).Created(ctx context.Context, user any) error",
       "tier": 1,
+      "package": "example.com/blindsvc/internal/notify",
       "fallible": true
     },
     {
       "fqn": "(*example.com/blindsvc/internal/notify.Notifier).Emit",
       "sig": "func (*notify.Notifier).Emit(ctx context.Context, event string, user any) error",
       "tier": 1,
+      "package": "example.com/blindsvc/internal/notify",
       "fallible": true
     },
     {
       "fqn": "example.com/blindsvc.main",
       "sig": "func main.main()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/blindsvc"
     },
     {
       "fqn": "example.com/blindsvc.run",
       "sig": "func main.run() error",
       "tier": 3,
+      "package": "example.com/blindsvc",
       "fallible": true
     },
     {
       "fqn": "example.com/blindsvc/internal/bus.New",
       "sig": "func bus.New() *bus.Bus",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/blindsvc/internal/bus"
     },
     {
       "fqn": "example.com/blindsvc/internal/encode.Marshal",
       "sig": "func encode.Marshal(v any) []byte",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/blindsvc/internal/encode"
     },
     {
       "fqn": "example.com/blindsvc/internal/handler.New",
       "sig": "func handler.New(n *notify.Notifier) *handler.Server",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/blindsvc/internal/handler"
     },
     {
       "fqn": "example.com/blindsvc/internal/notify.New",
       "sig": "func notify.New(b *bus.Bus) *notify.Notifier",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/blindsvc/internal/notify"
     }
   ],
   "edges": [

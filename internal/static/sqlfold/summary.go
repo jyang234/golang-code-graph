@@ -208,16 +208,15 @@ func isStrconvIntegral(fn *ssa.Function) bool {
 }
 
 // namedIs reports whether t (after stripping a pointer) is the named type
-// pkgPath.name.
+// pkgPath.name. The nil-safe identity compare is the shared features.NamedTypeIs (one
+// source of truth with the blind-spot benign-func tier); the pointer strip is this
+// site's own resolution (a method receiver is a *T).
 func namedIs(t types.Type, pkgPath, name string) bool {
 	if p, ok := t.(*types.Pointer); ok {
 		t = p.Elem()
 	}
-	n, ok := t.(*types.Named)
-	if !ok || n.Obj() == nil || n.Obj().Pkg() == nil {
-		return false
-	}
-	return n.Obj().Pkg().Path() == pkgPath && n.Obj().Name() == name
+	n, _ := t.(*types.Named)
+	return features.NamedTypeIs(n, pkgPath, name)
 }
 
 func isStringType(t types.Type) bool {

@@ -8,213 +8,252 @@
       "fqn": "(*example.com/loansvc/internal/client.Bureau).Score",
       "sig": "func (*client.Bureau).Score(ctx context.Context, id string) (int, error)",
       "tier": 1,
+      "package": "example.com/loansvc/internal/client",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/client.Client).Call",
       "sig": "func (*client.Client).Call(ctx context.Context, peer string, method string, route string, params ...any) ([]byte, error)",
       "tier": 1,
+      "package": "example.com/loansvc/internal/client",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/client.Client).Call$1",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "(*example.com/loansvc/internal/client.Gateway).Charge",
       "sig": "func (*client.Gateway).Charge(ctx context.Context, id string) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/client",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/consumer.Payments).OnSettled",
       "sig": "func (*consumer.Payments).OnSettled(ctx context.Context, payload []byte) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/consumer",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/eventbus.Bus).Publish",
       "sig": "func (*eventbus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/eventbus",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/eventbus.Bus).Subscribe",
       "sig": "func (*eventbus.Bus).Subscribe(event string, h eventbus.Handler)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/loansvc/internal/eventbus"
     },
     {
       "fqn": "(*example.com/loansvc/internal/handler.App).Create",
       "sig": "func (*handler.App).Create(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/loansvc/internal/handler"
     },
     {
       "fqn": "(*example.com/loansvc/internal/handler.App).Status",
       "sig": "func (*handler.App).Status(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/loansvc/internal/handler"
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
       "sig": "func (*origination.Evaluator).Evaluate(ctx context.Context, app origination.Application) (origination.Decision, error)",
       "tier": 1,
+      "package": "example.com/loansvc/internal/origination",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$1",
       "sig": "func() error",
       "tier": 2,
+      "package": "example.com/loansvc/internal/origination",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$2",
       "sig": "func() error",
       "tier": 2,
+      "package": "example.com/loansvc/internal/origination",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).auditLog",
       "sig": "func (*origination.Evaluator).auditLog(ctx context.Context, id string)",
-      "tier": 2
+      "tier": 2,
+      "package": "example.com/loansvc/internal/origination"
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).disburse",
       "sig": "func (*origination.Evaluator).disburse(ctx context.Context, app origination.Application)",
-      "tier": 2
+      "tier": 2,
+      "package": "example.com/loansvc/internal/origination"
     },
     {
       "fqn": "(*example.com/loansvc/internal/origination.Evaluator).notify",
       "sig": "func (*origination.Evaluator).notify(ctx context.Context, status string) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/origination",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/scoring.Remote).Score",
       "sig": "func (*scoring.Remote).Score(ctx context.Context, id string, out *scoring.Score) error",
       "tier": 2,
+      "package": "example.com/loansvc/internal/scoring",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/scoring.Stub).Score",
       "sig": "func (*scoring.Stub).Score(_ context.Context, _ string, out *scoring.Score) error",
       "tier": 3,
+      "package": "example.com/loansvc/internal/scoring",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/store.Loans).InsertAudit",
       "sig": "func (*store.Loans).InsertAudit(ctx context.Context, loanID string) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/store.Loans).InsertLedger",
       "sig": "func (*store.Loans).InsertLedger(ctx context.Context, loanID string, amount int) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/store.Loans).MarkPaid",
       "sig": "func (*store.Loans).MarkPaid(ctx context.Context, loanID string) error",
       "tier": 1,
+      "package": "example.com/loansvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/store.Loans).SelectApplicant",
       "sig": "func (*store.Loans).SelectApplicant(ctx context.Context, id string, out *store.Applicant) error",
       "tier": 2,
+      "package": "example.com/loansvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/loansvc/internal/store.Loans).SelectLoan",
       "sig": "func (*store.Loans).SelectLoan(ctx context.Context, id string, out *store.Loan) error",
       "tier": 2,
+      "package": "example.com/loansvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "example.com/loansvc.main",
       "sig": "func main.main()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/loansvc"
     },
     {
       "fqn": "example.com/loansvc.run",
       "sig": "func main.run() error",
       "tier": 1,
+      "package": "example.com/loansvc",
       "fallible": true
     },
     {
       "fqn": "example.com/loansvc/internal/client.New",
       "sig": "func client.New() *client.Client",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "example.com/loansvc/internal/client.NewBureau",
       "sig": "func client.NewBureau(c *client.Client) *client.Bureau",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "example.com/loansvc/internal/client.NewGateway",
       "sig": "func client.NewGateway(c *client.Client) *client.Gateway",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "example.com/loansvc/internal/client.expand",
       "sig": "func client.expand(route string, params ...any) string",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "example.com/loansvc/internal/client.tracer",
       "sig": "func client.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/client"
     },
     {
       "fqn": "example.com/loansvc/internal/consumer.New",
       "sig": "func consumer.New(loans *store.Loans) *consumer.Payments",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/consumer"
     },
     {
       "fqn": "example.com/loansvc/internal/eventbus.New",
       "sig": "func eventbus.New() *eventbus.Bus",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/eventbus"
     },
     {
       "fqn": "example.com/loansvc/internal/eventbus.tracer",
       "sig": "func eventbus.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/eventbus"
     },
     {
       "fqn": "example.com/loansvc/internal/handler.New",
       "sig": "func handler.New(eval *origination.Evaluator, loans *store.Loans) *handler.App",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/handler"
     },
     {
       "fqn": "example.com/loansvc/internal/origination.NewEvaluator",
       "sig": "func origination.NewEvaluator(s *store.Loans, sc scoring.Scorer, gw *client.Gateway, bus *eventbus.Bus) *origination.Evaluator",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/origination"
     },
     {
       "fqn": "example.com/loansvc/internal/origination.tracer",
       "sig": "func origination.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/origination"
     },
     {
       "fqn": "example.com/loansvc/internal/scoring.Select",
       "sig": "func scoring.Select(degraded bool, bureau *client.Bureau) scoring.Scorer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/scoring"
     },
     {
       "fqn": "example.com/loansvc/internal/store.New",
       "sig": "func store.New(db *sql.DB) *store.Loans",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/store"
     },
     {
       "fqn": "example.com/loansvc/internal/store.dbSpan",
       "sig": "func store.dbSpan(ctx context.Context, stmt string) (context.Context, trace.Span)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/store"
     },
     {
       "fqn": "example.com/loansvc/internal/store.tracer",
       "sig": "func store.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/loansvc/internal/store"
     }
   ],
   "edges": [

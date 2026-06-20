@@ -219,9 +219,15 @@ type Obligation struct {
 
 // Node is one first-party function.
 type Node struct {
-	FQN      string `json:"fqn"`
-	Sig      string `json:"sig"`
-	Tier     int    `json:"tier"`
+	FQN  string `json:"fqn"`
+	Sig  string `json:"sig"`
+	Tier int    `json:"tier"`
+	// Package is the producer's typed import path for the node's defining package
+	// (empty for a synthetic node, and for a graph built before the field existed).
+	// Decoded on this side of the trust boundary like every other field —
+	// DisallowUnknownFields would reject it otherwise. Disclosure-only: no verdict,
+	// count, layer assignment, or reachability computation reads it.
+	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
 }
 
@@ -257,12 +263,15 @@ type BlindSpot struct {
 	Kind   string `json:"kind"`
 	Site   string `json:"site"`
 	Detail string `json:"detail"`
-	// Severity is the producer's signal/noise tier, set only for ExternalBoundaryCall
-	// ("effect-bearing" vs "trivial"; empty for every other kind and for a graph built
-	// before the tier existed). Decoded on this side of the trust boundary like every
-	// other field — DisallowUnknownFields would reject it otherwise — and surfaced beside
-	// the spot so a reader separates the effect-bearing seams from the framework noise.
-	// Disclosure-only: no verdict, count, or reachability computation reads it (§21.A).
+	// Severity is the producer's signal/noise tier ("effect-bearing" vs "trivial"):
+	// carried by every ExternalBoundaryCall, and by the benign subset of the func()
+	// dispatch channel (a context.CancelFunc UnresolvedCall/ConcurrentDispatch is tagged
+	// "trivial"); empty for every other kind, for an unclassified func() seam, and for a
+	// graph built before the tier existed. Decoded on this side of the trust boundary
+	// like every other field — DisallowUnknownFields would reject it otherwise — and
+	// surfaced beside the spot so a reader separates the effect-bearing seams from the
+	// stdlib/framework noise. Disclosure-only: no verdict, count, or reachability
+	// computation reads it (§21.A).
 	Severity string `json:"severity,omitempty"`
 	// Package is the third-party package an ExternalBoundaryCall hands off to (empty for
 	// other kinds). Decoded on this side of the trust boundary like every other field so

@@ -230,6 +230,24 @@ func PkgPath(fn *ssa.Function) string {
 	return fn.Pkg.Pkg.Path()
 }
 
+// NamedTypeIs reports whether named is the DEFINED type pkgPath.name — the nil-safe
+// identity compare shared by the call sites that need it (the SQL-fold receiver match in
+// sqlfold and the blind-spot benign-func tier in blindspots), so the Obj()/Pkg() nil
+// guard lives in ONE place instead of a hand-kept copy per site that could drift on a
+// future nil-safety fix (CLAUDE.md "one source of truth"). The caller resolves named from
+// its value FIRST as its context requires — stripping a pointer (sqlfold), or
+// types.Unalias'ing an alias (blindspots) — since which resolution is sound differs by
+// site; this helper only compares. A nil named (the value was not a defined type) is not
+// a match.
+func NamedTypeIs(named *types.Named, pkgPath, name string) bool {
+	if named == nil {
+		return false
+	}
+	obj := named.Obj()
+	return obj != nil && obj.Pkg() != nil &&
+		obj.Pkg().Path() == pkgPath && obj.Name() == name
+}
+
 // IsStdlib reports whether an import path is a standard-library package: its first
 // path segment contains no dot (so "net/http" and "database/sql" are stdlib,
 // "golang.org/x/sync" is not). Exported as the single source of truth for the

@@ -7,42 +7,50 @@
     {
       "fqn": "(*example.com/reclaimsvc.store).Delete",
       "sig": "func (*main.store).Delete(ctx context.Context)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin",
       "sig": "func (*main.wrapper).Admin(w http.ResponseWriter, r *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin$1",
       "sig": "func(w http.ResponseWriter, r *http.Request)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin$2",
       "sig": "func()",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "example.com/reclaimsvc.authMW",
       "sig": "func main.authMW(next http.Handler) http.Handler",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "example.com/reclaimsvc.authMW$1",
       "sig": "func(w http.ResponseWriter, r *http.Request)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "example.com/reclaimsvc.main",
       "sig": "func main.main()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/reclaimsvc"
     },
     {
       "fqn": "example.com/reclaimsvc.runLater",
       "sig": "func main.runLater(f func())",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/reclaimsvc"
     }
   ],
   "edges": [

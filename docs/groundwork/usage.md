@@ -83,7 +83,7 @@ graph JSON between them:
 
 - **flowmap is the producer.** `flowmap graph <service>` builds the call graph
   (`go/packages → go/ssa → go/callgraph`) and emits it as canonical JSON — nodes
-  (`fqn`, `sig`, `tier`, `fallible`), edges (caller→callee, with `boundary` and
+  (`fqn`, `sig`, `tier`, `package`, `fallible`), edges (caller→callee, with `boundary` and
   `concurrent` flags), a blind-spot manifest, and the level-2 disclosure
   sections computed from each function's CFG and the discovered roots:
   `obligations` (path-obligation verdicts), `effect_order` (partial-effect
@@ -1085,9 +1085,9 @@ it. Top-level sections:
 
 | Section | What it is | Notes |
 |---|---|---|
-| `nodes[]` | `{fqn, sig, tier, fallible}` per first-party function | sorted by fqn |
+| `nodes[]` | `{fqn, sig, tier, package?, fallible}` per first-party function | sorted by fqn; `package` is the node's defining import path (the typed package fact, not an FQN parse), disclosure-only |
 | `edges[]` | `{from, to, tier, boundary?, concurrent?, via?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed; `via` names the reclaimer (`flowmap --reclaim`) that recovered the edge at a dispatch seam — a verdict over it self-discloses as reclaim-informed |
-| `blind_spots[]` | `{kind, site, detail, severity?, package?}` — where the graph's knowledge stops | the soundness frontier; `severity` (`effect-bearing`\|`trivial`) and `package` ride `ExternalBoundaryCall` only — the signal/noise tier, disclosure-only |
+| `blind_spots[]` | `{kind, site, detail, severity?, package?}` — where the graph's knowledge stops | the soundness frontier; `package` rides `ExternalBoundaryCall` only; `severity` (`effect-bearing`\|`trivial`) rides every `ExternalBoundaryCall` and tags the benign stdlib subset of the `func()` channel (`context.CancelFunc` → `trivial`) — the signal/noise tier, disclosure-only. A `func()` seam's `detail` names the callee's defined type (e.g. `context.CancelFunc`, `…/api.MiddlewareFunc`) so a census can group by it |
 | `obligations[]` | `{rule, kind, fn, site, status, detail}` per anchored site | statuses are an open vocabulary: **fail closed on ones you don't recognize** |
 | `effect_order[]` | `{fn, effect, effect_site, callee, callee_site, always}` | "effect can/always precedes this fallible call" |
 | `entrypoints[]` | `{kind: http\|consumer, name, fn}` — the route/topic → handler join | names are registration-site literals: match segment-wise, never exactly-or-nothing |
@@ -1096,6 +1096,46 @@ it. Top-level sections:
 Decode strictly (groundwork uses `DisallowUnknownFields`): a schema change you
 have not been taught about should fail loudly, not drop fields silently.
 Producer and judge deploy in lockstep — that is a feature.
+
+### Component (C3) rollup — `flowmap graph --rollup package`
+
+`flowmap graph --rollup package` rolls the function-level (C4) graph up to the
+**component (C3)** altitude: it groups nodes by their `package`, collapses the
+edges to component→component dependencies, and overlays the external-system
+effects. It is a pure post-process of the graph JSON — deterministic, a view,
+never a gate. At C3 an architecture-violating change (a cross-layer shortcut) is
+one visible edge rather than rename noise.
+
+Edges carry a `kind` that is also their honesty class, never conflated:
+
+| `kind` | meaning | render |
+|---|---|---|
+| `call` | resolved cross-package call (component→component) | solid |
+| `effect` | resolved typed boundary effect (component→`db`/`bus`/peer) | solid |
+| `disclosed` | an effect the graph DISCLOSES but cannot resolve — an effect-bearing `ExternalBoundaryCall` (e.g. a vendor SDK behind a seam), with the human annotation note when one is attached | dashed |
+
+A trivial (plumbing-tier) `ExternalBoundaryCall` is excluded — the same
+`severity` split that tiers the `func()` channel keeps the component view signal.
+
+- `--rollup package` alone → the rollup JSON (`{components[], edges[]}`).
+- `--rollup package --mermaid` → the component flowchart (solid vs dashed).
+- `--rollup package --diff BASE` → the component delta, split
+  `{code_added, code_removed, disclosure_added, disclosure_removed}`. **The split
+  is load-bearing:** a `call`/`effect` delta is a real dependency change; a
+  `disclosed` delta is only a *newly-documented* effect (pure instrumentation).
+  Without the split, annotating a seam reads as an architecture change. The diff
+  is symmetric: swapping base and branch flips every `*_added` into the matching
+  `*_removed`. Edge identity is `(from, to, kind)` — a re-worded annotation note is
+  not a delta. A base↔branch **substrate skew** (empty base, `--algo`/tool/reclaimer
+  mismatch, or a base built before per-node `package`) rides a `caveats[]` field in
+  the JSON and `%% ⚠` header comments in the Mermaid, the same honesty channel the
+  call-graph diff carries — so a precision/version difference is never silently
+  painted as an architecture change.
+
+The rollup is a **whole-service** view: `--rollup` is mutually exclusive with
+`--entry` and `--root` (an entry-scoped build would silently drop out-of-cone
+components and disclosed effects). Like `--mermaid` it carries no `--stamp`/tool
+provenance — it is a view, never a gate.
 
 ---
 
@@ -1120,7 +1160,7 @@ encodes a deliberate honesty or determinism decision, not just a name.
   every edge one possible call. Computed from source, with no tests run and no
   instrumentation. The substrate everything else composes from.
 - **node** — one first-party function in the graph, carrying `fqn`, `sig`,
-  `tier`, and `fallible`.
+  `tier`, `package` (its defining import path), and `fallible`.
 - **edge** — one possible caller→callee call, optionally flagged `boundary`
   (touches the outside world), `concurrent` (crosses a goroutine spawn), or
   `via` (recovered by a reclaimer).

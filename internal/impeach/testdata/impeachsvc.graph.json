@@ -7,138 +7,164 @@
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).Federate",
       "sig": "func (*admin.Admin).Federate(w http.ResponseWriter, req *http.Request)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).Mount",
       "sig": "func (*admin.Admin).Mount(r *router.Router)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).Notify",
       "sig": "func (*admin.Admin).Notify(w http.ResponseWriter, req *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
       "sig": "func (*admin.Admin).PurgeLedger(w http.ResponseWriter, req *http.Request)",
-      "tier": 2
+      "tier": 2,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).Reindex",
       "sig": "func (*admin.Admin).Reindex(w http.ResponseWriter, req *http.Request)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/admin.Admin).table",
       "sig": "func (*admin.Admin).table() []admin.route",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/eventbus.Bus).Publish",
       "sig": "func (*eventbus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
       "tier": 1,
+      "package": "example.com/impeachsvc/internal/eventbus",
       "fallible": true
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/handler.App).Create",
       "sig": "func (*handler.App).Create(w http.ResponseWriter, req *http.Request)",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/impeachsvc/internal/handler"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/handler.App).create",
       "sig": "func (*handler.App).create(ctx context.Context) error",
       "tier": 2,
+      "package": "example.com/impeachsvc/internal/handler",
       "fallible": true
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/router.Router).Add",
       "sig": "func (*router.Router).Add(method string, pattern string, h http.HandlerFunc)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/router"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
       "sig": "func (*router.Router).ServeHTTP(w http.ResponseWriter, req *http.Request)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/router"
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/store.Loans).InsertLoan",
       "sig": "func (*store.Loans).InsertLoan(ctx context.Context, id string, amount int) error",
       "tier": 1,
+      "package": "example.com/impeachsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/store.Loans).Purge",
       "sig": "func (*store.Loans).Purge(ctx context.Context, loanID string) error",
       "tier": 1,
+      "package": "example.com/impeachsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "(*example.com/impeachsvc/internal/store.Loans).PurgeAudit",
       "sig": "func (*store.Loans).PurgeAudit(ctx context.Context, loanID string) error",
       "tier": 1,
+      "package": "example.com/impeachsvc/internal/store",
       "fallible": true
     },
     {
       "fqn": "example.com/impeachsvc.main",
       "sig": "func main.main()",
-      "tier": 1
+      "tier": 1,
+      "package": "example.com/impeachsvc"
     },
     {
       "fqn": "example.com/impeachsvc.run",
       "sig": "func main.run() error",
       "tier": 3,
+      "package": "example.com/impeachsvc",
       "fallible": true
     },
     {
       "fqn": "example.com/impeachsvc/internal/admin.New",
       "sig": "func admin.New(loans *store.Loans, bus *eventbus.Bus) *admin.Admin",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/admin"
     },
     {
       "fqn": "example.com/impeachsvc/internal/eventbus.New",
       "sig": "func eventbus.New() *eventbus.Bus",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/eventbus"
     },
     {
       "fqn": "example.com/impeachsvc/internal/eventbus.tracer",
       "sig": "func eventbus.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/eventbus"
     },
     {
       "fqn": "example.com/impeachsvc/internal/handler.New",
       "sig": "func handler.New(loans *store.Loans) *handler.App",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/handler"
     },
     {
       "fqn": "example.com/impeachsvc/internal/peer.Replicate",
       "sig": "func peer.Replicate(ctx context.Context, loanID string)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/peer"
     },
     {
       "fqn": "example.com/impeachsvc/internal/router.New",
       "sig": "func router.New() *router.Router",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/router"
     },
     {
       "fqn": "example.com/impeachsvc/internal/router.matches",
       "sig": "func router.matches(key string, req *http.Request) bool",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/router"
     },
     {
       "fqn": "example.com/impeachsvc/internal/store.New",
       "sig": "func store.New(db *sql.DB) *store.Loans",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/store"
     },
     {
       "fqn": "example.com/impeachsvc/internal/store.dbSpan",
       "sig": "func store.dbSpan(ctx context.Context, stmt string) (context.Context, trace.Span)",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/store"
     },
     {
       "fqn": "example.com/impeachsvc/internal/store.tracer",
       "sig": "func store.tracer() trace.Tracer",
-      "tier": 3
+      "tier": 3,
+      "package": "example.com/impeachsvc/internal/store"
     }
   ],
   "edges": [

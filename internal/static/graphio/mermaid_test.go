@@ -146,6 +146,39 @@ func TestMermaidAllBlindSpotsRestoresOrphans(t *testing.T) {
 	}
 }
 
+// TestMermaidTiersTrivialFuncSeam pins the func() disclosure-channel hygiene in the
+// rendered view: a context.CancelFunc UnresolvedCall is tagged trivial, so the default
+// tier-collapsed render drops it as plumbing (counted, recoverable) exactly like a
+// trivial boundary — and --all-blind-spots draws it back WITH its tier named, so a
+// reader sees why it was collapsible instead of a bare "blind spot" box. Before func()
+// seams could be trivial, no UnresolvedCall ever reached this path.
+func TestMermaidTiersTrivialFuncSeam(t *testing.T) {
+	site := "example.com/svc/internal/api.handle"
+	g := &Graph{
+		Algo:  "rta",
+		Nodes: []Node{{FQN: site, Tier: 1}},
+		BlindSpots: []blindspots.BlindSpot{{
+			Kind:     blindspots.UnresolvedCall,
+			Site:     site, // a drawn node → dropped as trivial plumbing, not as an orphan
+			Detail:   "a func-value call of type context.CancelFunc resolved to no callee; the invoked function and its downstream edges are invisible to the static call graph",
+			Severity: blindspots.SeverityTrivial,
+		}},
+	}
+
+	denoised := g.Mermaid(MermaidOptions{MaxTier: 2})
+	if strings.Contains(denoised, "⊥ UnresolvedCall") {
+		t.Errorf("a trivial context.CancelFunc seam should collapse as plumbing in the default render:\n%s", denoised)
+	}
+
+	full := g.Mermaid(MermaidOptions{MaxTier: 2, ShowAllBlindSpots: true})
+	if !strings.Contains(full, "⊥ UnresolvedCall") {
+		t.Errorf("--all-blind-spots must draw the trivial func() seam back in:\n%s", full)
+	}
+	if !strings.Contains(full, "trivial") {
+		t.Errorf("a shown func() seam must name its plumbing tier, not a bare label:\n%s", full)
+	}
+}
+
 // TestMermaidNeverHidesEffectEmitter pins the soundness rule: a node that emits a
 // boundary effect is shown even when its tier would otherwise collapse it, so the
 // denoised view can never silently drop an effect.

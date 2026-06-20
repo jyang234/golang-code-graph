@@ -203,6 +203,73 @@ func main() {
 	}
 }
 
+// TestFuncValueSeamSeverityTier pins the func() disclosure-channel hygiene: a
+// context.CancelFunc seam (stdlib context teardown, reaching no first-party code) is
+// tagged Severity trivial and names its DEFINED type in Detail, while a genuine func()
+// seam stays unclassified — so a census of dynamic-dispatch gaps can drop the stdlib
+// plumbing without dropping signal. The tier is disclosure-only: both spots are still
+// emitted (the count is unchanged), and the trivial tag is derivable from Detail so it
+// adds no independent ordering dimension to SortBlindSpots.
+func TestFuncValueSeamSeverityTier(t *testing.T) {
+	const src = `package main
+
+import "context"
+
+func work(context.Context) {}
+
+// cancelSeam: cancel() on a context.CancelFunc — the benign stdlib class.
+func cancelSeam(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	work(ctx)
+}
+
+// genuineSeam: a func() value read from a field assigned nowhere reachable.
+type reg struct{ cb func() }
+
+func genuineSeam(r reg) { r.cb() }
+
+func main() {
+	cancelSeam(context.Background())
+	genuineSeam(reg{})
+}
+`
+	res := analyzeModule(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.24\n",
+		"main.go": src,
+	})
+	bs := blindspots.Detect(res, features.NewHintSet(res.Config))
+
+	var cancelSpot, genuineSpot *blindspots.BlindSpot
+	for i := range bs {
+		b := &bs[i]
+		if b.Kind != blindspots.UnresolvedCall {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(b.Site, ".cancelSeam"):
+			cancelSpot = b
+		case strings.HasSuffix(b.Site, ".genuineSeam"):
+			genuineSpot = b
+		}
+	}
+	if cancelSpot == nil || genuineSpot == nil {
+		t.Fatalf("want an UnresolvedCall at both cancelSeam and genuineSeam; got %+v", bs)
+	}
+	if cancelSpot.Severity != blindspots.SeverityTrivial {
+		t.Errorf("context.CancelFunc seam must be tiered trivial, got %q", cancelSpot.Severity)
+	}
+	// The trivial tier must be a pure function of the sort key: the defined type that
+	// drives it is named in Detail, so two spots equal on (Kind, Site, Detail) are equal
+	// on Severity.
+	if !strings.Contains(cancelSpot.Detail, "context.CancelFunc") {
+		t.Errorf("trivial tier must be derivable from Detail; want the defined type named, got %q", cancelSpot.Detail)
+	}
+	if genuineSpot.Severity != "" {
+		t.Errorf("a genuine func() seam must stay unclassified (signal), got %q", genuineSpot.Severity)
+	}
+}
+
 // TestDetectUnresolvedCallDeterministic is the determinism test the UnresolvedCall
 // disclosure path ships with (CLAUDE.md: "New ordering or canonicalization paths ship
 // with a determinism test"). TestDetectDeterministic runs on loansvc, which emits ZERO
