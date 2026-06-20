@@ -471,7 +471,8 @@
     {
       "kind": "ExternalBoundaryCall",
       "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
-      "detail": "hands off to external package golang.org/x/sync/errgroup; its behavior is outside the analyzed module and invisible to the static call graph"
+      "detail": "hands off to external package golang.org/x/sync/errgroup; its behavior is outside the analyzed module and invisible to the static call graph",
+      "severity": "effect-bearing"
     }
   ],
   "entrypoints": [
@@ -520,17 +521,17 @@
       },
       {
         "kind": "severed-closure",
-        "bin": "B",
+        "bin": "A",
         "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$1",
         "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
-        "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
+        "reclaimer_hint": "no static reclaimer recognizes this dispatch seam (the closure does not flow to a known dispatcher) — irreducible without runtime observation"
       },
       {
         "kind": "severed-closure",
-        "bin": "B",
+        "bin": "A",
         "site": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate$2",
         "owner": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
-        "reclaimer_hint": "connect origination.Evaluator.Evaluate to this closure across the dispatch seam"
+        "reclaimer_hint": "no static reclaimer recognizes this dispatch seam (the closure does not flow to a known dispatcher) — irreducible without runtime observation"
       }
     ],
     "coverage": "starvation confirmed for the oapi strict-server shape only; unconfirmed routes reach no effect for an unverified reason (a no-op, or an unrecognized dispatch seam) — attribution_loss is a LOWER BOUND, not a proof of no severance"

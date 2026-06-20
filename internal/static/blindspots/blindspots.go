@@ -175,11 +175,63 @@ func (k Kind) IsDisclosureOnlyFrontier() bool {
 	return k == ExternalBoundaryCall
 }
 
+// Severity is the signal/noise TIER an ExternalBoundaryCall carries. It exists so a
+// bare blind-spot count (dominated ~85% by framework/utility handoffs) is readable:
+// a reviewer separates the effect-bearing seams from the pure-compute plumbing
+// without re-deriving it (§21.A). It is DISCLOSURE-ONLY — no verdict, ratchet, or
+// reachability computation reads it; it (mis)prioritizes attention, never gates, and
+// a trivial-tagged spot is still detected and counted.
+type Severity string
+
+const (
+	// SeverityEffectBearing tags an ExternalBoundaryCall into a dependency whose
+	// handoff can carry a real external effect (a cloud-SDK send, a DB driver) — the
+	// signal a reviewer acts on. It is the DEFAULT for an EBC: a package is treated
+	// as effect-bearing unless explicitly known-benign, so an unrecognized dependency
+	// stays in the signal tier rather than being silently demoted (fail toward
+	// disclosure).
+	SeverityEffectBearing Severity = "effect-bearing"
+	// SeverityTrivial tags an ExternalBoundaryCall into pure-compute / framework
+	// plumbing (uuid generation, an HTTP router's helpers, codegen runtime) — disclosed
+	// for completeness but not the effect surface. Driven by the known-benign set
+	// (HintSet.IsExternalBoundaryTrivial: a built-in default plus any
+	// static.externalBoundaryTrivial prefixes).
+	SeverityTrivial Severity = "trivial"
+)
+
+// externalPackagePrefix is the literal Detail prefix Detect writes before an
+// ExternalBoundaryCall's target package; ExternalPackage parses it back. Kept beside
+// the writer so the two cannot drift (CLAUDE.md: one source of truth).
+const externalPackagePrefix = "hands off to external package "
+
+// ExternalPackage returns the third-party package path an ExternalBoundaryCall's
+// Detail names, or "" when detail is not in that form. Render-only: it recovers for
+// display the package Detect embedded in the prose, so a boundary disclosure node can
+// be labeled with its dependency (§21.B). The structural tier (BlindSpot.Severity) is
+// the reliable distinguisher; this is the human-readable enrichment beside it, so a
+// parse miss degrades to the tier alone rather than a silent collision.
+func ExternalPackage(detail string) string {
+	rest, ok := strings.CutPrefix(detail, externalPackagePrefix)
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexByte(rest, ';'); i >= 0 {
+		rest = rest[:i]
+	}
+	return strings.TrimSpace(rest)
+}
+
 // BlindSpot is one disclosed gap. Fields are JSON-tagged for the gated artifact.
 type BlindSpot struct {
 	Kind   Kind   `json:"kind"`
 	Site   string `json:"site"`
 	Detail string `json:"detail"`
+	// Severity is the signal/noise tier, set ONLY for ExternalBoundaryCall (empty for
+	// every other kind, and for an EBC from a graph built before the tier existed).
+	// Disclosure-only — see the Severity type. It is a pure function of the target
+	// package (which Detail names), so it never adds an independent ordering dimension
+	// to SortBlindSpots, and two spots equal on (Kind, Site, Detail) are equal on it.
+	Severity Severity `json:"severity,omitempty"`
 }
 
 // Boundary returns the gated boundary subset of a manifest.
@@ -266,11 +318,18 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 				// A handoff into a third-party package we do not analyze and have not
 				// classified as a typed boundary effect. Detail names the package, not
 				// the symbol, so multiple callees in one package at this site dedup to a
-				// single per-(site, package) disclosure.
+				// single per-(site, package) disclosure. The signal/noise tier rides
+				// along: a known-benign (pure-compute/framework) target is trivial, every
+				// other dependency effect-bearing (the default — disclose, don't pre-judge).
+				sev := SeverityEffectBearing
+				if hints.IsExternalBoundaryTrivial(callee) {
+					sev = SeverityTrivial
+				}
 				out = append(out, BlindSpot{
-					Kind:   ExternalBoundaryCall,
-					Site:   site,
-					Detail: "hands off to external package " + features.PkgPath(callee) + "; its behavior is outside the analyzed module and invisible to the static call graph",
+					Kind:     ExternalBoundaryCall,
+					Site:     site,
+					Detail:   externalPackagePrefix + features.PkgPath(callee) + "; its behavior is outside the analyzed module and invisible to the static call graph",
+					Severity: sev,
 				})
 			}
 			if e.Site != nil {

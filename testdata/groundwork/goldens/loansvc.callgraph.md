@@ -36,10 +36,10 @@ flowchart LR
     db_db_SELECT_applicants[("db SELECT applicants")]:::db
     db_db_SELECT_loans[("db SELECT loans")]:::db
     bus_bus_CONSUME_payment_settled{{"bus CONSUME payment.settled"}}:::bus
-    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>blind spot"]):::blind
+    blind_ExternalBoundaryCall(["⊥ ExternalBoundaryCall<br/>→ errgroup · effect-bearing"]):::blind
     frontier_dynamic_bus(["⌖ dynamic-bus<br/>frontier A"]):::blind
-    frontier_severed_closure(["⌖ severed-closure<br/>frontier B"]):::blind
-    frontier_severed_closure1(["⌖ severed-closure<br/>frontier B"]):::blind
+    frontier_severed_closure(["⌖ severed-closure<br/>frontier A"]):::blind
+    frontier_severed_closure1(["⌖ severed-closure<br/>frontier A"]):::blind
     client_Bureau_Score --> external_credit_bureau_GET__score__id_
     client_Gateway_Charge --> external_payment_gw_POST__charge__id_
     consumer_Payments_OnSettled --> store_Loans_MarkPaid

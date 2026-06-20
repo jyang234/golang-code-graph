@@ -120,6 +120,15 @@ type Graph struct {
 	// to split the opaque-db disclosure into B2a/B2b, taken from the flag rather than
 	// inferred from tagged edges so an all-abstain fold run still reads as folded.
 	foldSQL bool
+
+	// reclaimableClosures is the set of closure node FQNs a known dispatch-seam
+	// reclaimer (reclaim.StrictServer) could reconnect — computed as a DRY RUN at build
+	// (no edges folded), so even the default frontier knows which severed closures are
+	// genuinely reclaimable. Unexported, so it never serializes (no golden churn); the
+	// frontier classifier reads it to bin a severed closure B (reclaimable) vs A
+	// (irreducible), so the frontier never advertises a reclaim `--reclaim` cannot
+	// perform (§21.②). Populated only on an unscoped build (the frontier rides those).
+	reclaimableClosures []string
 }
 
 // FrontierSection is the disclosed frontier carried in the graph: the per-site
@@ -509,9 +518,35 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
 	// the unscoped build, the same convention those sections use.
 	if entry == "" {
+		g.reclaimableClosures = reclaimableClosureFQNs(res, g)
 		g.Frontier = frontierSection(g)
 	}
 	return g, nil
+}
+
+// reclaimableClosureFQNs is the set of closure node FQNs a known dispatch-seam
+// reclaimer (reclaim.StrictServer) could reconnect, computed as a DRY RUN over res
+// WITHOUT folding the edges — so even the default (un-reclaimed) frontier knows which
+// severed closures are genuinely reclaimable. The frontier classifier uses it to bin
+// a severed closure B (reclaimable, the reclaimer can deliver the connect hint) vs A
+// (irreducible, no reclaimer recognizes the seam), so the frontier never advertises a
+// reclaim `--reclaim` cannot perform (§21.②). Only closures that are graph nodes count;
+// the result is sorted for a deterministic Input.
+func reclaimableClosureFQNs(res *analyze.Result, g *Graph) []string {
+	nodes := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodes[n.FQN] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range reclaim.StrictServer(res) {
+		if nodes[e.To] && !seen[e.To] {
+			seen[e.To] = true
+			out = append(out, e.To)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // frontierSection classifies g and assembles the disclosed section: the markers,
@@ -542,7 +577,7 @@ func ClassifyFrontier(g *Graph) *frontier.Result { return frontier.Classify(fron
 // edges, so a --reclaim-sql run that recovers nothing is still reported as folded
 // (its remaining opaque-db markers are the genuine residue, not "untried").
 func frontierInput(g *Graph) *frontier.Input {
-	in := &frontier.Input{Folded: g.foldSQL}
+	in := &frontier.Input{Folded: g.foldSQL, Reclaimable: g.reclaimableClosures}
 	for _, n := range g.Nodes {
 		in.Nodes = append(in.Nodes, n.FQN)
 	}

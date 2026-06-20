@@ -133,6 +133,19 @@ type StaticConfig struct {
 	// disclosure-only), so an over-broad entry costs visibility, never soundness.
 	ExternalBoundaryExempt []string `yaml:"externalBoundaryExempt,omitempty"`
 
+	// ExternalBoundaryTrivial lists third-party package-path prefixes whose
+	// ExternalBoundaryCall disclosures are PURE-COMPUTE / framework plumbing (uuid
+	// generation, an HTTP router's helpers, a codegen runtime) rather than
+	// effect-bearing seams (a cloud-SDK send, a DB driver). Unlike
+	// ExternalBoundaryExempt — which SUPPRESSES the disclosure entirely — this only
+	// TAGS it as the trivial signal/noise tier: the blind spot is still detected,
+	// counted, and rendered (the count is unchanged), so a reader (and a per-tier
+	// view) can separate the framework noise from the effect-bearing handful (§21.A).
+	// Matched by package-path prefix at a segment boundary, like
+	// ExternalBoundaryExempt. Disclosure-only: an over-broad entry mis-PRIORITIZES, it
+	// never hides an effect or moves a verdict.
+	ExternalBoundaryTrivial []string `yaml:"externalBoundaryTrivial,omitempty"`
+
 	// Annotations attach human/AI CONTEXT to a blind spot the analysis already
 	// detected — the irreducible residue a machine-stated shape cannot close (what
 	// happens BEHIND an ExternalBoundaryCall, inside a goroutine, past an unresolved

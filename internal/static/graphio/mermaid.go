@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/jyang234/golang-code-graph/internal/render"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 )
 
@@ -108,6 +109,32 @@ func annotationNotes(g *Graph) []string {
 	return out
 }
 
+// blindSpotLabel is the disclosure-node caption. Every blind spot reads
+// "⊥ <kind><br/>blind spot"; an ExternalBoundaryCall instead names its target package
+// and signal/noise tier, so a graph's many boundary nodes are not one
+// indistinguishable "⊥ ExternalBoundaryCall blind spot" box — the SNS-publish seam
+// reads apart from the uuid seam at a glance (§21.B). The tier (Severity, a structural
+// field) is the reliable distinguisher; the package is a best-effort enrichment parsed
+// from the Detail prose the producer owns, so a parse miss degrades to the tier alone,
+// never to a silent collision.
+func blindSpotLabel(b blindspots.BlindSpot) string {
+	base := "⊥ " + mermaidText(string(b.Kind))
+	if b.Kind != blindspots.ExternalBoundaryCall {
+		return base + "<br/>blind spot"
+	}
+	var parts []string
+	if pkg := frontier.ShortName(blindspots.ExternalPackage(b.Detail)); pkg != "" {
+		parts = append(parts, "→ "+pkg)
+	}
+	if b.Severity != "" {
+		parts = append(parts, string(b.Severity))
+	}
+	if len(parts) == 0 {
+		return base + "<br/>blind spot"
+	}
+	return base + "<br/>" + mermaidText(strings.Join(parts, " · "))
+}
+
 func buildDiscs(g *Graph, ids *idAlloc, nodeID map[string]string) []disc {
 	annotated := map[[2]string]bool{}
 	for _, a := range g.Annotations {
@@ -116,7 +143,7 @@ func buildDiscs(g *Graph, ids *idAlloc, nodeID map[string]string) []disc {
 	var discs []disc
 	for _, b := range g.BlindSpots {
 		id := ids.get("blind_" + string(b.Kind))
-		label := "⊥ " + mermaidText(string(b.Kind)) + "<br/>blind spot"
+		label := blindSpotLabel(b)
 		if annotated[[2]string{b.Site, string(b.Kind)}] {
 			// A blind spot a human/AI has supplied context for: marked so a reader
 			// sees "explained" vs "unexamined" at a glance; the note text rides the

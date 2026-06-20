@@ -381,6 +381,87 @@ func TestExternalBoundaryExemptSuppresses(t *testing.T) {
 	}
 }
 
+// TestExternalBoundaryCallSeverityTier pins the §21.A signal/noise tier: an EBC is
+// tagged effect-bearing by DEFAULT (disclose, don't pre-judge an unrecognized
+// dependency), and trivial only when its package is on the known-benign set. loansvc's
+// errgroup handoff ORCHESTRATES first-party closures that reach the gateway and bus, so
+// it is effect-bearing; declaring its prefix trivial via config re-tags it WITHOUT
+// changing the count (the tier is disclosure-only — it reprioritizes, it never
+// suppresses, unlike externalBoundaryExempt).
+func TestExternalBoundaryCallSeverityTier(t *testing.T) {
+	res, err := statictest.Analyze()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ebcs := func(hints *features.HintSet) []blindspots.BlindSpot {
+		var out []blindspots.BlindSpot
+		for _, b := range blindspots.Detect(res, hints) {
+			if b.Kind == blindspots.ExternalBoundaryCall {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
+
+	// Default: errgroup is effect-bearing (not on the benign built-in set), and every
+	// EBC carries a non-empty tier (no spot is left unclassified by Detect).
+	base := ebcs(features.NewHintSet(res.Config))
+	if len(base) == 0 {
+		t.Fatal("loansvc should emit at least one ExternalBoundaryCall")
+	}
+	var sawErrgroup bool
+	for _, b := range base {
+		if b.Severity != blindspots.SeverityEffectBearing && b.Severity != blindspots.SeverityTrivial {
+			t.Errorf("EBC must carry a tier, got %q at %s", b.Severity, b.Site)
+		}
+		if blindspots.ExternalPackage(b.Detail) == "golang.org/x/sync/errgroup" {
+			sawErrgroup = true
+			if b.Severity != blindspots.SeverityEffectBearing {
+				t.Errorf("errgroup orchestrates effect-bearing closures; want effect-bearing, got %q", b.Severity)
+			}
+		}
+	}
+	if !sawErrgroup {
+		t.Fatalf("expected the errgroup EBC; manifest=%+v", base)
+	}
+
+	// Declaring the prefix trivial re-tags it without dropping it: same EBC count, but
+	// errgroup is now trivial — the disclosure-only tier, distinct from exempt's drop.
+	cfg := *res.Config
+	cfg.Static.ExternalBoundaryTrivial = append([]string{"golang.org/x/sync"}, cfg.Static.ExternalBoundaryTrivial...)
+	tagged := ebcs(features.NewHintSet(&cfg))
+	if len(tagged) != len(base) {
+		t.Errorf("trivial tier must not change the EBC count (disclosure-only): base=%d tagged=%d", len(base), len(tagged))
+	}
+	for _, b := range tagged {
+		if blindspots.ExternalPackage(b.Detail) == "golang.org/x/sync/errgroup" && b.Severity != blindspots.SeverityTrivial {
+			t.Errorf("config trivial prefix should tag errgroup trivial, got %q", b.Severity)
+		}
+	}
+}
+
+// TestExternalPackageRoundTrips pins the Detail⇄package parse used to label boundary
+// nodes (§21.B): ExternalPackage recovers exactly what Detect embedded, and rejects a
+// Detail of another shape rather than returning a bogus package.
+func TestExternalPackageRoundTrips(t *testing.T) {
+	res, err := statictest.Analyze()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blindspots.Detect(res, features.NewHintSet(res.Config)) {
+		if b.Kind != blindspots.ExternalBoundaryCall {
+			if got := blindspots.ExternalPackage(b.Detail); got != "" {
+				t.Errorf("ExternalPackage must return \"\" for a %s Detail, got %q", b.Kind, got)
+			}
+			continue
+		}
+		if got := blindspots.ExternalPackage(b.Detail); got == "" || strings.Contains(got, ";") {
+			t.Errorf("ExternalPackage(%q) = %q, want the bare package path", b.Detail, got)
+		}
+	}
+}
+
 // highFanOutMain renders a main package whose interface has n implementations,
 // all instantiated, so RTA resolves the interface call to n callees.
 func highFanOutMain(n int) string {

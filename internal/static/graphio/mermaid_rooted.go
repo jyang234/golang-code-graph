@@ -83,6 +83,24 @@ func (g *Graph) MermaidRootedAt(root string, opts MermaidOptions) (string, bool)
 		}
 	}
 
+	// Annotations decorate a blind spot by (Site, Kind); the rooted view must carry
+	// those whose blind spot SURVIVED the prune above, or the per-handler diagram drops
+	// the 🗒 context the whole-graph view shows. It did: sub.Annotations was left nil, so
+	// rooted (--root) views rendered ZERO annotation notes and ZERO 🗒 markers even
+	// though the whole-graph render carried them — the most-read diagram was the one
+	// missing the boundary context (§21.B). Filter to the surviving (Site, Kind) set, in
+	// parallel with the blind-spot prune; an annotation whose spot was pruned rides that
+	// spot's "shown only in the whole-graph view" disclosure, so it is not lost silently.
+	keptSpot := make(map[[2]string]bool, len(sub.BlindSpots))
+	for _, b := range sub.BlindSpots {
+		keptSpot[[2]string{b.Site, string(b.Kind)}] = true
+	}
+	for _, a := range g.Annotations {
+		if keptSpot[[2]string{a.Site, a.Kind}] {
+			sub.Annotations = append(sub.Annotations, a)
+		}
+	}
+
 	var notes []string
 	if droppedBlind > 0 {
 		notes = append(notes, plural(droppedBlind, "blind spot")+

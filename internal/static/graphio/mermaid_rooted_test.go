@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/render"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 )
 
@@ -69,6 +70,44 @@ func TestMermaidRootedKeepsFrontierAndPrunesOtherHandler(t *testing.T) {
 	}
 	if !strings.Contains(out, "scope: POST /create") {
 		t.Errorf("header should name the scope:\n%s", out)
+	}
+}
+
+// TestMermaidRootedCarriesAnnotationsAndBoundaryLabel pins the §21.B fixes: a rooted
+// (--root) view (a) carries the 🗒 annotation context for a blind spot in scope —
+// previously dropped, because sub.Annotations was never populated, so rooted views
+// rendered zero notes — and (b) labels an ExternalBoundaryCall node with its target
+// package and signal/noise tier, so an effect-bearing SDK seam is not one of N
+// indistinguishable "⊥ ExternalBoundaryCall blind spot" boxes.
+func TestMermaidRootedCarriesAnnotationsAndBoundaryLabel(t *testing.T) {
+	const eval = "(*example.com/svc/internal/origination.Evaluator).Evaluate"
+	g := rootedSampleGraph()
+	g.BlindSpots = []blindspots.BlindSpot{{
+		Kind:     blindspots.ExternalBoundaryCall,
+		Site:     eval, // reachable from POST /create (create → eval)
+		Detail:   "hands off to external package github.com/customerio/go-customerio; its behavior is outside the analyzed module and invisible to the static call graph",
+		Severity: blindspots.SeverityEffectBearing,
+	}}
+	g.Annotations = []Annotation{{Site: eval, Kind: "ExternalBoundaryCall", Note: "POSTs to track.customer.io", By: "dev@x"}}
+
+	out, ok := g.MermaidRootedAt("POST /create", MermaidOptions{MaxTier: 2})
+	if !ok {
+		t.Fatal("expected POST /create to resolve")
+	}
+	// (b) the boundary node names its package (short form) and tier, not a bare label.
+	if !strings.Contains(out, "go-customerio") || !strings.Contains(out, "effect-bearing") {
+		t.Errorf("rooted EBC node must name its package and tier:\n%s", out)
+	}
+	if strings.Contains(out, "ExternalBoundaryCall<br/>blind spot") {
+		t.Errorf("the EBC node must not render the bare, undifferentiated label:\n%s", out)
+	}
+	// (a) the annotation context rides the rooted view: the 🗒 marker on the node and
+	// the note text in the header — both require sub.Annotations to be populated.
+	if !strings.Contains(out, "🗒") {
+		t.Errorf("rooted view must mark the annotated blind spot with 🗒:\n%s", out)
+	}
+	if !strings.Contains(out, "POSTs to track.customer.io") {
+		t.Errorf("rooted view must carry the annotation note in the header:\n%s", out)
 	}
 }
 

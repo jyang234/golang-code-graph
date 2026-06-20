@@ -236,6 +236,57 @@ type BlindSpot struct {
 	Kind   string `json:"kind"`
 	Site   string `json:"site"`
 	Detail string `json:"detail"`
+	// Severity is the producer's signal/noise tier, set only for ExternalBoundaryCall
+	// ("effect-bearing" vs "trivial"; empty for every other kind and for a graph built
+	// before the tier existed). Decoded on this side of the trust boundary like every
+	// other field — DisallowUnknownFields would reject it otherwise — and surfaced beside
+	// the spot so a reader separates the effect-bearing seams from the framework noise.
+	// Disclosure-only: no verdict, count, or reachability computation reads it (§21.A).
+	Severity string `json:"severity,omitempty"`
+}
+
+// externalBoundaryKind is the wire Kind value of an ExternalBoundaryCall blind spot.
+// A local const (not an import of the producer's blindspots package) keeps groundwork
+// on its own side of the trust boundary — the convention every graph-carried enum
+// here follows; the JSON contract is pinned by the committed goldens.
+const externalBoundaryKind = "ExternalBoundaryCall"
+
+// EBCTierNote summarizes the ExternalBoundaryCall signal/noise split inside a
+// blind-spot set as a parenthetical (" (2 effect-bearing, 7 trivial external)"), or
+// "" when the set holds no ExternalBoundaryCall. It makes a bare blind-spot COUNT
+// readable: most of an EBC-heavy count is framework/utility plumbing, not the
+// effect-bearing seams a reviewer acts on (§21.A). Disclosure-only — it reorders
+// attention, never a verdict or the count itself. Tiers print in a fixed order so the
+// note is deterministic; an EBC with no severity (a pre-tier graph) is "unclassified".
+func EBCTierNote(spots []BlindSpot) string {
+	var effect, trivial, unclassified int
+	for _, s := range spots {
+		if s.Kind != externalBoundaryKind {
+			continue
+		}
+		switch s.Severity {
+		case "effect-bearing":
+			effect++
+		case "trivial":
+			trivial++
+		default:
+			unclassified++
+		}
+	}
+	if effect+trivial+unclassified == 0 {
+		return ""
+	}
+	var parts []string
+	if effect > 0 {
+		parts = append(parts, fmt.Sprintf("%d effect-bearing", effect))
+	}
+	if trivial > 0 {
+		parts = append(parts, fmt.Sprintf("%d trivial", trivial))
+	}
+	if unclassified > 0 {
+		parts = append(parts, fmt.Sprintf("%d unclassified", unclassified))
+	}
+	return " (" + strings.Join(parts, ", ") + " external)"
 }
 
 // ProvenanceLine renders the one-line call-graph substrate disclosure shared by

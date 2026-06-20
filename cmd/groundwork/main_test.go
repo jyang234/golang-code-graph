@@ -242,6 +242,38 @@ func TestRunChainsBrokerDedup(t *testing.T) {
 	}
 }
 
+// TestReachSurfacesBlindSpotTierAndAnnotation pins §21.C: reach surfaces the per-spot
+// detail WITH the human/AI annotation context and the ExternalBoundaryCall signal/noise
+// tier, so it no longer shows a thinner view than ground. The graph has one annotated,
+// effect-bearing EBC.
+func TestReachSurfacesBlindSpotTierAndAnnotation(t *testing.T) {
+	const g = `{
+  "algo":"rta",
+  "nodes":[{"fqn":"pkg.Send","sig":"func()","tier":1}],
+  "edges":[],
+  "blind_spots":[{"kind":"ExternalBoundaryCall","site":"pkg.Send","detail":"hands off to external package acme.io/sdk; its behavior is outside the analyzed module","severity":"effect-bearing"}],
+  "annotations":[{"site":"pkg.Send","kind":"ExternalBoundaryCall","note":"POSTs to acme","by":"dev@x"}]
+}`
+	path := filepath.Join(t.TempDir(), "g.json")
+	if err := os.WriteFile(path, []byte(g), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if err := run([]string{"reach", path, "pkg.Send"}); err != nil {
+			t.Fatalf("reach: %v", err)
+		}
+	})
+	if !strings.Contains(out, "blind spots on this function: 1 (1 effect-bearing external)") {
+		t.Errorf("reach must show the EBC tier split in the count:\n%s", out)
+	}
+	if !strings.Contains(out, "[effect-bearing]") {
+		t.Errorf("reach must tag the per-spot tier:\n%s", out)
+	}
+	if !strings.Contains(out, "🗒 POSTs to acme") || !strings.Contains(out, "dev@x") {
+		t.Errorf("reach must surface the annotation note (parity with ground):\n%s", out)
+	}
+}
+
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
 // wrote.
 func captureStdout(t *testing.T, fn func()) string {
