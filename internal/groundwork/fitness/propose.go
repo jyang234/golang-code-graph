@@ -95,15 +95,26 @@ func proposeReclaimHint(ix *graph.Index, g *guide) {
 // proposal — guessed layers on a cyclic codebase produce noise, not a ratchet.
 func proposeLayers(ix *graph.Index, p *policy.Policy, g *guide) {
 	// A graph can span more than one binary (e.g. a server and a worker), each
-	// with its own composition root. Collect EVERY .main's package, not just the
-	// last one iterated — keying on the last (ix.Nodes() is sorted) silently
-	// dropped all but the alphabetically-final root, exempting one binary's root
-	// while ranking another's as an ordinary layer.
+	// with its own composition root, and ALL of them must be exempted from layer
+	// ranking. Prefer the producer's AUTHORITATIVE main-package set (flowmap's
+	// roots.KindMain, carried on the graph): it is the SSA fact, so it never
+	// over-matches a method named main or a non-main package that declares a
+	// package-level `func main`. Fall back to the structural `.main` heuristic only
+	// for a graph from a pre-field flowmap — keying on EVERY `.main`, not just the
+	// last iterated (ix.Nodes() is sorted), since the last silently dropped all but
+	// the alphabetically-final root, exempting one binary's root while ranking
+	// another's as an ordinary layer.
 	rootPkgs := map[string]bool{}
-	for _, fqn := range ix.Nodes() {
-		if strings.HasSuffix(fqn, ".main") {
-			if pkg := PkgOf(fqn); pkg != "" {
-				rootPkgs[pkg] = true
+	if roots := ix.CompositionRoots(); len(roots) > 0 {
+		for _, pkg := range roots {
+			rootPkgs[pkg] = true
+		}
+	} else {
+		for _, fqn := range ix.Nodes() {
+			if strings.HasSuffix(fqn, ".main") {
+				if pkg := PkgOf(fqn); pkg != "" {
+					rootPkgs[pkg] = true
+				}
 			}
 		}
 	}

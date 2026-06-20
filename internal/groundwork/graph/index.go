@@ -423,3 +423,10 @@ func (ix *Index) Tool() string { return ix.g.Tool }
 
 // Entrypoints returns the graph's named roots (routes, topics) with handlers.
 func (ix *Index) Entrypoints() []Entrypoint { return ix.g.Entrypoints }
+
+// CompositionRoots returns the producer's authoritative `package main` import
+// paths (flowmap's roots.KindMain set), or nil when unrecorded — a graph from a
+// pre-field flowmap, or a library with no command. The layering proposer prefers
+// it over its structural `.main` heuristic so the assembly point it exempts is the
+// one the producer's SSA identified, not an FQN guess.
+func (ix *Index) CompositionRoots() []string { return ix.g.CompositionRoots }
