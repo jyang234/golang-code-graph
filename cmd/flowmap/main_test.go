@@ -189,6 +189,9 @@ func TestRunGraphRollup(t *testing.T) {
 	if err := run([]string{"graph", "--rollup", "package", "--root", "POST /loan-application", fixtureDir()}); err == nil {
 		t.Error("--rollup and --root are mutually exclusive and must be rejected")
 	}
+	if err := run([]string{"graph", "--rollup", "package", "--entry", "POST /loan-application", fixtureDir()}); err == nil {
+		t.Error("--rollup and --entry are mutually exclusive (whole-service view) and must be rejected")
+	}
 }
 
 func firstLines(s string, n int) string {

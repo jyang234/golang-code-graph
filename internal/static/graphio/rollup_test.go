@@ -81,8 +81,10 @@ func TestRollupExcludesTrivialEBC(t *testing.T) {
 // surface as a run-to-run difference in either the JSON model or the Mermaid render.
 func TestRollupDeterministic(t *testing.T) {
 	g := rollupSampleGraph()
+	base := rollupSampleGraph() // a second graph for the diff render path
 	first := g.RollupByPackage()
 	firstMermaid := first.Mermaid()
+	firstDiffMermaid := RollupMermaidDiff(base, g)
 	for i := 0; i < 50; i++ {
 		got := g.RollupByPackage()
 		if !reflect.DeepEqual(got, first) {
@@ -90,6 +92,11 @@ func TestRollupDeterministic(t *testing.T) {
 		}
 		if m := got.Mermaid(); m != firstMermaid {
 			t.Fatalf("rollup Mermaid not deterministic on run %d:\n%s\nvs\n%s", i, m, firstMermaid)
+		}
+		// The diff render is its own ordering path (union node-id allocation + linkStyle
+		// index assignment), so it ships with its own determinism check.
+		if m := RollupMermaidDiff(base, g); m != firstDiffMermaid {
+			t.Fatalf("rollup diff Mermaid not deterministic on run %d:\n%s\nvs\n%s", i, m, firstDiffMermaid)
 		}
 	}
 }
@@ -111,7 +118,7 @@ func TestRollupDiffSplitAndSymmetry(t *testing.T) {
 	})
 	branch := branchGraph.RollupByPackage()
 
-	d := RollupDiff(base, branch)
+	d := diffRollups(base, branch)
 	if len(d.CodeRemoved) != 1 || d.CodeRemoved[0].Kind != RollupCall {
 		t.Errorf("dropping the cross-package call must be ONE code removal, got %+v", d.CodeRemoved)
 	}
@@ -123,9 +130,67 @@ func TestRollupDiffSplitAndSymmetry(t *testing.T) {
 	}
 
 	// Symmetry: base↔branch swap flips Added↔Removed exactly.
-	rev := RollupDiff(branch, base)
+	rev := diffRollups(branch, base)
 	if !reflect.DeepEqual(rev.CodeAdded, d.CodeRemoved) || !reflect.DeepEqual(rev.CodeRemoved, d.CodeAdded) ||
 		!reflect.DeepEqual(rev.DisclosureAdded, d.DisclosureRemoved) || !reflect.DeepEqual(rev.DisclosureRemoved, d.DisclosureAdded) {
 		t.Errorf("diff is not symmetric under base↔branch swap:\nfwd=%+v\nrev=%+v", d, rev)
+	}
+}
+
+// TestRollupDiffNoteOnlyChangeIsNotADelta pins that a disclosed edge present in BOTH
+// sides that differs only in its annotation note is NOT a delta — edge identity is
+// (From, To, Kind), so the effect did not change; only its human context did. This is the
+// boundary the code-vs-disclosure split rests on: a re-worded note is not a new effect.
+func TestRollupDiffNoteOnlyChangeIsNotADelta(t *testing.T) {
+	base := rollupSampleGraph().RollupByPackage()
+
+	branchGraph := rollupSampleGraph()
+	branchGraph.Annotations = []Annotation{
+		{Site: "(*ex.com/svc/handler.H).Serve", Kind: "ExternalBoundaryCall", Claim: "POSTs to a DIFFERENT host"},
+	}
+	branch := branchGraph.RollupByPackage()
+
+	// The disclosed edge's Note differs between the two rollups...
+	if base.Edges[2].Note == branch.Edges[2].Note {
+		t.Fatalf("test setup: expected the disclosed edge note to differ, both = %q", base.Edges[2].Note)
+	}
+	// ...yet the diff reports nothing, in either direction.
+	d := diffRollups(base, branch)
+	if len(d.CodeAdded)+len(d.CodeRemoved)+len(d.DisclosureAdded)+len(d.DisclosureRemoved) != 0 {
+		t.Errorf("a note-only change must produce no delta, got %+v", d)
+	}
+}
+
+// TestRollupDiffDisclosesSkew pins the honesty channel the rollup diff shares with the
+// call-graph diff: a base↔branch SUBSTRATE skew (empty base, --algo mismatch, or a
+// package-less/old base) is disclosed as a caveat rather than silently painted as a
+// code/disclosure delta — the confidently-wrong delta the prime directive forbids. A
+// clean diff stays caveat-free.
+func TestRollupDiffDisclosesSkew(t *testing.T) {
+	hasCaveat := func(cs []string, want string) bool {
+		for _, c := range cs {
+			if strings.Contains(c, want) {
+				return true
+			}
+		}
+		return false
+	}
+	branch := rollupSampleGraph()
+	branch.Algo = "vta"
+
+	if d := RollupDiff(&Graph{Algo: "vta"}, branch); !hasCaveat(d.Caveats, "empty") {
+		t.Errorf("an empty base must be disclosed, got %v", d.Caveats)
+	}
+	rtaBase := rollupSampleGraph()
+	rtaBase.Algo = "rta"
+	if d := RollupDiff(rtaBase, branch); !hasCaveat(d.Caveats, "algo differs") {
+		t.Errorf("an algo skew must be disclosed, got %v", d.Caveats)
+	}
+	pkgless := &Graph{Algo: "vta", Nodes: []Node{{FQN: "x.F"}}}
+	if d := RollupDiff(pkgless, branch); !hasCaveat(d.Caveats, "no package facts") {
+		t.Errorf("a package-less base must be disclosed, got %v", d.Caveats)
+	}
+	if d := RollupDiff(branch, branch); len(d.Caveats) != 0 {
+		t.Errorf("a clean same-graph diff must be caveat-free, got %v", d.Caveats)
 	}
 }

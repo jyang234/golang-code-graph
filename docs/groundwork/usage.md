@@ -1125,7 +1125,17 @@ A trivial (plumbing-tier) `ExternalBoundaryCall` is excluded — the same
   `disclosed` delta is only a *newly-documented* effect (pure instrumentation).
   Without the split, annotating a seam reads as an architecture change. The diff
   is symmetric: swapping base and branch flips every `*_added` into the matching
-  `*_removed`.
+  `*_removed`. Edge identity is `(from, to, kind)` — a re-worded annotation note is
+  not a delta. A base↔branch **substrate skew** (empty base, `--algo`/tool/reclaimer
+  mismatch, or a base built before per-node `package`) rides a `caveats[]` field in
+  the JSON and `%% ⚠` header comments in the Mermaid, the same honesty channel the
+  call-graph diff carries — so a precision/version difference is never silently
+  painted as an architecture change.
+
+The rollup is a **whole-service** view: `--rollup` is mutually exclusive with
+`--entry` and `--root` (an entry-scoped build would silently drop out-of-cone
+components and disclosed effects). Like `--mermaid` it carries no `--stamp`/tool
+provenance — it is a view, never a gate.
 
 ---
 

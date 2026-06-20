@@ -158,7 +158,7 @@ func cmdGraph(args []string) error {
 		graphio.ApplyReclaimers(g, res)
 	}
 	if *rollup != "" {
-		return cmdGraphRollup(*rollup, g, *asMermaid, *diffBase, *rootAt)
+		return cmdGraphRollup(*rollup, g, *asMermaid, *diffBase, *rootAt, *entry)
 	}
 	if *asMermaid {
 		// The Mermaid flowchart is a deterministic view of the graph, so it carries
@@ -227,31 +227,36 @@ func cmdGraph(args []string) error {
 // disclosed). Default output is canonical JSON; --mermaid renders the flowchart;
 // --diff BASE renders the component delta. The rollup is a VIEW like --mermaid, so it
 // carries no stamp/tool provenance (those gate-adjacent fields ride the graph JSON).
-func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, rootAt string) error {
+func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, rootAt, entry string) error {
 	if kind != "package" {
 		return fmt.Errorf(`graph --rollup: only "package" is supported, got %q`, kind)
 	}
 	if rootAt != "" {
 		return fmt.Errorf("graph --rollup and --root are mutually exclusive: --rollup is the component (C3) view, --root scopes the call-graph render")
 	}
-	r := g.RollupByPackage()
+	// The rollup is a WHOLE-SERVICE view: an --entry build prunes nodes/edges to the
+	// entry cone and drops the unscoped disclosure sections, so a blind effect whose site
+	// is out of cone would silently vanish from the component view — a hidden disclosure.
+	// Refuse rather than emit a confidently-incomplete C3 map (fail closed).
+	if entry != "" {
+		return fmt.Errorf("graph --rollup and --entry are mutually exclusive: the component (C3) rollup is a whole-service view; an entry-scoped build would silently drop out-of-cone components and disclosed effects")
+	}
 	if diffBase != "" {
 		base, err := loadGraphJSON(diffBase)
 		if err != nil {
 			return fmt.Errorf("--diff base graph: %w", err)
 		}
-		baseRollup := base.RollupByPackage()
 		if asMermaid {
-			_, err = os.Stdout.WriteString(render.Fence(graphio.RollupMermaidDiff(baseRollup, r)))
+			_, err = os.Stdout.WriteString(render.Fence(graphio.RollupMermaidDiff(base, g)))
 			return err
 		}
-		return emitCanonJSON(graphio.RollupDiff(baseRollup, r))
+		return emitCanonJSON(graphio.RollupDiff(base, g))
 	}
 	if asMermaid {
-		_, err := os.Stdout.WriteString(render.Fence(r.Mermaid()))
+		_, err := os.Stdout.WriteString(render.Fence(g.RollupByPackage().Mermaid()))
 		return err
 	}
-	return emitCanonJSON(r)
+	return emitCanonJSON(g.RollupByPackage())
 }
 
 // emitCanonJSON writes v as canonical JSON to stdout — the same deterministic encoding

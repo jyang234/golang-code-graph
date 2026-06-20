@@ -176,10 +176,12 @@ func rollupEdgeLess(a, b RollupEdge) bool {
 // the manifest matches an annotation to its blind spot on.
 type siteKind struct{ site, kind string }
 
-// annotationNotes indexes the human context per (site, kind): the Claim (the
+// rollupAnnotationNotes indexes the human context per (site, kind): the Claim (the
 // structured "what this effect does") when present, else the freeform Note. A
 // disclosed component edge reads it to carry the reviewer's explanation of a blind
-// effect the machine cannot prove.
+// effect the machine cannot prove. Graph annotations are already deduped per (Site, Kind)
+// by mergeAnnotations (kept the lexically-smallest on a collision), so the last-write here
+// is deterministic — it never sees two notes for one key on a graph produced by Build.
 func rollupAnnotationNotes(g *Graph) map[siteKind]string {
 	if len(g.Annotations) == 0 {
 		return nil
@@ -198,20 +200,25 @@ func rollupAnnotationNotes(g *Graph) map[siteKind]string {
 }
 
 // boundaryPeer extracts the external-system id from a typed boundary edge target —
-// the first token after the "boundary:" prefix ("boundary:db SELECT applicants" → "db",
-// "boundary:credit-bureau GET /score/{id}" → "credit-bureau"). The peer is the C3
-// altitude for an external effect: every DB op collapses to "db", every publish to
-// "bus", every call to a named peer to that peer. Returns "" for a non-boundary target
-// (a first-party FQN), which is how the caller tells a call edge from an effect edge.
+// the first whitespace-delimited token after the "boundary:" prefix ("boundary:db SELECT
+// applicants" → "db", "boundary:credit-bureau GET /score/{id}" → "credit-bureau"). The
+// peer is the C3 altitude for an external effect: every DB op collapses to "db", every
+// publish to "bus", every call to a named peer to that peer. Returns "" for a non-boundary
+// target (a first-party FQN), which is how the caller tells a call edge from an effect
+// edge.
+//
+// The "boundary:<peer> <op>" shape is produced in labels.go and read field-wise the same
+// way by the budget/contract/frontier consumers (strings.Fields after the prefix); this
+// uses strings.Fields too so it cannot drift from that convention on odd whitespace.
 func boundaryPeer(to string) string {
 	rest, ok := strings.CutPrefix(to, "boundary:")
 	if !ok {
 		return ""
 	}
-	if i := strings.IndexByte(rest, ' '); i >= 0 {
-		return rest[:i]
+	if f := strings.Fields(rest); len(f) > 0 {
+		return f[0]
 	}
-	return rest
+	return ""
 }
 
 // lastSegment is the final path segment of an import path — the package's bare name,
@@ -244,13 +251,36 @@ type PackageRollupDiff struct {
 	CodeRemoved       []RollupEdge `json:"code_removed"`
 	DisclosureAdded   []RollupEdge `json:"disclosure_added"`
 	DisclosureRemoved []RollupEdge `json:"disclosure_removed"`
+	// Caveats discloses a base↔branch SUBSTRATE skew (empty base, --algo/tool/reclaimer
+	// mismatch, or a base/branch built before per-node package) that would paint a
+	// non-code difference as a code/disclosure delta. Same honesty channel the
+	// call-graph diff carries (provenanceCaveats); a skew silently shown as added/removed
+	// edges is exactly the confidently-wrong delta the prime directive forbids. Omitted
+	// when the two sides are comparable, so a clean diff stays caveat-free.
+	Caveats []string `json:"caveats,omitempty"`
 }
 
-// RollupDiff computes base → branch. An edge's identity is (From, To, Kind); Note is
-// presentation, so a pure note change is not a delta. The split is by edge class:
-// resolved (call/effect) → code, disclosed → disclosure. Symmetric by construction —
-// swapping base and branch swaps every Added list with the matching Removed.
-func RollupDiff(base, branch *PackageRollup) *PackageRollupDiff {
+// RollupDiff computes the component delta between two GRAPHS (base → branch). It takes
+// the graphs, not pre-built rollups, so it can disclose the base↔branch substrate skew
+// (Caveats) the same way the call-graph MermaidDiff does — a rollup of two
+// differently-built graphs would otherwise read precision/tool/reclaimer differences as
+// architecture changes. An edge's identity is (From, To, Kind); Note is presentation, so
+// a pure note change is not a delta. Symmetric by construction — swapping base and branch
+// swaps every Added list with the matching Removed.
+func RollupDiff(base, branch *Graph) *PackageRollupDiff {
+	rb, rbr := base.RollupByPackage(), branch.RollupByPackage()
+	d := diffRollups(rb, rbr)
+	d.Caveats = rollupDiffCaveats(base, branch, rb, rbr)
+	return d
+}
+
+// diffRollups is the pure code-vs-disclosure split between two already-built rollups —
+// the diff logic without the graph-level provenance disclosure, so the split/symmetry
+// invariant can be tested on rollups directly. Each output list is sorted because the
+// inputs (rb.Edges / rbr.Edges) are sorted by RollupByPackage and the filtering append
+// preserves that order; sortRollupEdges then makes the ordering contract hold regardless
+// of how a caller built the rollups.
+func diffRollups(base, branch *PackageRollup) *PackageRollupDiff {
 	baseSet := rollupEdgeSet(base)
 	branchSet := rollupEdgeSet(branch)
 	d := &PackageRollupDiff{
@@ -269,13 +299,28 @@ func RollupDiff(base, branch *PackageRollup) *PackageRollupDiff {
 			d.add(e, false)
 		}
 	}
-	// branch.Edges / base.Edges are already sorted, so each list is built in order; no
-	// re-sort needed — but sort defensively so the contract holds regardless of input.
 	sortRollupEdges(d.CodeAdded)
 	sortRollupEdges(d.CodeRemoved)
 	sortRollupEdges(d.DisclosureAdded)
 	sortRollupEdges(d.DisclosureRemoved)
 	return d
+}
+
+// rollupDiffCaveats is the base↔branch skew disclosure for a rollup diff: the call-graph
+// provenance caveats (empty base, --algo/tool/reclaimer mismatch) PLUS a package-facts
+// caveat — a graph with nodes but no rolled-up components carries no per-node package
+// (built before the field, or a non-package graph), so its whole side reads as
+// added/removed. Without it an old base would silently report the entire branch as new
+// architecture.
+func rollupDiffCaveats(base, branch *Graph, rb, rbr *PackageRollup) []string {
+	caveats := provenanceCaveats(base, branch)
+	if len(base.Nodes) > 0 && len(rb.Components) == 0 {
+		caveats = append(caveats, "base graph carries no package facts (built before per-node package?) — every branch component reads as added")
+	}
+	if len(branch.Nodes) > 0 && len(rbr.Components) == 0 {
+		caveats = append(caveats, "branch graph carries no package facts — every base component reads as removed")
+	}
+	return caveats
 }
 
 // add routes an edge into the code or disclosure half of the diff by its class.

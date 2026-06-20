@@ -71,16 +71,29 @@ func (r *PackageRollup) Mermaid() string {
 	return b.String()
 }
 
-// RollupMermaidDiff renders base → branch at the component altitude. Edge SHAPE is the
-// class (solid resolved, dashed disclosed); fill/border/±-prefix is the delta state, so
-// a newly-documented blind effect is never mistaken for a new real dependency.
-func RollupMermaidDiff(base, branch *PackageRollup) string {
+// RollupMermaidDiff renders the component delta between two GRAPHS (base → branch). It
+// takes the graphs, not pre-built rollups, so it can disclose the base↔branch substrate
+// skew (the provenance caveats) the same way the call-graph MermaidDiff does. Edge SHAPE
+// is the class (solid resolved, dashed disclosed); fill/border/±-prefix is the delta
+// state, so a newly-documented blind effect is never mistaken for a new real dependency.
+func RollupMermaidDiff(base, branch *Graph) string {
+	rb, rbr := base.RollupByPackage(), branch.RollupByPackage()
+	return rollupMermaidDiff(rb, rbr, rollupDiffCaveats(base, branch, rb, rbr))
+}
+
+// rollupMermaidDiff renders the delta between two already-built rollups, with the
+// base↔branch skew caveats disclosed as header comments (the honesty channel a
+// substrate-mismatched diff needs so it cannot read as a confidently-wrong delta).
+func rollupMermaidDiff(base, branch *PackageRollup, caveats []string) string {
 	ids := &idAlloc{used: map[string]bool{}}
 	reserveLegendIDs(ids)
 	var b strings.Builder
 	b.WriteString("flowchart LR\n")
 	b.WriteString("    %% component (C3) rollup diff — base → branch (a view, never a gate)\n")
 	b.WriteString("    %% solid = code (call/effect); dashed = disclosed effect; ＋ added, − removed\n")
+	for _, c := range caveats {
+		b.WriteString("    %% ⚠ " + comment(c) + "\n")
+	}
 	writeLegend(&b)
 
 	// Component nodes in union order, colored by membership state.
