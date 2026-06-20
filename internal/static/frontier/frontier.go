@@ -12,10 +12,13 @@
 //
 //	A  — truly dynamic: resolved only at runtime (<dynamic> bus/HTTP targets,
 //	     reflection, cgo/unsafe/linkname). Irreducible statically; disclose.
-//	B  — reclaimable structure: statically determined but unconnected by the
-//	     current builder (the strict-server `$1` dispatch seam; a route whose cone
-//	     is starved of every effect). The static lever — a sound reclaimer ADDS
-//	     the missing edge.
+//	B  — reclaimable structure: statically determined AND reconnectable by a known
+//	     reclaimer (the strict-server `$1` dispatch seam; a route whose cone is
+//	     starved of every effect). The static lever — a sound reclaimer ADDS the
+//	     missing edge. A severed closure no reclaimer recognizes (an errgroup or
+//	     constructor closure dispatched through a struct field) is NOT B: it is
+//	     disclosed as A, so the frontier never promises a reclaim `--reclaim` cannot
+//	     perform (§21.②).
 //	B2 — consumer-reclaimable: opaque only because the SOURCE is non-constant (a
 //	     `db ExecContext` from runtime-built SQL). It splits in two (plan §2):
 //	       B2a — accumulator-reclaimable by the maintainer-side SQL const-fold
@@ -71,6 +74,17 @@ type Input struct {
 	// consumer ask; when false, the opaque-db set is the undifferentiated B2 union,
 	// and the disclosure points the reader at --reclaim-sql first.
 	Folded bool
+
+	// Reclaimable is the set of closure FQNs a known dispatch-seam reclaimer (the
+	// strict-server reclaimer) could ACTUALLY reconnect — computed upstream as a dry
+	// run over the program (graphio supplies it; the classifier stays serialization-
+	// and SSA-free). It gates the severed-closure bin: a severed closure IN this set is
+	// reclaimable (B) and the marker promises the connect; one NOT in it is irreducible
+	// (A) and the marker says so, so the frontier never advertises a reclaim `--reclaim`
+	// cannot perform (§21.②). Empty (the classifier's standalone-test default) means no
+	// closure is reclaimable, so every severed closure is disclosed as A — fail closed:
+	// without proof a reclaimer can deliver, do not promise one.
+	Reclaimable []string
 }
 
 // InEdge is a call or boundary edge (To is a "boundary:..." label for an effect).
@@ -137,6 +151,11 @@ func Classify(in *Input) *Result {
 		}
 	}
 
+	reclaimable := make(map[string]bool, len(in.Reclaimable))
+	for _, fqn := range in.Reclaimable {
+		reclaimable[fqn] = true
+	}
+
 	seen := map[[3]string]bool{}
 	var markers []Marker
 	add := func(m Marker) {
@@ -168,8 +187,8 @@ func Classify(in *Input) *Result {
 		}
 	}
 
-	// Structural markers: the severed `$N` dispatch seam (B). A closure qualifies
-	// only when ALL of:
+	// Structural markers: the severed `$N` dispatch seam. A closure qualifies as
+	// severed only when ALL of:
 	//   - it is a graph root (no caller) — the forward edge into it was lost;
 	//   - its de-`$N` lexical parent IS a node — we know the exact reclaim target;
 	//   - it REACHES A BOUNDARY EFFECT — it hides real downstream work.
@@ -181,9 +200,18 @@ func Classify(in *Input) *Result {
 	// from the effect-producing nodes (O(V+E)), so the severed-closure and
 	// entrypoint checks below are O(1) lookups instead of a fresh forward BFS per
 	// candidate (which was O((k+m)·(V+E))).
+	//
+	// The bin then turns on RECLAIMABILITY (§21.②): a severed closure a known
+	// reclaimer can actually reconnect (in.Reclaimable — the strict-server seam) is B,
+	// and its marker promises the connect; one no reclaimer recognizes (an errgroup or
+	// constructor closure dispatched through a struct field — the shape `--reclaim`
+	// leaves untouched) is A — irreducible to static, so the marker says exactly that
+	// instead of advertising a reclaim the flag will not deliver. Previously every
+	// severed closure was B, so `frontier` listed reclaims `--reclaim` could not perform.
 	reaches := effectReachers(out, nodes)
 
-	severedParent := map[string]bool{}
+	severedParent := map[string]bool{}     // parent owns an effect-bearing severed closure (confirmed severance)
+	reclaimableParent := map[string]bool{} // ... and a known reclaimer can reconnect that closure (B, not A)
 	for fqn := range nodes {
 		if hasCaller[fqn] {
 			continue
@@ -196,26 +224,42 @@ func Classify(in *Input) *Result {
 			continue
 		}
 		severedParent[parent] = true
-		add(Marker{Kind: "severed-closure", Bin: BinB, Site: fqn, Owner: parent,
-			ReclaimerHint: "connect " + ShortName(parent) + " to this closure across the dispatch seam"})
+		if reclaimable[fqn] {
+			reclaimableParent[parent] = true
+			add(Marker{Kind: "severed-closure", Bin: BinB, Site: fqn, Owner: parent,
+				ReclaimerHint: "connect " + ShortName(parent) + " to this closure across the dispatch seam"})
+		} else {
+			add(Marker{Kind: "severed-closure", Bin: BinA, Site: fqn, Owner: parent,
+				ReclaimerHint: "no static reclaimer recognizes this dispatch seam (the closure does not flow to a known dispatcher) — irreducible without runtime observation"})
+		}
 	}
 
 	// Attribution: a named entrypoint reaching no boundary effect is one of two
 	// states. If it owns a severed effect-bearing closure — the effect sits in its
-	// OWN `$N` closure, disconnected — it is a CONFIRMED seam (starved-entrypoint,
-	// B). Otherwise its severance is UNCONFIRMED: a genuine no-op stub, or a seam
-	// shape this classifier does not recognize. The unconfirmed routes are NOT
-	// markers (they would cry wolf on every health endpoint and churn the committed
-	// graph under refactoring); they are returned as an aggregate so a 0
-	// attribution_loss cannot be misread as a proof of no severance.
+	// OWN `$N` closure, disconnected — it is a CONFIRMED seam (starved-entrypoint).
+	// Otherwise its severance is UNCONFIRMED: a genuine no-op stub, or a seam shape
+	// this classifier does not recognize. The unconfirmed routes are NOT markers (they
+	// would cry wolf on every health endpoint and churn the committed graph under
+	// refactoring); they are returned as an aggregate so a 0 attribution_loss cannot be
+	// misread as a proof of no severance.
+	//
+	// The starved-entrypoint is a CONFIRMED severance regardless of reclaimability —
+	// so it always counts toward attribution_loss (Summarize keys on the kind, not the
+	// bin). Its BIN tracks whether the owning closure is reclaimable (§21.②): B when a
+	// reclaimer can close the seam (the strict-server shape), A when none can — so the
+	// route is honestly disclosed as severed either way, but reclaimable-share counts
+	// only the seams that are genuinely reclaimable.
 	var unconfirmed []string
 	for _, ep := range in.Entrypoints {
 		if reaches[ep.Fn] {
 			continue
 		}
 		if severedParent[ep.Fn] {
-			add(Marker{Kind: "starved-entrypoint", Bin: BinB, Site: ep.Fn, Owner: ep.Name,
-				ReclaimerHint: "route reaches no effect directly, but its own severed closure does — handler chain cut at the dispatch seam"})
+			bin, hint := BinA, "route reaches no effect directly; its own severed closure does, but no static reclaimer recognizes the seam — irreducible without runtime observation"
+			if reclaimableParent[ep.Fn] {
+				bin, hint = BinB, "route reaches no effect directly, but its own severed closure does — handler chain cut at the dispatch seam"
+			}
+			add(Marker{Kind: "starved-entrypoint", Bin: bin, Site: ep.Fn, Owner: ep.Name, ReclaimerHint: hint})
 		} else {
 			unconfirmed = append(unconfirmed, ep.Fn)
 		}

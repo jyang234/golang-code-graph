@@ -120,6 +120,26 @@ type Graph struct {
 	// to split the opaque-db disclosure into B2a/B2b, taken from the flag rather than
 	// inferred from tagged edges so an all-abstain fold run still reads as folded.
 	foldSQL bool
+
+	// reclaimEdges is the in-graph dispatch-seam reclaim edge set (both endpoints are
+	// nodes), computed ONCE at build as a dry run of reclaim.StrictServer. It is the
+	// single source both the frontier dry run (which bins a severed closure B only if
+	// its reconnect edge is here) and ApplyReclaimers (which folds these edges in) read,
+	// so the "is this seam reclaimable" answer cannot differ between the prediction and
+	// the apply, and StrictServer runs once rather than once per consumer (§21.②).
+	// Unexported, so it never serializes (no golden churn). Populated only on an unscoped
+	// build (the frontier rides those); a scoped ApplyReclaimers recomputes it.
+	reclaimEdges []reclaim.Edge
+}
+
+// nodeSet returns the set of node FQNs in g — the membership map both the reclaim
+// dry run and ApplyReclaimers filter against. One builder so they cannot disagree.
+func (g *Graph) nodeSet() map[string]bool {
+	nodes := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodes[n.FQN] = true
+	}
+	return nodes
 }
 
 // FrontierSection is the disclosed frontier carried in the graph: the per-site
@@ -509,9 +529,35 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
 	// the unscoped build, the same convention those sections use.
 	if entry == "" {
+		g.reclaimEdges = strictServerReclaimEdges(res, g.nodeSet())
 		g.Frontier = frontierSection(g)
 	}
 	return g, nil
+}
+
+// strictServerReclaimEdges returns the strict-server reclaimer's edges whose BOTH
+// endpoints are graph nodes — computed as a DRY RUN over res WITHOUT folding the edges,
+// so even the default (un-reclaimed) frontier knows which severed closures are genuinely
+// reclaimable. It is the SINGLE in-graph reclaim-edge predicate (CLAUDE.md: one source
+// of truth): the frontier dry run derives its reclaimable-closure set from `.To` here,
+// and ApplyReclaimers folds these same edges, so the "is this seam reclaimable" answer
+// cannot differ between the prediction and the apply (§21.②). Deduped on (From, To); the
+// StrictServer iteration order is deterministic, so the result is too.
+func strictServerReclaimEdges(res *analyze.Result, nodes map[string]bool) []reclaim.Edge {
+	seen := map[[2]string]bool{}
+	var out []reclaim.Edge
+	for _, e := range reclaim.StrictServer(res) {
+		if !nodes[e.From] || !nodes[e.To] {
+			continue
+		}
+		key := [2]string{e.From, e.To}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, e)
+	}
+	return out
 }
 
 // frontierSection classifies g and assembles the disclosed section: the markers,
@@ -543,6 +589,12 @@ func ClassifyFrontier(g *Graph) *frontier.Result { return frontier.Classify(fron
 // (its remaining opaque-db markers are the genuine residue, not "untried").
 func frontierInput(g *Graph) *frontier.Input {
 	in := &frontier.Input{Folded: g.foldSQL}
+	// The reclaimable-closure set is the `.To` of the in-graph reclaim edges — derived
+	// from the one stored edge set so it cannot diverge from what ApplyReclaimers folds.
+	// Consumed by Classify as a set, so order is irrelevant.
+	for _, e := range g.reclaimEdges {
+		in.Reclaimable = append(in.Reclaimable, e.To)
+	}
 	for _, n := range g.Nodes {
 		in.Nodes = append(in.Nodes, n.FQN)
 	}
@@ -567,17 +619,21 @@ func frontierInput(g *Graph) *frontier.Input {
 // base-vs-reclaimed. Returns the number of edges added. Only edges between existing
 // nodes that are not already present are folded in.
 func ApplyReclaimers(g *Graph, res *analyze.Result) int {
-	nodes := make(map[string]bool, len(g.Nodes))
-	for _, n := range g.Nodes {
-		nodes[n.FQN] = true
-	}
 	existing := make(map[[2]string]bool, len(g.Edges))
 	for _, e := range g.Edges {
 		existing[[2]string{e.From, e.To}] = true
 	}
+	// Reuse the in-graph reclaim edges Build already computed (the unscoped case, where
+	// a frontier rides); a scoped build never computed them, so recompute there. Either
+	// way the SAME helper produces the set, so StrictServer runs ONCE on the common
+	// unscoped path and the folded edges match the frontier's reclaimable prediction.
+	edges := g.reclaimEdges
+	if g.Entrypoint != "" {
+		edges = strictServerReclaimEdges(res, g.nodeSet())
+	}
 	added := 0
-	for _, e := range reclaim.StrictServer(res) {
-		if !nodes[e.From] || !nodes[e.To] || existing[[2]string{e.From, e.To}] {
+	for _, e := range edges {
+		if existing[[2]string{e.From, e.To}] {
 			continue
 		}
 		g.Edges = append(g.Edges, Edge{From: e.From, To: e.To, Tier: 2, Via: e.Via})

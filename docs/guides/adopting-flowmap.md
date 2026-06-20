@@ -213,6 +213,26 @@ static:
     - golang.org/x/sync          # concurrency helpers
 ```
 
+**Tiering external-boundary noise (signal/noise).** Flagging *every* third-party
+handoff is complete but a bare count is mostly framework/utility plumbing, not the
+effect-bearing seams you act on. Each `ExternalBoundaryCall` therefore carries a
+`severity` tier — `effect-bearing` (the default: a cloud-SDK send, a DB driver, or
+any dependency not known to be benign) or `trivial` (pure-compute / framework whose
+handoff carries no downstream first-party effect). UUID generation, the go-chi
+router helpers, and the oapi-codegen runtime are trivial built-in; add prefixes for
+your own benign deps. Unlike `externalBoundaryExempt`, this does **not** suppress the
+disclosure — the spot is still detected, counted, and rendered (the count is
+unchanged) — it only re-prioritizes it, so `reach`/`ground` and the Mermaid views can
+separate the noise from the handful that matter. Disclosure-only: an over-broad entry
+mis-prioritizes, it never hides an effect or moves a verdict.
+
+```yaml
+static:
+  externalBoundaryTrivial:
+    - golang.org/x/text          # pure-compute text transforms
+    - github.com/shopspring/decimal
+```
+
 **Annotating a blind spot.** A machine-stated shape (a goroutine, an
 `ExternalBoundaryCall`) names *where* the analysis stops, but not *what* lies
 beyond. Attach that context — for a human or AI reviewer — keyed to the blind spot

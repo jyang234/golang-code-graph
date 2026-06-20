@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+// TestEBCTierNote pins the §21.A count enrichment: the note splits the
+// ExternalBoundaryCall set by tier (fixed order, effect-bearing then trivial then
+// unclassified), and is empty when no EBC is present so a non-EBC count reads clean.
+func TestEBCTierNote(t *testing.T) {
+	spots := []BlindSpot{
+		{Kind: "reflect", Site: "p.F"},
+		{Kind: "ExternalBoundaryCall", Site: "p.A", Severity: "effect-bearing"},
+		{Kind: "ExternalBoundaryCall", Site: "p.B", Severity: "trivial"},
+		{Kind: "ExternalBoundaryCall", Site: "p.C", Severity: "trivial"},
+		{Kind: "ExternalBoundaryCall", Site: "p.D"}, // pre-tier graph → unclassified
+	}
+	if got, want := EBCTierNote(spots), " (1 effect-bearing, 2 trivial, 1 unclassified external)"; got != want {
+		t.Errorf("EBCTierNote = %q, want %q", got, want)
+	}
+	if got := EBCTierNote([]BlindSpot{{Kind: "reflect"}, {Kind: "HighFanOut"}}); got != "" {
+		t.Errorf("a set with no ExternalBoundaryCall must yield no note, got %q", got)
+	}
+	if got := EBCTierNote(nil); got != "" {
+		t.Errorf("empty set must yield no note, got %q", got)
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	const j = `{"nodes":[],"edges":[],"blind_spots":[],"surprise":1}`
 	if _, err := Load(strings.NewReader(j)); err == nil {

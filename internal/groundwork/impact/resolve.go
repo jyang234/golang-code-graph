@@ -242,20 +242,13 @@ func (c Card) Render() string {
 	section("Reachable boundary effects", c.Effects)
 	if len(c.BlindSpots) > 0 {
 		fmt.Fprintf(&b, "🕳️  Blind spots on the traversed paths (%d) — claims above are unsound past these\n", len(c.BlindSpots))
-		shown := map[[2]string]bool{} // print a seam's annotation under its first row only
-		for _, s := range c.BlindSpots {
-			fmt.Fprintf(&b, "- %s %s", s.Kind, s.Site)
+		graph.WriteBlindSpots(&b, c.BlindSpots, c.Annotations, func(s graph.BlindSpot) string {
+			row := "- " + s.Kind + " " + s.Site
 			if s.Detail != "" {
-				fmt.Fprintf(&b, " — %s", s.Detail)
+				row += " — " + s.Detail
 			}
-			b.WriteString("\n")
-			if key := [2]string{s.Site, s.Kind}; !shown[key] {
-				shown[key] = true
-				for _, a := range graph.MatchAnnotations(c.Annotations, s.Site, s.Kind) {
-					b.WriteString(graph.AnnotationLine(a))
-				}
-			}
-		}
+			return row
+		})
 		b.WriteString("\n")
 	}
 	b.WriteString("This card is the map (what the suspects COULD touch), not the route taken.\n")

@@ -414,8 +414,10 @@ groundwork policy-check <policy>                         validate a policy
 
 Bidirectional reachability for one function: who breaks if it changes (callers),
 what it depends on (callees), which entrypoints it is live behind, the external
-effects it reaches, and any blind spots on it. The blast-radius/grounding lens an
-agent reads *before* editing.
+effects it reaches, and any blind spots on it — each with its human/AI annotation
+note and, for an external-boundary handoff, its `effect-bearing`/`trivial` tier
+(the count carries the split), so `reach` and `ground` read the same. The
+blast-radius/grounding lens an agent reads *before* editing.
 
 ```console
 $ groundwork reach graph.json '(*…/handler.Server).Publish'
@@ -1085,7 +1087,7 @@ it. Top-level sections:
 |---|---|---|
 | `nodes[]` | `{fqn, sig, tier, fallible}` per first-party function | sorted by fqn |
 | `edges[]` | `{from, to, tier, boundary?, concurrent?, via?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed; `via` names the reclaimer (`flowmap --reclaim`) that recovered the edge at a dispatch seam — a verdict over it self-discloses as reclaim-informed |
-| `blind_spots[]` | `{kind, site, detail}` — where the graph's knowledge stops | the soundness frontier |
+| `blind_spots[]` | `{kind, site, detail, severity?, package?}` — where the graph's knowledge stops | the soundness frontier; `severity` (`effect-bearing`\|`trivial`) and `package` ride `ExternalBoundaryCall` only — the signal/noise tier, disclosure-only |
 | `obligations[]` | `{rule, kind, fn, site, status, detail}` per anchored site | statuses are an open vocabulary: **fail closed on ones you don't recognize** |
 | `effect_order[]` | `{fn, effect, effect_site, callee, callee_site, always}` | "effect can/always precedes this fallible call" |
 | `entrypoints[]` | `{kind: http\|consumer, name, fn}` — the route/topic → handler join | names are registration-site literals: match segment-wise, never exactly-or-nothing |
@@ -1190,10 +1192,12 @@ encodes a deliberate honesty or determinism decision, not just a name.
   publish *happens*, not *to where*.
 - **frontier** — the classified set of every place reachability stops, emitted by
   `flowmap frontier` as *measurement, not a gate*. Each marker is binned: **A**
-  truly dynamic, **B** reclaimable structure (a severed dispatch seam), **B2**
-  consumer-reclaimable (opaque only because the source is non-constant), **C**
-  over-approximation (HighFanOut). The point is to distinguish what is *genuinely*
-  dynamic from what only *looks* dynamic and can be recovered.
+  truly dynamic, **B** reclaimable structure (a severed dispatch seam a known
+  reclaimer can *actually* reconnect — a severed closure no reclaimer recognizes is
+  disclosed as **A**, so the frontier never advertises a reclaim `--reclaim` cannot
+  perform), **B2** consumer-reclaimable (opaque only because the source is
+  non-constant), **C** over-approximation (HighFanOut). The point is to distinguish
+  what is *genuinely* dynamic from what only *looks* dynamic and can be recovered.
 - **attribution loss** — the fraction of entrypoints the frontier confirms are
   severed from their effects. A **lower bound, not a proof**: a 0 is kept honest
   by a third "unconfirmed" state, never read as "nothing severed."

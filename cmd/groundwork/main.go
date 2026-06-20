@@ -407,10 +407,19 @@ func cmdReach(args []string) error {
 		fmt.Printf("  %s [%s]%s\n", strings.TrimPrefix(e.To, "boundary:"), e.Boundary, marker)
 	}
 	if bs := ix.BlindSpotsAt(fqn); len(bs) > 0 {
-		fmt.Printf("blind spots on this function: %d\n", len(bs))
-		for _, b := range bs {
-			fmt.Printf("  ⚠ %s — %s\n", b.Kind, b.Detail)
-		}
+		// Surface the per-spot detail AND the human/AI annotation context, so reach and
+		// ground agree on what a blind spot means rather than reach showing a thinner
+		// view (§21.C). The count carries the ExternalBoundaryCall signal/noise split so a
+		// bare "N" is readable. Annotations are keyed by (site, kind); print a seam's
+		// context once, under its first row, exactly as ground.Render does.
+		fmt.Printf("blind spots on this function: %d%s\n", len(bs), graph.EBCTierNote(bs))
+		graph.WriteBlindSpots(os.Stdout, bs, ix.DistinctAnnotationsAt(bs), func(b graph.BlindSpot) string {
+			row := "  ⚠ " + b.Kind + " — " + b.Detail
+			if b.Severity != "" {
+				row += " [" + b.Severity + "]"
+			}
+			return row
+		})
 	}
 	return nil
 }

@@ -56,6 +56,14 @@ type HintSet struct {
 	// disclosures. Prefix (not exact-path) so one entry covers a dependency's
 	// subpackages — the OTel family is one built-in prefix, not a list per package.
 	externalExempt []string
+	// externalTrivial are package-path prefixes whose ExternalBoundaryCall is
+	// PURE-COMPUTE / framework plumbing (uuid, a router, codegen runtime) rather than
+	// an effect-bearing seam. Unlike externalExempt these do NOT suppress the
+	// disclosure — the spot is still detected and counted; the prefix only tags it
+	// SeverityTrivial so the signal/noise tier can separate the framework noise from
+	// the effect-bearing handful (§21.A). Disclosure-only: an over-broad entry
+	// mis-prioritizes, it never hides an effect or moves a verdict.
+	externalTrivial []string
 }
 
 // NewHintSet builds the hint set from cfg (nil => only built-ins).
@@ -71,6 +79,21 @@ func NewHintSet(cfg *config.Config) *HintSet {
 		// function, so flagging them as ExternalBoundaryCall would bury the genuine
 		// seams. Built-in exempt; teams extend via static.externalBoundaryExempt.
 		externalExempt: []string{"go.opentelemetry.io/"},
+		// Known-benign, near-ubiquitous PURE-COMPUTE / framework dependencies whose
+		// handoff carries no downstream first-party effect: UUID generation, the go-chi
+		// router's in-process dispatch helpers, and the oapi-codegen request/response
+		// runtime. These are the framework noise §21.A names. Deliberately NOT here: a
+		// concurrency primitive like x/sync/errgroup — it ORCHESTRATES first-party
+		// closures that do reach effects (loansvc's Evaluate$1/$2 hit the payment gateway
+		// and the bus through it), so its handoff is effect-bearing, the default. Built-in
+		// so the tier works out of the box; teams extend via static.externalBoundaryTrivial.
+		// Tagging only — these are still detected and counted (unlike externalExempt,
+		// which suppresses).
+		externalTrivial: []string{
+			"github.com/google/uuid",
+			"github.com/go-chi/chi",
+			"github.com/oapi-codegen/runtime",
+		},
 	}
 	if cfg != nil {
 		hs.telemetry = append(hs.telemetry, parseHints(cfg.Classify.Telemetry)...)
@@ -79,6 +102,7 @@ func NewHintSet(cfg *config.Config) *HintSet {
 		hs.db = append(hs.db, parseHints(cfg.Classify.DB)...)
 		hs.http = append(hs.http, parseHints(cfg.Classify.HTTP)...)
 		hs.externalExempt = append(hs.externalExempt, cfg.Static.ExternalBoundaryExempt...)
+		hs.externalTrivial = append(hs.externalTrivial, cfg.Static.ExternalBoundaryTrivial...)
 	}
 	return hs
 }
@@ -132,6 +156,17 @@ func (hs *HintSet) IsHTTP(fn *ssa.Function) bool { return anyMatch(hs.http, fn) 
 // static.externalBoundaryExempt prefixes).
 func (hs *HintSet) IsExternalBoundaryExempt(fn *ssa.Function) bool {
 	return prefixExempt(PkgPath(fn), hs.externalExempt)
+}
+
+// IsExternalBoundaryTrivial reports whether fn's package is a known-benign
+// (pure-compute / framework) dependency whose ExternalBoundaryCall should be tagged
+// SeverityTrivial rather than effect-bearing — the built-in default set plus any
+// static.externalBoundaryTrivial prefixes. Unlike IsExternalBoundaryExempt it does
+// NOT suppress the disclosure; the caller still emits the blind spot, this only
+// chooses its tier. Same segment-boundary prefix match, so the two predicates share
+// one matcher (CLAUDE.md: one source of truth).
+func (hs *HintSet) IsExternalBoundaryTrivial(fn *ssa.Function) bool {
+	return prefixExempt(PkgPath(fn), hs.externalTrivial)
 }
 
 // prefixExempt reports whether pkgPath falls under one of the exempt prefixes,

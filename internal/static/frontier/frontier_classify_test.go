@@ -88,16 +88,29 @@ func TestClassifyMarkerShapes(t *testing.T) {
 	cases := []struct {
 		name    string
 		input   *frontier.Input
+		reclaim []string                // closures a known reclaimer could reconnect (Input.Reclaimable)
 		present map[string]frontier.Bin // kind -> expected bin (must appear)
 		absent  []string                // kinds that must NOT appear
 	}{
 		{
-			name: "severed closure reaching an effect is B",
+			name: "severed closure a reclaimer can reconnect is B",
 			input: in(
 				[]string{wrap, clo, store},
 				[][2]string{{clo, store}, {store, "boundary:db DELETE provisioning_outbox"}},
 				nil, nil),
+			reclaim: []string{clo},
 			present: map[string]frontier.Bin{"severed-closure": frontier.BinB},
+		},
+		{
+			// §21.②: a severed closure NO reclaimer recognizes (not in Reclaimable — the
+			// errgroup/constructor shape `--reclaim` cannot close) is disclosed as A, not
+			// advertised as a reclaimable B the flag would fail to deliver.
+			name: "severed closure no reclaimer recognizes is A",
+			input: in(
+				[]string{wrap, clo, store},
+				[][2]string{{clo, store}, {store, "boundary:db DELETE provisioning_outbox"}},
+				nil, nil),
+			present: map[string]frontier.Bin{"severed-closure": frontier.BinA},
 		},
 		{
 			name: "severed closure reaching NO effect is not flagged (benign leaf callback)",
@@ -115,12 +128,24 @@ func TestClassifyMarkerShapes(t *testing.T) {
 			absent: []string{"severed-closure"},
 		},
 		{
-			name: "entrypoint severed from its own effect-bearing closure is a starved seam (B)",
+			name: "entrypoint severed from its own reclaimable effect-bearing closure is a starved seam (B)",
 			input: in(
 				[]string{wrap, clo, store},
 				[][2]string{{clo, store}, {store, "boundary:db DELETE x"}},
 				[]frontier.InEntry{{Fn: wrap, Name: "POST /x"}}, nil),
+			reclaim: []string{clo},
 			present: map[string]frontier.Bin{"starved-entrypoint": frontier.BinB, "severed-closure": frontier.BinB},
+		},
+		{
+			// §21.②: same starved route, but its severed closure is not reclaimable — the
+			// route is still CONFIRMED severed (a starved-entrypoint marker, so it still
+			// counts toward attribution_loss), but binned A: no reclaimer can close it.
+			name: "entrypoint severed from an unreclaimable closure is a starved seam (A)",
+			input: in(
+				[]string{wrap, clo, store},
+				[][2]string{{clo, store}, {store, "boundary:db DELETE x"}},
+				[]frontier.InEntry{{Fn: wrap, Name: "POST /x"}}, nil),
+			present: map[string]frontier.Bin{"starved-entrypoint": frontier.BinA, "severed-closure": frontier.BinA},
 		},
 		{
 			name: "no-op stub entrypoint owning no effect closure is not starved",
@@ -197,6 +222,7 @@ func TestClassifyMarkerShapes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.input.Reclaimable = tc.reclaim
 			markers := frontier.Classify(tc.input).Markers
 			for kind, bin := range tc.present {
 				m, ok := marker(markers, kind)
@@ -266,6 +292,7 @@ func TestSummarizeRollups(t *testing.T) {
 		},
 		[]frontier.InBlindSpot{{Kind: string(blindspots.HighFanOut), Site: wrap}}, // (C)
 	)
+	v.Reclaimable = []string{clo} // clo is the strict-server-shaped closure a reclaimer can reconnect → B
 	r := frontier.Summarize(frontier.Classify(v), 2)
 
 	if r.Counts[frontier.BinA] != 1 || r.Counts[frontier.BinB] != 2 || r.Counts[frontier.BinB2] != 1 || r.Counts[frontier.BinC] != 1 {

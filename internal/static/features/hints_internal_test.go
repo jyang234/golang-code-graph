@@ -1,6 +1,10 @@
 package features
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jyang234/golang-code-graph/internal/config"
+)
 
 // TestBuiltinTelemetryIncludesZap pins zap as a built-in telemetry library: a
 // service should not need a per-service telemetry hint just to keep its zap
@@ -34,6 +38,36 @@ func TestBuiltinExternalBoundaryExemptsOTel(t *testing.T) {
 		if !prefixExempt(p, hs.externalExempt) {
 			t.Errorf("OpenTelemetry package %q should be exempt by default", p)
 		}
+	}
+}
+
+// TestExternalBoundaryTrivialSet pins the §21.A tier classifier: the named
+// framework/utility packages (uuid, chi, oapi-codegen runtime) are trivial by
+// default, an unrecognized dependency is NOT (it defaults to effect-bearing — disclose,
+// don't pre-judge), and config extends the set. errgroup is deliberately absent from
+// the built-ins (it orchestrates effect-bearing closures), so it is trivial only when
+// declared. IsExternalBoundaryTrivial delegates to prefixExempt over externalTrivial,
+// so testing the field is the faithful unit (the SSA-driven path is covered in
+// blindspots).
+func TestExternalBoundaryTrivialSet(t *testing.T) {
+	hs := NewHintSet(nil) // nil cfg => only built-ins
+	for _, p := range []string{"github.com/google/uuid", "github.com/go-chi/chi/v5", "github.com/go-chi/chi/v5/middleware", "github.com/oapi-codegen/runtime"} {
+		if !prefixExempt(p, hs.externalTrivial) {
+			t.Errorf("%q should be a built-in trivial prefix", p)
+		}
+	}
+	for _, p := range []string{"golang.org/x/sync/errgroup", "github.com/customerio/go-customerio", "github.com/aws/aws-sdk-go-v2/service/sns"} {
+		if prefixExempt(p, hs.externalTrivial) {
+			t.Errorf("%q must NOT be trivial by default (effect-bearing — disclose)", p)
+		}
+	}
+	// Config extends the set without disturbing the built-ins.
+	withCfg := NewHintSet(&config.Config{Static: config.StaticConfig{ExternalBoundaryTrivial: []string{"golang.org/x/sync"}}})
+	if !prefixExempt("golang.org/x/sync/errgroup", withCfg.externalTrivial) {
+		t.Error("config externalBoundaryTrivial should extend the trivial set")
+	}
+	if !prefixExempt("github.com/google/uuid", withCfg.externalTrivial) {
+		t.Error("config must not drop the built-in trivial prefixes")
 	}
 }
 

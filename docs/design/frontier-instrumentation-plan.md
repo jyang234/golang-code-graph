@@ -109,10 +109,14 @@ is the generic backbone — components 1–3 all speak it.
 - **A — truly dynamic.** Resolved only at runtime: `<dynamic>` bus topics / HTTP
   targets (`graphio/labels.go` emits these), reflection dispatch, plugin/registry
   table dispatch. *Irreducible statically.* Disclose; optionally observe.
-- **B — reclaimable structure.** Statically determined but unconnected by the
-  current builder: the strict-server `$1` seam (forward-starvation), constant
+- **B — reclaimable structure.** Statically determined and **reconnectable by a
+  known reclaimer**: the strict-server `$1` seam (forward-starvation), constant
   values not folded, handler tables built from literals. *Reclaimable, sound.*
-  This is where the static lever lives.
+  This is where the static lever lives. A severed closure no reclaimer recognizes
+  (an errgroup or constructor closure dispatched through a struct field) is **not**
+  B — it is disclosed as A, so the frontier never advertises a reclaim `--reclaim`
+  cannot perform (§21.②; gated by `frontier.Input.Reclaimable`, the dry-run set
+  graphio computes from `reclaim.StrictServer`).
 - **B2 — reclaimable by code change.** Opaque only because the *source* is
   non-constant: `db ExecContext` from runtime-built SQL. The consumer can make it
   constant and get a real proof; we can't reclaim it for them, but we can disclose
@@ -138,12 +142,16 @@ can reuse it to emit the disclosed section), exposed as `flowmap frontier [--alg
 dual-output discipline as `boundary`/`graph`. It is a measurement: it never fails
 closed and imports no verdict surface.
 
-**Two precision rules that survived contact with real graphs (both tighten B so the
+**Precision rules that survived contact with real graphs (they tighten B so the
 "reclaimable share" can't be inflated):**
-- A `severed-closure` is B only if it **reaches a boundary effect** — a leaf
+- A `severed-closure` is flagged only if it **reaches a boundary effect** — a leaf
   callback (sort comparator) is also a parentless `$N` node but hides nothing, and
   a `parent → callback` edge would usually be FALSE (the parent *passes* it, not
   *calls* it). This is the soundness gate (Gate 2) applied at measurement time.
+- It is binned **B only if a known reclaimer can actually reconnect it** (the
+  strict-server shape); otherwise it is disclosed as **A** (§21.②). Without this,
+  an effect-reaching closure no reclaimer handles (errgroup, a constructor closure)
+  inflated reclaimable share and promised a reclaim `--reclaim` could not deliver.
 - A `starved-entrypoint` is flagged only when the route **owns a severed
   effect-bearing closure** — distinguishing a dispatch-severed route (strict-server)
   from a genuine no-op stub (which owns no effect closure, so nothing to reclaim).
