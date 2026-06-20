@@ -1097,6 +1097,36 @@ Decode strictly (groundwork uses `DisallowUnknownFields`): a schema change you
 have not been taught about should fail loudly, not drop fields silently.
 Producer and judge deploy in lockstep — that is a feature.
 
+### Component (C3) rollup — `flowmap graph --rollup package`
+
+`flowmap graph --rollup package` rolls the function-level (C4) graph up to the
+**component (C3)** altitude: it groups nodes by their `package`, collapses the
+edges to component→component dependencies, and overlays the external-system
+effects. It is a pure post-process of the graph JSON — deterministic, a view,
+never a gate. At C3 an architecture-violating change (a cross-layer shortcut) is
+one visible edge rather than rename noise.
+
+Edges carry a `kind` that is also their honesty class, never conflated:
+
+| `kind` | meaning | render |
+|---|---|---|
+| `call` | resolved cross-package call (component→component) | solid |
+| `effect` | resolved typed boundary effect (component→`db`/`bus`/peer) | solid |
+| `disclosed` | an effect the graph DISCLOSES but cannot resolve — an effect-bearing `ExternalBoundaryCall` (e.g. a vendor SDK behind a seam), with the human annotation note when one is attached | dashed |
+
+A trivial (plumbing-tier) `ExternalBoundaryCall` is excluded — the same
+`severity` split that tiers the `func()` channel keeps the component view signal.
+
+- `--rollup package` alone → the rollup JSON (`{components[], edges[]}`).
+- `--rollup package --mermaid` → the component flowchart (solid vs dashed).
+- `--rollup package --diff BASE` → the component delta, split
+  `{code_added, code_removed, disclosure_added, disclosure_removed}`. **The split
+  is load-bearing:** a `call`/`effect` delta is a real dependency change; a
+  `disclosed` delta is only a *newly-documented* effect (pure instrumentation).
+  Without the split, annotating a seam reads as an architecture change. The diff
+  is symmetric: swapping base and branch flips every `*_added` into the matching
+  `*_removed`.
+
 ---
 
 ## Glossary
