@@ -1128,7 +1128,12 @@ computes no verdict, which is what makes a name heuristic acceptable here. The
 composition root is left bandless (it is named by `role`, a graph fact).
 
 - `--rollup package` alone → the rollup JSON (`{components[], edges[]}`).
-- `--rollup package --mermaid` → the component flowchart (solid vs dashed).
+- `--rollup package --mermaid` → the component flowchart (solid vs dashed). Its header
+  carries a **substrate** line (`algo` + reclaimer footprint) self-certifying which build
+  the rollup came from — a rollup's fidelity is build-flag-dependent (an un-reclaimed
+  graph is starved at the strict-server dispatch seam), the same disclosure the rooted
+  render and the verdicts carry. A disclosed edge's annotation note is emitted as a
+  quoted, pipe-escaped edge label, so a note carrying `|`/`(`/`)` cannot break the render.
 - `--rollup package --mermaid --rollup-bands` → the same flowchart with the boxes
   grouped into architectural **band** lanes (the root drawn outside them). Opt-in: the
   default render is byte-identical to the pre-band flat layout. A view grouping, never

@@ -53,12 +53,57 @@ var bandRenderKnown = func() map[string]bool {
 // systems are stadium nodes; a solid arrow is a resolved call/effect, a dashed arrow a
 // disclosed effect (labeled with its annotation note when one exists). With opts.Bands
 // the boxes are grouped into architectural band lanes (the root drawn outside them).
+//
+// It renders the PackageRollup alone, so it carries no build-substrate disclosure (it
+// has no graph to read algo/reclaimer state from). Render through Graph.RollupMermaid to
+// get the substrate header line that self-certifies which build the rollup came from.
 func (r *PackageRollup) Mermaid(opts RollupMermaidOptions) string {
+	return r.mermaid(opts, "")
+}
+
+// RollupMermaid renders g's component (C3) rollup, with a SUBSTRATE header line (algo +
+// reclaimer footprint) disclosing which build the rollup was computed on. A rollup's
+// fidelity is build-flag-dependent — an un-reclaimed graph is starved at the strict-
+// server dispatch seam, where routes dead-end at the dispatch closure and reach zero
+// route effects — so a viewer must know the build to trust the picture, the same self-
+// certification the rooted render and the gated verdicts carry. This is the Graph-level
+// entry point the CLI uses; the bare PackageRollup.Mermaid (no graph, no substrate) stays
+// available for a rollup rendered without its producing graph.
+func (g *Graph) RollupMermaid(opts RollupMermaidOptions) string {
+	return g.RollupByPackage().mermaid(opts, rollupSubstrate(g))
+}
+
+// rollupSubstrate is the one-line build provenance for a single-graph rollup render: the
+// call-graph algo and the reclaimer footprint (whether provenance-tagged `via` edges are
+// present — the footprint of a --reclaim/--reclaim-sql build, read the same way
+// provenanceCaveats flags a base↔branch reclaimer skew). One source of truth with that
+// caveat via hasViaEdge, so the single-graph disclosure and the diff skew check cannot
+// drift. Algo "" (a tool-stripped golden) renders as "unrecorded", matching the
+// provenanceCaveats "unrecorded, not a mismatch" treatment.
+func rollupSubstrate(g *Graph) string {
+	algo := g.Algo
+	if algo == "" {
+		algo = "unrecorded"
+	}
+	reclaimer := "off"
+	if hasViaEdge(g) {
+		reclaimer = "on (via-tagged edges)"
+	}
+	return "algo: " + algo + "; reclaimer: " + reclaimer
+}
+
+// mermaid is the shared rollup renderer body. substrate, when non-empty, is disclosed as
+// a header comment line (the build a rollup was computed on); it is empty for the bare
+// PackageRollup.Mermaid path that has no producing graph.
+func (r *PackageRollup) mermaid(opts RollupMermaidOptions, substrate string) string {
 	ids := &idAlloc{used: map[string]bool{}}
 	var b strings.Builder
 	b.WriteString("flowchart LR\n")
 	b.WriteString("    %% component (C3) rollup — " + plural(len(r.Components), "component") +
 		", " + plural(len(r.Edges), "edge") + " (a view, never a gate)\n")
+	if substrate != "" {
+		b.WriteString("    %% substrate — " + comment(substrate) + " (a rollup's fidelity is build-flag-dependent)\n")
+	}
 	b.WriteString("    %% solid = resolved call/effect (code); dashed = disclosed effect (blind, documented)\n")
 	b.WriteString("    %% dotted into a :::root box = composition-root wiring (DI back-edge, not a domain dependency)\n")
 	if opts.Bands {
@@ -103,7 +148,7 @@ func (r *PackageRollup) Mermaid(opts RollupMermaidOptions) string {
 		case e.Wiring():
 			// A DI back-edge into the composition root: drawn dotted, labeled "wires", so
 			// it never reads as a solid domain dependency pointing the wrong way.
-			b.WriteString("    " + from + " -.->|" + mermaidText("wires") + "| " + to + "\n")
+			b.WriteString("    " + from + " -.->" + rollupEdgeLabel("wires") + " " + to + "\n")
 			wiringIdx = append(wiringIdx, idx)
 		case e.Resolved():
 			b.WriteString("    " + from + " --> " + to + "\n")
@@ -112,7 +157,7 @@ func (r *PackageRollup) Mermaid(opts RollupMermaidOptions) string {
 			if e.Note != "" {
 				label = e.Note
 			}
-			b.WriteString("    " + from + " -.->|" + mermaidText(label) + "| " + to + "\n")
+			b.WriteString("    " + from + " -.->" + rollupEdgeLabel(label) + " " + to + "\n")
 			disclosedIdx = append(disclosedIdx, idx)
 		}
 		idx++
@@ -122,6 +167,24 @@ func (r *PackageRollup) Mermaid(opts RollupMermaidOptions) string {
 	b.WriteString("    classDef ext fill:#eef3fb,stroke:#3b6ea5,color:#244a6e\n")
 	b.WriteString("    classDef root fill:#f3eefb,stroke:#6b4ba5,color:#3a246e\n")
 	return b.String()
+}
+
+// rollupEdgeLabel renders a Mermaid edge-label segment `|"text"|` that is safe for an
+// arbitrary human ANNOTATION note. A disclosed edge carries the note as its label, which
+// can contain the Mermaid-flowchart-structural characters mermaidText does NOT escape —
+// `|` (the edge-label delimiter: an unquoted label terminates at the first pipe), `(`, and
+// `)` — any of which breaks the rendered C3 (a Customer.io note with surrounding parens
+// did, in the Mermaid version we render with). Two defenses, both prescribed by the field
+// report: the label is QUOTED, so the parser reads the rest as literal text (neutralizing
+// the parens); and the pipe — the hardest delimiter, the one a parser may split on even
+// inside quotes — is additionally replaced with its `&#124;` entity, so no bare pipe can
+// terminate the label regardless of how the host treats the quotes. mermaidText runs
+// first (escaping the HTML set including the quote → &quot;, so the label's quotes stay
+// balanced), then the pipe entity is substituted (its own `&` is already past escaping, so
+// it is not double-encoded). The rooted C4 render is unaffected — it emits annotations as
+// `%%` comment lines, not edge labels — so this fix is rollup-renderer-specific.
+func rollupEdgeLabel(text string) string {
+	return `|"` + strings.ReplaceAll(mermaidText(text), "|", "&#124;") + `"|`
 }
 
 // componentNode is one component's Mermaid node declaration (id + label + optional
@@ -349,7 +412,7 @@ func rollupDiffEdgeLine(from, to string, e RollupEdge, s diffState) string {
 		parts = append(parts, "wires")
 	}
 	if len(parts) > 0 {
-		return from + " " + arrow + "|" + mermaidText(strings.Join(parts, " ")) + "| " + to
+		return from + " " + arrow + rollupEdgeLabel(strings.Join(parts, " ")) + " " + to
 	}
 	return from + " " + arrow + " " + to
 }

@@ -254,7 +254,7 @@ func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, roo
 		return emitCanonJSON(graphio.RollupDiff(base, g))
 	}
 	if asMermaid {
-		_, err := os.Stdout.WriteString(render.Fence(g.RollupByPackage().Mermaid(graphio.RollupMermaidOptions{Bands: bands})))
+		_, err := os.Stdout.WriteString(render.Fence(g.RollupMermaid(graphio.RollupMermaidOptions{Bands: bands})))
 		return err
 	}
 	return emitCanonJSON(g.RollupByPackage())
