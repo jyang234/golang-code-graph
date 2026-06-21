@@ -46,8 +46,8 @@ func TestRollupByPackage(t *testing.T) {
 	r := rollupSampleGraph().RollupByPackage()
 
 	wantComponents := []Component{
-		{Package: "ex.com/svc/handler", Name: "handler", Nodes: 1},
-		{Package: "ex.com/svc/store", Name: "store", Nodes: 2}, // Save + New; the synthetic $1 is excluded
+		{Package: "ex.com/svc/handler", Name: "handler", Nodes: 1, Band: BandTransport},
+		{Package: "ex.com/svc/store", Name: "store", Nodes: 2, Band: BandStorage}, // Save + New; the synthetic $1 is excluded
 	}
 	if !reflect.DeepEqual(r.Components, wantComponents) {
 		t.Errorf("components =\n%+v\nwant\n%+v", r.Components, wantComponents)
@@ -99,8 +99,8 @@ func TestRollupMarksCompositionRoot(t *testing.T) {
 	r := compositionRootGraph().RollupByPackage()
 
 	wantComponents := []Component{
-		{Package: "ex.com/svc/cmd/svc", Name: "svc", Nodes: 2, Role: RollupRoot},
-		{Package: "ex.com/svc/server", Name: "server", Nodes: 2},
+		{Package: "ex.com/svc/cmd/svc", Name: "svc", Nodes: 2, Role: RollupRoot}, // root: named by Role, left bandless
+		{Package: "ex.com/svc/server", Name: "server", Nodes: 2, Band: BandTransport},
 	}
 	if !reflect.DeepEqual(r.Components, wantComponents) {
 		t.Errorf("components =\n%+v\nwant\n%+v", r.Components, wantComponents)

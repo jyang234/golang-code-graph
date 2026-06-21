@@ -90,6 +90,17 @@ type Component struct {
 	// component. Disclosure-only — it names a role, it computes no verdict; an old
 	// consumer that ignores it sees today's behavior.
 	Role string `json:"role,omitempty"`
+	// Band is the component's ARCHITECTURAL band for the C3 view — the SEMANTIC role
+	// read off the import path (transport / application / provisioning / storage /
+	// infrastructure / tests), the missing grouping key that lets a render lane the
+	// component boxes by role. Populated by classifyBand for every NON-root component;
+	// the composition root is left bandless (it is named by Role, a graph fact, so a
+	// grouped render draws it outside the bands) and an external system stays unbanded
+	// (a boundary, not a first-party component). NOT the topological layering layer:
+	// bands are a semantic name-read axis, layers a call-rank the layering policy gates
+	// on — see band.go. A VIEW, NEVER A GATE: it carries no verdict and nothing should
+	// block on it; an old consumer that ignores it sees today's behavior.
+	Band string `json:"band,omitempty"`
 }
 
 // RollupEdge is one collapsed component-level edge. From is always a component
@@ -174,7 +185,9 @@ func (g *Graph) RollupByPackage() *PackageRollup {
 	for pkg, c := range counts {
 		comp := Component{Package: pkg, Name: lastSegment(pkg), Nodes: c}
 		if roots[pkg] {
-			comp.Role = RollupRoot
+			comp.Role = RollupRoot // the composition root is named by Role, not banded
+		} else {
+			comp.Band = classifyBand(pkg) // semantic C3 lane for every non-root component
 		}
 		components = append(components, comp)
 	}
