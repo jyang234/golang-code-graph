@@ -338,6 +338,26 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 		notes = append(notes, plural(hiddenOrphan, "blind spot/marker")+" on hidden plumbing omitted; pass --all-blind-spots to include")
 	}
 
+	// Disclose the over-approximate fan-out: an edge OUT of a HighFanOut node is an upper
+	// bound (a points-to merge at a shared higher-order function makes spurious targets
+	// look reachable), so it is drawn amber-dashed below and counted here. The node-level
+	// blind spot already marks the merge POINT; carrying it onto the out-edges (and the
+	// effects beneath them) is what makes the over-approximation self-evident rather than
+	// something a reader must infer. Same predicate (fanout + drawnEdge) as the styling
+	// pass, so the disclosed count and the styled set cannot disagree.
+	fanout := fanOutSites(g)
+	nFanOut := 0
+	for _, e := range g.Edges {
+		if fanout[e.From] {
+			if _, _, ok := drawnEdge(e, nodeID, bIDs); ok {
+				nFanOut++
+			}
+		}
+	}
+	if nFanOut > 0 {
+		notes = append(notes, plural(nFanOut, "fan-out edge")+" drawn amber-dashed (over-approximate: a HighFanOut merge resolves to many callees, so a shown target may be spurious — discount it)")
+	}
+
 	// Cap on the FULL drawn-node count — first-party + boundary effects + disclosures.
 	// Counting first-party alone under-counts: a thin handler over many distinct
 	// effects (or many blind spots) stays "under cap" yet still draws a hairball and
@@ -389,27 +409,20 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 	}
 
 	// Edges, in canonical Edge order. A boundary edge draws to its effect node; a
-	// first-party edge draws only when both endpoints are shown.
+	// first-party edge draws only when both endpoints are shown (drawnEdge). An edge out
+	// of a HighFanOut node has its link index collected so it is styled amber-dashed below.
+	edgeIdx := 0
+	var fanOutIdx []int
 	for _, e := range g.Edges {
-		if isBoundary(e.To) {
-			// Both endpoints must be drawn: the source must be a SHOWN first-party node
-			// (a boundary target can be reached from an unshown/dangling source when
-			// another shown node also reaches it), else the edge would have an empty
-			// source id — invalid Mermaid.
-			from, okF := nodeID[e.From]
-			to, okT := bIDs[e.To]
-			if !okF || !okT {
-				continue
-			}
-			b.WriteString("    " + edgeLine(from, to, e) + "\n")
-			continue
-		}
-		from, okF := nodeID[e.From]
-		to, okT := nodeID[e.To]
-		if !okF || !okT {
+		from, to, ok := drawnEdge(e, nodeID, bIDs)
+		if !ok {
 			continue
 		}
 		b.WriteString("    " + edgeLine(from, to, e) + "\n")
+		if fanout[e.From] {
+			fanOutIdx = append(fanOutIdx, edgeIdx)
+		}
+		edgeIdx++
 	}
 	// Disclosure attachments: a dashed link from the attributed node to its blind
 	// spot / frontier marker, so the reviewer reads it as "here the graph goes dark".
@@ -419,6 +432,10 @@ func (g *Graph) mermaid(opts MermaidOptions, notes []string) string {
 		}
 		b.WriteString("    " + d.from + " -. blind .-> " + d.id + "\n")
 	}
+	// Style the over-approximate fan-out edges. Their indices were collected above (the
+	// first links in the diagram, numbered from 0), so they stay correct regardless of the
+	// attachment links that follow — Mermaid counts links in source order from 0.
+	writeLinkStyle(&b, fanOutIdx, fanOutLinkStyle)
 
 	b.WriteString(classDefs)
 	return b.String()
@@ -636,6 +653,48 @@ func edgeLabelSafe(text string) string {
 // to set them apart from synchronous calls (the flowchart analogue of the sequence
 // renderer's `--)` async arrow); a reclaimed edge carries its `via` provenance as
 // the link label so a reviewer can see which seam-reclaimer recovered it.
+// fanOutSites is the set of first-party FQNs flagged HighFanOut: a dynamic-dispatch site
+// the algorithm resolved to many candidate callees, so its out-edges are an OVER-
+// APPROXIMATE fan-out (a points-to merge at a shared higher-order function makes spurious
+// targets look reachable — VTA cannot tell the merged closures apart). The node-level
+// blind spot already discloses the merge POINT; this set lets the renderer also mark the
+// EDGES it governs (and the effects beneath them) so the over-approximation is self-
+// evident, not something a reader must infer from the node marker alone.
+func fanOutSites(g *Graph) map[string]bool {
+	out := map[string]bool{}
+	for _, b := range g.BlindSpots {
+		if b.Kind == blindspots.HighFanOut {
+			out[b.Site] = true
+		}
+	}
+	return out
+}
+
+// drawnEdge resolves edge e's rendered endpoint ids and whether it is drawn at all: the
+// source must be a SHOWN first-party node, the target a shown first-party node or a
+// boundary effect node. One predicate for BOTH the edge-emit loop and the fan-out
+// pre-pass, so the "which edges are drawn" rule is one source of truth and the disclosed
+// fan-out count cannot drift from the styled edge set.
+func drawnEdge(e Edge, nodeID, bIDs map[string]string) (from, to string, ok bool) {
+	f, okF := nodeID[e.From]
+	if !okF {
+		return "", "", false
+	}
+	if isBoundary(e.To) {
+		t, okT := bIDs[e.To]
+		return f, t, okT
+	}
+	t, okT := nodeID[e.To]
+	return f, t, okT
+}
+
+// fanOutLinkStyle styles the over-approximate fan-out edges out of a HighFanOut node:
+// amber + dashed, distinct from the pink blind-spot disclosure links and the default edge
+// color, so possibly-spurious reachability reads differently from a resolved call. It
+// styles via the COLOR channel (linkStyle) rather than the arrow SHAPE, which already
+// carries the concurrent/async-effect distinction (-.->).
+const fanOutLinkStyle = "stroke:#b8860b,stroke-dasharray:4 3"
+
 func edgeLine(from, to string, e Edge) string {
 	dashed := e.Concurrent || e.Boundary == "outbound-async"
 	text := edgeDecoration(e)
