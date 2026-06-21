@@ -49,7 +49,7 @@ func Analyze(dir string, opts ...callgraph.Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	rs := roots.Discover(prog, Registrars(cfg))
+	rs := roots.Discover(prog, Registrars(cfg), DeclaredEntrypoints(cfg)...)
 	g, err := callgraph.Build(prog, rs, opt)
 	if err != nil {
 		return nil, err
@@ -108,6 +108,31 @@ func Registrars(cfg *config.Config) []roots.Registrar {
 		}
 	}
 	return regs
+}
+
+// DeclaredEntrypoints builds the declared-root set from config.entrypoints: the
+// library-dispatched callbacks and background workers root discovery cannot reach
+// by call-resolution. Each "import/path#Symbol" reference is split into a package
+// and symbol; a malformed entry (no symbol) is skipped — config validation already
+// rejects it at load, so this is defense in depth, not a silent drop of a valid
+// declaration.
+func DeclaredEntrypoints(cfg *config.Config) []roots.DeclaredEntrypoint {
+	if cfg == nil {
+		return nil
+	}
+	var out []roots.DeclaredEntrypoint
+	collect := func(refs []string, kind roots.Kind) {
+		for _, ref := range refs {
+			pkgPath, sym := splitHint(ref)
+			if sym == "" {
+				continue
+			}
+			out = append(out, roots.DeclaredEntrypoint{PkgPath: pkgPath, Symbol: sym, Kind: kind, Ref: ref})
+		}
+	}
+	collect(cfg.Entrypoints.Callbacks, roots.KindCallback)
+	collect(cfg.Entrypoints.Workers, roots.KindWorker)
+	return out
 }
 
 func splitHint(s string) (pkgPath, name string) {

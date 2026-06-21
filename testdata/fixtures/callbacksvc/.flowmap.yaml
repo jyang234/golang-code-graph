@@ -1,0 +1,23 @@
+version: 1
+service: callbacksvc
+
+# database/sql is the built-in DB classification hint; the store layer's writes are
+# the effect cone the declared entrypoints recover.
+classify:
+  db: ["database/sql"]
+
+# entrypoints declares the roots call-resolution cannot reach. Kept separate from
+# classify.busConsume on purpose: these are handler/worker DECLARATIONS, not
+# edge-classification registrar hints.
+entrypoints:
+  # A library-dispatched consume handler. inbox.Register stores it and the dispatch
+  # is out-of-module, and the manager holds the handler as a struct field, so the
+  # registrar resolver cannot follow the value to inbound.Handler.Handle — it is
+  # ORPHANED (its DB INSERT vanishes from the reachable graph) until declared here.
+  callbacks:
+    - "example.com/callbacksvc/internal/inbound#Handle"
+  # A background goroutine worker. reconciler.Reconciler.Start is reachable (launched
+  # with `go` from main's wiring), but it is not an entry point, so its DB read is
+  # attributed to main rather than to a worker route until declared here.
+  workers:
+    - "example.com/callbacksvc/internal/reconciler#Start"

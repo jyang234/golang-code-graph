@@ -10,6 +10,7 @@ use (
 	./testdata/fixtures/oapisvc
 	./testdata/fixtures/strictsvc
 	./testdata/fixtures/eventbussvc
+	./testdata/fixtures/callbacksvc
 	./testdata/fixtures/impeachsvc
 	./testdata/fixtures/dispatchsvc
 	./testdata/fixtures/reflectsvc

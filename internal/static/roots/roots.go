@@ -34,6 +34,15 @@ const (
 	KindHTTP     Kind = "http"     // an HTTP handler registered on a router
 	KindConsumer Kind = "consumer" // a bus consumer registered via subscribe
 	KindExport   Kind = "export"   // an exported function (library fallback)
+	// KindCallback and KindWorker are DECLARED roots (config entrypoints), asserted
+	// by FQN because call-resolution provably cannot reach them: a callback's
+	// handler value threads through a value-flow chain root discovery runs before
+	// the call graph and cannot follow; a worker is reachable but is not an entry
+	// point. They are kept distinct from KindConsumer so a reader can tell a
+	// discovered route from an author-vouched declaration (provenance), and so a
+	// worker — which carries no event name — never pollutes the named-event surface.
+	KindCallback Kind = "callback" // a library-dispatched callback, declared by FQN
+	KindWorker   Kind = "worker"   // a background goroutine worker, declared by FQN
 )
 
 // Root is a synthetic entry point for call-graph construction.
@@ -67,6 +76,28 @@ type Registrar struct {
 	Method     string
 	NameArg    int // logical position of the route/topic string, or -1 if none
 	HandlerArg int // logical position of the func-value argument
+}
+
+// DeclaredEntrypoint is an author-asserted root that call-resolution cannot reach:
+// a library-dispatched callback (KindCallback) or a background goroutine worker
+// (KindWorker). PkgPath and Symbol identify the function — an "import/path#Symbol"
+// reference the caller has already split; Ref is that reference verbatim, used as
+// the root's disclosed Name so a reader sees the exact config entry the root was
+// asserted from.
+//
+// Resolution is by (PkgPath, Symbol) over the program's first-party functions.
+// A symbol naming several methods (same name, different receivers) roots ALL
+// matches: over-approximate and SOUND, because a declared root only ever turns
+// provenAbsent → reachable, never the reverse, so an extra match cannot manufacture
+// a false proof of absence (CLAUDE.md tenet 4). The match set is order-independent
+// (it is a set, sorted before output), so rooting stays deterministic. A symbol
+// that matches nothing is disclosed as a blind spot — a stale declaration is drift,
+// surfaced rather than silently dropped.
+type DeclaredEntrypoint struct {
+	PkgPath string
+	Symbol  string
+	Kind    Kind
+	Ref     string
 }
 
 // BlindSpot records a registration whose handler could not be resolved to a
@@ -153,10 +184,11 @@ func chiRegistrars() []Registrar {
 	return regs
 }
 
-// Discover finds the synthetic roots of prog given the registration hints. When
-// the unit has no mains and no registered handlers, it falls back to the unit's
-// exported functions (library mode).
-func Discover(prog *ssabuild.Program, registrars []Registrar) *Result {
+// Discover finds the synthetic roots of prog given the registration hints and any
+// author-declared entrypoints (callbacks and workers call-resolution cannot
+// reach). When the unit has no mains and no registered or declared handlers, it
+// falls back to the unit's exported functions (library mode).
+func Discover(prog *ssabuild.Program, registrars []Registrar, declared ...DeclaredEntrypoint) *Result {
 	res := &Result{}
 	// Identity is the full (fn, kind, name) triple, not the function alone: two
 	// routes may register one handler function, and each must survive as its own
@@ -237,8 +269,39 @@ func Discover(prog *ssabuild.Program, registrars []Registrar) *Result {
 		}
 	}
 
-	// Library fallback: no PRIMARY entry point (main, HTTP handler, or bus
-	// consumer) to root from, so root at every exported function. Init roots are
+	// Declared entrypoints: author-asserted roots call-resolution cannot reach
+	// (library-dispatched callbacks, background goroutine workers). Resolve each by
+	// (package, symbol) over first-party functions and root it directly, bypassing
+	// the registration-call resolver that hits the value-flow wall on the
+	// manager-holds-handler idiom (the handler threads through a struct field /
+	// constructor / closure root discovery cannot follow before the call graph
+	// exists). Rooting is monotonic on reachability — provenAbsent → reachable only —
+	// so an over-approximate match set (a symbol naming several methods) stays sound;
+	// a declaration matching nothing is disclosed as a blind spot, not dropped. This
+	// runs before the library-fallback gate so a service whose only entry is a
+	// declared callback/worker does not collapse into exported-surface mode.
+	for _, d := range declared {
+		matched := false
+		for fn := range ssautil.AllFunctions(prog.Prog) {
+			if fn.Pkg == nil || !prog.IsFirstParty(fn.Pkg) {
+				continue
+			}
+			if pkgPath(fn) == d.PkgPath && fn.Name() == d.Symbol {
+				add(fn, d.Kind, d.Ref)
+				matched = true
+			}
+		}
+		if !matched {
+			res.BlindSpots = append(res.BlindSpots, BlindSpot{
+				Registrar: d.Ref,
+				Detail:    "declared entrypoint resolves to no first-party function (stale reference or moved code)",
+			})
+		}
+	}
+
+	// Library fallback: no PRIMARY entry point (main, HTTP handler, bus consumer, or
+	// declared callback/worker) to root from, so root at every exported function.
+	// Init roots are
 	// excluded from this test — every package has a synthesized init, so counting
 	// them would permanently suppress the fallback and leave a pure library's
 	// exported surface unrooted.
@@ -257,13 +320,15 @@ func Discover(prog *ssabuild.Program, registrars []Registrar) *Result {
 }
 
 // hasPrimaryRoot reports whether the set contains a primary entry point — a main,
-// an HTTP handler, or a bus consumer. Init and export roots do not count: init is
-// synthesized for every package (so it is always present), and exports ARE the
-// library fallback this predicate gates.
+// an HTTP handler, a bus consumer, or a declared callback/worker. Init and export
+// roots do not count: init is synthesized for every package (so it is always
+// present), and exports ARE the library fallback this predicate gates. A declared
+// callback/worker DOES count: it is an author-asserted real entry, so a service
+// whose only entry is one must not collapse into exported-surface library mode.
 func hasPrimaryRoot(rs []Root) bool {
 	for _, r := range rs {
 		switch r.Kind {
-		case KindMain, KindHTTP, KindConsumer:
+		case KindMain, KindHTTP, KindConsumer, KindCallback, KindWorker:
 			return true
 		}
 	}
@@ -286,6 +351,14 @@ func indexRegistrars(rs []Registrar) map[regKey]Registrar {
 // do not (offset 0) — for an invoke the receiver is cc.Value, outside Args.
 func calleeKey(cc *ssa.CallCommon) (pkg, name string, recvOffset int, ok bool) {
 	if callee := cc.StaticCallee(); callee != nil {
+		// Normalize a generic instantiation to its origin before deriving the key:
+		// an instantiated `Register[T]` reports Name() == "Register[pkg.Type]" and an
+		// empty package, so it never matches a registrar keyed on (pkgPath, "Register").
+		// Origin() yields the declared generic (pkg, name); it is nil for a
+		// non-generic function, so this is a no-op off the generic path.
+		if orig := callee.Origin(); orig != nil {
+			callee = orig
+		}
 		off := 0
 		if callee.Signature.Recv() != nil {
 			off = 1

@@ -188,11 +188,17 @@ type FrontierSection struct {
 	Coverage          string            `json:"coverage,omitempty"`
 }
 
-// Entrypoint is one named root: an HTTP route or a consumed topic, with the
-// function registered to handle it.
+// Entrypoint is one named root: a discovered HTTP route or consumed topic, or a
+// DECLARED callback/worker (config.entrypoints), with the function that handles it.
 type Entrypoint struct {
-	Kind string `json:"kind"` // "http" or "consumer"
-	Name string `json:"name"` // "POST /loan-application", "/transfer", "payment.settled"
+	// Kind is "http" or "consumer" for a discovered route, or "callback"/"worker"
+	// for an author-declared root call-resolution could not reach — the kind is the
+	// provenance: declared roots are asserted, not discovered.
+	Kind string `json:"kind"`
+	// Name is the route/topic for a discovered root ("POST /loan-application",
+	// "payment.settled"); for a declared root it is the "import/path#Symbol"
+	// reference it was asserted from (no route or event name is statically known).
+	Name string `json:"name"`
 	Fn   string `json:"fn"`
 }
 
@@ -496,7 +502,12 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 			if r.Name == "" || !scope[r.Func] {
 				continue
 			}
-			if r.Kind == roots.KindHTTP || r.Kind == roots.KindConsumer {
+			switch r.Kind {
+			case roots.KindHTTP, roots.KindConsumer, roots.KindCallback, roots.KindWorker:
+				// "callback"/"worker" are DECLARED roots: the kind itself carries the
+				// provenance (author-vouched, not discovered), and their Name is the
+				// config reference they were asserted from, so a reader can tell a
+				// declared entry from a discovered route.
 				g.Entrypoints = append(g.Entrypoints, Entrypoint{Kind: string(r.Kind), Name: r.Name, Fn: r.FQN()})
 			}
 		}

@@ -32,6 +32,11 @@ type Config struct {
 	Service  string        `yaml:"service"` // service name for the boundary contract; defaults to the module's last path segment
 	Classify ClassifyHints `yaml:"classify"`
 
+	// Entrypoints declares the roots call-resolution cannot reach (see
+	// EntrypointHints). Kept SEPARATE from classify.busConsume on purpose — the two
+	// key spaces serve different jobs and overloading one mis-roots the other.
+	Entrypoints EntrypointHints `yaml:"entrypoints"`
+
 	// Tier layer (tier-map spec §3b).
 	UseDefaults *bool  `yaml:"useDefaults"` // nil => true
 	CatchAll    int    `yaml:"catchAll"`    // 0 => default 3
@@ -339,6 +344,46 @@ type ClassifyHints struct {
 	HTTP []string `yaml:"http"`
 }
 
+// EntrypointHints declares the entry points root discovery cannot reach by
+// call-resolution — author-asserted roots, the same trust model as static.routers
+// (the author declares an HTTP router), extended to two classes the registrar
+// resolver provably cannot follow:
+//
+//   - Callbacks: a handler registered into a library whose DISPATCH is
+//     out-of-module (an inbox consume handler, an outbox Publisher/FailureHandler).
+//     The registration call is in scope but the handler value threads through a
+//     struct field / constructor / closure — a value-flow chain root discovery
+//     cannot follow, because it runs BEFORE the call graph is built (no points-to
+//     to lean on). Such callbacks are otherwise ORPHANED (zero in-edges), so their
+//     effect cones — DB writes, cloud provisioning — vanish from the reachable
+//     graph. This is a coverage gap, not cosmetic.
+//   - Workers: a `go`-launched background worker (a reconcile loop). These ARE
+//     reachable via wiring from main, so it is not a soundness hole — but they are
+//     not entry points, so their write surface is attributed to main rather than to
+//     a worker route and cannot be gated per-worker. Declaring one roots it as its
+//     own entry so its surface is attributable.
+//
+// Each entry is a fully-qualified "import/path#Symbol" reference, like an
+// obligation ref (both halves required); a symbol naming several methods (same
+// name, different receivers) roots ALL matches — over-approximate and sound, since
+// a declared root only ever turns provenAbsent → reachable. A declared root is
+// ASSERTED, not discovered, so it is disclosed AS a declared callback/worker
+// entrypoint, never laundered into a discovered route.
+//
+// This MUST stay separate from classify.busConsume: busConsume entries are
+// edge-classification (PUBLISH/CONSUME) registrar hints, not handler declarations.
+// Direct-rooting a busConsume hint mis-roots it — one edge-classification hint
+// expands to several spurious "consume" entrypoints, one per interface impl.
+//
+// Completeness is the author's job once declared: the mechanism roots what is
+// declared, it does not discover the set. A missed declaration is a silent gap,
+// same as today; a stale one (a reference matching no function) is disclosed as a
+// blind spot in root discovery (drift surfaced, not dropped).
+type EntrypointHints struct {
+	Callbacks []string `yaml:"callbacks,omitempty"`
+	Workers   []string `yaml:"workers,omitempty"`
+}
+
 // Rule maps a feature pattern to a tier. An empty MatchSpec matches everything.
 type Rule struct {
 	Name  string    `yaml:"name,omitempty"`
@@ -529,6 +574,20 @@ func (c *Config) validate() error {
 		}
 		if strings.TrimSpace(a.Note) == "" {
 			return fmt.Errorf("flowmap config: static.annotations[%d] (%s): note is required (the context)", i, a.Site)
+		}
+	}
+	// A declared entrypoint anchors on a specific function, so — like an obligation
+	// ref — it must name both an import path and a symbol. A well-formed reference
+	// that matches no function at analysis time is a different failure (runtime
+	// drift), disclosed there as a blind spot; this catches the typo at load.
+	for i, ref := range c.Entrypoints.Callbacks {
+		if err := validRef(ref); err != nil {
+			return fmt.Errorf("flowmap config: entrypoints.callbacks[%d]: %w", i, err)
+		}
+	}
+	for i, ref := range c.Entrypoints.Workers {
+		if err := validRef(ref); err != nil {
+			return fmt.Errorf("flowmap config: entrypoints.workers[%d]: %w", i, err)
 		}
 	}
 	return nil

@@ -20,6 +20,11 @@ func TestHasPrimaryRoot(t *testing.T) {
 		{"main", []Kind{KindInit, KindMain}, true},
 		{"http handler", []Kind{KindInit, KindHTTP}, true},
 		{"bus consumer", []Kind{KindInit, KindConsumer}, true},
+		// Declared callback/worker roots are author-asserted real entries, so they
+		// unlock the fallback the same way a discovered primary does — a service whose
+		// only entry is a declared one must not collapse into library-export mode.
+		{"declared callback", []Kind{KindInit, KindCallback}, true},
+		{"declared worker", []Kind{KindInit, KindWorker}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

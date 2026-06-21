@@ -92,6 +92,43 @@ func TestRegistrarsBusConsumeWithoutSymbolSkipped(t *testing.T) {
 	}
 }
 
+// TestDeclaredEntrypointsFromConfig pins the config → declared-root mapping:
+// callbacks become KindCallback declarations and workers become KindWorker, each
+// split into (pkg, symbol) with the verbatim reference carried as Ref (the disclosed
+// Name). This is the wiring that lets a service declare a root by FQN.
+func TestDeclaredEntrypointsFromConfig(t *testing.T) {
+	cfg := mustConfig(t, ""+
+		"entrypoints:\n"+
+		"  callbacks:\n"+
+		"    - ex.com/svc/internal/inbound#Handle\n"+
+		"  workers:\n"+
+		"    - ex.com/svc/internal/reconciler#Start\n")
+
+	got := analyze.DeclaredEntrypoints(cfg)
+	if len(got) != 2 {
+		t.Fatalf("got %d declared entrypoints, want 2: %+v", len(got), got)
+	}
+	want := map[string]roots.DeclaredEntrypoint{
+		"ex.com/svc/internal/inbound#Handle":   {PkgPath: "ex.com/svc/internal/inbound", Symbol: "Handle", Kind: roots.KindCallback, Ref: "ex.com/svc/internal/inbound#Handle"},
+		"ex.com/svc/internal/reconciler#Start": {PkgPath: "ex.com/svc/internal/reconciler", Symbol: "Start", Kind: roots.KindWorker, Ref: "ex.com/svc/internal/reconciler#Start"},
+	}
+	for _, d := range got {
+		w, ok := want[d.Ref]
+		if !ok {
+			t.Errorf("unexpected declared entrypoint: %+v", d)
+			continue
+		}
+		if d != w {
+			t.Errorf("declared entrypoint = %+v, want %+v", d, w)
+		}
+	}
+
+	// A nil config yields no declarations (the early-return path).
+	if d := analyze.DeclaredEntrypoints(nil); d != nil {
+		t.Errorf("nil config produced declarations: %+v", d)
+	}
+}
+
 func hasRegistrar(regs []roots.Registrar, pkg, name string) bool {
 	return findRegistrar(regs, pkg, name) != nil
 }

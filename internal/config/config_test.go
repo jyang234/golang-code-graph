@@ -117,6 +117,34 @@ func TestLoadRejectsDeclaredBlindSpotMissingFields(t *testing.T) {
 	}
 }
 
+// A declared entrypoint anchors on a specific function, so — like an obligation
+// ref — both halves of the "import/path#Symbol" reference are required. A bare path
+// (no symbol) is a typo refused at load, in either the callbacks or workers list.
+func TestLoadEntrypoints(t *testing.T) {
+	const doc = "entrypoints:\n" +
+		"  callbacks:\n" +
+		"    - ex.com/svc/internal/inbound#Handle\n" +
+		"  workers:\n" +
+		"    - ex.com/svc/internal/reconciler#Start\n"
+	c, err := Load([]byte(doc))
+	if err != nil {
+		t.Fatalf("valid entrypoints must load: %v", err)
+	}
+	if len(c.Entrypoints.Callbacks) != 1 || c.Entrypoints.Callbacks[0] != "ex.com/svc/internal/inbound#Handle" {
+		t.Errorf("callbacks not parsed: %+v", c.Entrypoints.Callbacks)
+	}
+	if len(c.Entrypoints.Workers) != 1 || c.Entrypoints.Workers[0] != "ex.com/svc/internal/reconciler#Start" {
+		t.Errorf("workers not parsed: %+v", c.Entrypoints.Workers)
+	}
+
+	if _, err := Load([]byte("entrypoints:\n  callbacks:\n    - ex.com/svc/inbound\n")); err == nil {
+		t.Error("expected error on a callback reference with no symbol")
+	}
+	if _, err := Load([]byte("entrypoints:\n  workers:\n    - ex.com/svc/reconciler\n")); err == nil {
+		t.Error("expected error on a worker reference with no symbol")
+	}
+}
+
 func TestCanonDefaults(t *testing.T) {
 	c, err := Load(nil)
 	if err != nil {
