@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"io"
 	"os"
@@ -90,6 +91,55 @@ func TestParsePermutedAcceptsFlagsEitherSide(t *testing.T) {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	if _, err := parsePermuted(fs, []string{"a.json", "b.json"}); err == nil {
 		t.Error("two positionals should error")
+	}
+}
+
+// TestRunSchemaDrift exercises the schema-drift subcommand end-to-end: it reads an
+// emitted graph JSON + a migrations dir and flags a code write to a table no
+// migration defines, while a defined table reads clean. Also pins the required-flag
+// guards.
+func TestRunSchemaDrift(t *testing.T) {
+	dir := t.TempDir()
+
+	g := graphio.Graph{Edges: []graphio.Edge{
+		{From: "svc.A", To: "boundary:db INSERT defined_table"},
+		{From: "svc.B", To: "boundary:db INSERT ghost_table"},
+	}}
+	gb, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gpath := filepath.Join(dir, "graph.json")
+	if err := os.WriteFile(gpath, gb, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mdir := filepath.Join(dir, "migrations")
+	if err := os.Mkdir(mdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mdir, "V1__init.sql"), []byte("CREATE TABLE defined_table (id text);"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := run([]string{"schema-drift", "--graph", gpath, "--migrations", mdir, "--json"}); err != nil {
+			t.Fatalf("schema-drift: %v", err)
+		}
+	})
+	if !strings.Contains(out, "ghost_table") {
+		t.Errorf("expected ghost_table drift in JSON, got: %s", out)
+	}
+	if strings.Contains(out, "defined_table") {
+		t.Errorf("defined_table is defined and must not drift, got: %s", out)
+	}
+
+	// Required flags are guarded.
+	if err := run([]string{"schema-drift", "--migrations", mdir}); err == nil {
+		t.Error("expected an error when --graph is missing")
+	}
+	if err := run([]string{"schema-drift", "--graph", gpath}); err == nil {
+		t.Error("expected an error when --migrations is missing")
 	}
 }
 

@@ -32,6 +32,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
+	"github.com/jyang234/golang-code-graph/internal/static/schemadrift"
 	"github.com/jyang234/golang-code-graph/internal/syscontext"
 	"github.com/jyang234/golang-code-graph/ir"
 )
@@ -63,6 +64,8 @@ func run(args []string) error {
 		return cmdGraph(args[1:])
 	case "frontier":
 		return cmdFrontier(args[1:])
+	case "schema-drift":
+		return cmdSchemaDrift(args[1:])
 	case "diff":
 		return cmdDiff(args[1:])
 	case "coverage":
@@ -344,6 +347,68 @@ func cmdFrontier(args []string) error {
 	}
 	fmt.Print(frontier.Render(dir, g.Algo, rep))
 	return nil
+}
+
+// cmdSchemaDrift cross-checks the DB tables a service's code writes — read off an
+// already-emitted graph JSON — against the tables its migrations define
+// (docs/design/schema-drift-check-plan.md, §1). It is a deterministic post-process:
+// it never touches the graph build, so it carries no soundness or determinism risk
+// to the analyzer. A code-side table absent from the defined schema is the
+// `relation "X" does not exist` deploy-hazard class.
+//
+// Soundness: the drift verdict is sound iff the defined-schema set is COMPLETE, so
+// the library-owned tables (outbox/inbox, auto-migrated by a library and named by no
+// migration) must be declared via --library-owned. The check inherits the db-call
+// frontier — a write whose SQL is non-constant carries no table — so "no drift"
+// means "no drift among resolved writes"; feed it the --reclaim-sql graph to shrink
+// that opaque residual. This is a measurement view, not a gate: it exits 0.
+func cmdSchemaDrift(args []string) error {
+	fs := flag.NewFlagSet("schema-drift", flag.ContinueOnError)
+	graphPath := fs.String("graph", "", "path to an emitted graph JSON (recommend the --reclaim-sql graph)")
+	migrationsDir := fs.String("migrations", "", "directory of SQL migrations defining the schema")
+	libraryOwned := fs.String("library-owned", "", "comma-separated tables a library auto-migrates (outbox/inbox), folded into the defined schema")
+	asJSON := fs.Bool("json", false, "emit the report as canonical JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *graphPath == "" {
+		return fmt.Errorf("schema-drift: --graph <graph.json> is required")
+	}
+	if *migrationsDir == "" {
+		return fmt.Errorf("schema-drift: --migrations <dir> is required")
+	}
+
+	g, err := loadGraphJSON(*graphPath)
+	if err != nil {
+		return err
+	}
+	files, err := schemadrift.LoadMigrations(*migrationsDir)
+	if err != nil {
+		return err
+	}
+
+	rep := schemadrift.Check(graphEdges(g), files, splitList(*libraryOwned))
+	if *asJSON {
+		b, err := canonjson.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(b)
+		return err
+	}
+	fmt.Print(schemadrift.Render(*graphPath, rep))
+	return nil
+}
+
+// graphEdges adapts the emitted graph's edges to the schemadrift Edge view (From/To
+// only), keeping the schemadrift core decoupled from the graph builder (the same
+// decoupling frontier.Input uses).
+func graphEdges(g *graphio.Graph) []schemadrift.Edge {
+	out := make([]schemadrift.Edge, len(g.Edges))
+	for i, e := range g.Edges {
+		out[i] = schemadrift.Edge{From: e.From, To: e.To}
+	}
+	return out
 }
 
 // algoOption maps the --algo flag to a call-graph Options. The empty string and
@@ -1096,6 +1161,7 @@ commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
   graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL labels)
   frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  schema-drift --graph G --migrations D [--library-owned a,b] [--json]  cross-check code DB writes against migration-defined schema — measurement, not a gate
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects
