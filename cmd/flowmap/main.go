@@ -349,24 +349,29 @@ func cmdFrontier(args []string) error {
 	return nil
 }
 
-// cmdSchemaDrift cross-checks the DB tables a service's code writes — read off an
-// already-emitted graph JSON — against the tables its migrations define
-// (docs/design/schema-drift-check-plan.md, §1). It is a deterministic post-process:
-// it never touches the graph build, so it carries no soundness or determinism risk
-// to the analyzer. A code-side table absent from the defined schema is the
+// cmdSchemaDrift cross-checks the DB tables a service's code writes against the
+// tables its migrations define (docs/design/schema-drift-check-plan.md, §1). The
+// code-side write set comes from the graph's boundary:db labels — read off an
+// already-emitted --graph, or, when --graph is omitted, built fresh from [dir]
+// (the one-step CI form). Either way it is a deterministic post-process over the
+// graph; a code-side table absent from the defined schema is the
 // `relation "X" does not exist` deploy-hazard class.
 //
 // Soundness: the drift verdict is sound iff the defined-schema set is COMPLETE, so
 // the library-owned tables (outbox/inbox, auto-migrated by a library and named by no
-// migration) must be declared via --library-owned. The check inherits the db-call
-// frontier — a write whose SQL is non-constant carries no table — so "no drift"
-// means "no drift among resolved writes"; feed it the --reclaim-sql graph to shrink
-// that opaque residual. This is a measurement view, not a gate: it exits 0.
+// migration) must be declared (--library-owned or static.schemaCheck). The check
+// inherits the db-call frontier — a write whose SQL is non-constant carries no table
+// — so "no drift" means "no drift among resolved writes"; --reclaim-sql shrinks that
+// opaque residual. Default is a disclosure (exit 0); --gate makes drift a non-zero
+// exit for CI.
 func cmdSchemaDrift(args []string) error {
 	fs := flag.NewFlagSet("schema-drift", flag.ContinueOnError)
-	graphPath := fs.String("graph", "", "path to an emitted graph JSON (recommend the --reclaim-sql graph)")
+	graphPath := fs.String("graph", "", "path to an emitted graph JSON; omit to build the graph fresh from [dir]")
 	migrationsDir := fs.String("migrations", "", "directory of SQL migrations (overrides static.schemaCheck.migrationsDir)")
 	libraryOwned := fs.String("library-owned", "", "comma-separated tables a library auto-migrates (outbox/inbox), folded into the defined schema (overrides static.schemaCheck.libraryOwnedTables)")
+	algo := fs.String("algo", "", `with build-fresh (no --graph): call-graph algorithm "rta" (default), "vta", "cha"`)
+	reclaimSQL := fs.Bool("reclaim-sql", false, "with build-fresh: apply the SQL const-accumulation label reclaimer (recommended — shrinks the opaque-write frontier)")
+	gate := fs.Bool("gate", false, "exit non-zero if any drift is found (CI gate)")
 	asJSON := fs.Bool("json", false, "emit the report as canonical JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -375,11 +380,8 @@ func cmdSchemaDrift(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *graphPath == "" {
-		return fmt.Errorf("schema-drift: --graph <graph.json> is required")
-	}
 
-	// The optional [dir]'s .flowmap.yaml supplies the schema source (migrations dir,
+	// The [dir]'s .flowmap.yaml supplies the schema source (migrations dir,
 	// library-owned tables); flags override it. dirArg defaults dir to ".", so an
 	// absent config just yields the zero value and the flags stand alone.
 	cfg, err := config.LoadDir(dir)
@@ -398,7 +400,9 @@ func cmdSchemaDrift(args []string) error {
 		libOwned = cfg.Static.SchemaCheck.LibraryOwnedTables
 	}
 
-	g, err := loadGraphJSON(*graphPath)
+	// Code-side edges: read an emitted graph (the build stays literally untouched),
+	// or build fresh from [dir] when --graph is omitted.
+	edges, source, err := schemaDriftEdges(*graphPath, dir, *algo, *reclaimSQL)
 	if err != nil {
 		return err
 	}
@@ -407,17 +411,52 @@ func cmdSchemaDrift(args []string) error {
 		return err
 	}
 
-	rep := schemadrift.Check(graphEdges(g), files, libOwned)
+	rep := schemadrift.Check(edges, files, libOwned)
 	if *asJSON {
 		b, err := canonjson.Marshal(rep)
 		if err != nil {
 			return err
 		}
-		_, err = os.Stdout.Write(b)
-		return err
+		if _, err := os.Stdout.Write(b); err != nil {
+			return err
+		}
+	} else {
+		fmt.Print(schemadrift.Render(source, rep))
 	}
-	fmt.Print(schemadrift.Render(*graphPath, rep))
+	// --gate turns the disclosure into a CI gate AFTER the report is emitted, so the
+	// failure always ships the evidence with it.
+	if *gate && len(rep.Drift) > 0 {
+		return fmt.Errorf("schema-drift: %d table(s) written by code but absent from the defined schema (see report)", len(rep.Drift))
+	}
 	return nil
+}
+
+// schemaDriftEdges returns the code's boundary edges and a label for the report.
+// With graphPath set it reads the emitted graph (the build is untouched); otherwise
+// it builds the graph fresh from dir, applying the same algo/SQL-fold options the
+// other static views use.
+func schemaDriftEdges(graphPath, dir, algo string, reclaimSQL bool) ([]schemadrift.Edge, string, error) {
+	if graphPath != "" {
+		g, err := loadGraphJSON(graphPath)
+		if err != nil {
+			return nil, "", err
+		}
+		return graphEdges(g), graphPath, nil
+	}
+	opt, err := algoOption(algo)
+	if err != nil {
+		return nil, "", err
+	}
+	res, err := analyze.Analyze(dir, opt)
+	if err != nil {
+		return nil, "", err
+	}
+	g, err := graphio.Build(res, "", sqlFoldOpts(reclaimSQL)...)
+	if err != nil {
+		return nil, "", err
+	}
+	warnSkippedAnnotations(os.Stderr, g)
+	return graphEdges(g), dir, nil
 }
 
 // graphEdges adapts the emitted graph's edges to the schemadrift Edge view (From/To
@@ -1181,7 +1220,7 @@ commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
   graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL labels)
   frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
-  schema-drift --graph G [--migrations D] [--library-owned a,b] [--json] [dir]  cross-check code DB writes against the migration-defined schema (dir's .flowmap.yaml supplies static.schemaCheck) — measurement, not a gate
+  schema-drift [--graph G] [--migrations D] [--library-owned a,b] [--reclaim-sql] [--gate] [--json] [dir]  cross-check code DB writes against the migration-defined schema (omit --graph to build fresh from dir; dir's .flowmap.yaml supplies static.schemaCheck; --gate: non-zero exit on drift)
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects

@@ -1,14 +1,19 @@
 # Schema-drift cross-check — implementation plan (§1 of the headroom analysis)
 
-> **`PROPOSAL`** · exploratory, building the case · _drafted 2026-06-21_
+> **`DESIGN RECORD`** · phases 1–4 shipped; kept as the rationale · _reviewed 2026-06-21_
 
-**Status:** the build plan for item §1 of
-[`flowmap-capability-headroom.md`](flowmap-capability-headroom.md) — the
-schema-drift cross-check, *prototyped on event-bus + cgate*, recommended as the
-lowest-risk extension. Designed-not-built. This doc settles where it lives, the
-package shape, the soundness contract (including the load-bearing completeness
-conditions the prototype surfaced), and the fixture/test obligations, before any
-code lands. Substrate facts cited against pin `85ca0a9`.
+**Status:** **SHIPPED** as `internal/static/schemadrift` + the `flowmap schema-drift`
+subcommand. The core (Phase 1), CLI (Phase 2), config + a real-service fixture
+(Phase 3), and the `--gate` / build-fresh CI ergonomics (Phase 4) all landed; the
+motivating fixture `testdata/fixtures/schemadriftsvc` reproduces the prototype's
+`provisioning_outbox` completeness finding on real graphio-emitted labels. Two items
+from the original Phase 4 stay deferred-by-design: a real DDL parser (the regex scan
+held; a parser is a v2 swap behind the same interface, not worth a new dependency in
+a determinism-critical tree until the corpus demands it) and Migrator-discovery of
+the library-owned set (needs a concrete library's DDL; declared lists suffice today).
+Kept as the design record: it settles where the check lives, the package shape, and —
+the load-bearing part — the soundness/completeness contract. Substrate facts cited
+against pin `85ca0a9`.
 
 ## What it is (recap)
 
@@ -206,33 +211,39 @@ that taught the prototype (`.flowmap.yaml` + Go service + `db/migrations/`):
 6. **op/table parity**: a property test that `codeTables` parses the table the same
    way `graphio` emitted it (one-source-of-truth guard).
 
-Wire the fixture into the `fixture` Make target (`Makefile:31`). `make verify`
-green at the end.
+As shipped, these became unit tests in `schemadrift_test.go` (synthetic labels) plus
+`fixture_test.go` (the real analyzer + `graphio.Build` over the fixture) — the latter
+is the one-source-of-truth/parity guard on a genuinely emitted graph. The fixture is
+analyze-only, so it runs under `make test` via the package test (the `strictsvc`
+pattern), NOT the `fixture` Make target (which gates the behavioral-flow goldens);
+the original plan's "wire into the fixture target" was corrected to match how
+analyze-only fixtures already work. `make verify` green at the end of every phase.
 
-## Phasing
+## Phasing (all shipped)
 
-1. **Core package** `internal/static/schemadrift`: migration replay+scan,
-   `codeTables`, set-diff, `Report`. Unit + determinism tests. No CLI. _(the bulk
-   of the soundness work; fully testable in isolation)_
-2. **CLI** `flowmap schema-drift --graph --migrations`: `loadGraphJSON` adapter →
-   `Input`, JSON + human `Render`. Help text + `usage()` entry.
-3. **Config** `StaticConfig.SchemaCheck` + flag override; the fixture + goldens +
-   Make target.
-4. **(later, optional)** `--gate` exit-code bridge; real DDL parser swap;
-   Migrator-DDL discovery of the library-owned set; build-fresh `schema-drift <dir>`
-   convenience.
+1. ✅ **Core package** `internal/static/schemadrift` (`schemadrift.go`,
+   `migrations.go`, `render.go`): migration replay+scan, `codeTables`, set-diff,
+   `Report`. Unit + determinism tests. No CLI.
+2. ✅ **CLI** `flowmap schema-drift --graph --migrations`: `loadGraphJSON` →
+   `graphEdges` adapter → `Check`, JSON (`canonjson`) + human `Render`. `usage()` entry.
+3. ✅ **Config** `StaticConfig.SchemaCheck` + flag override; the `schemadriftsvc`
+   fixture + `fixture_test.go` real-graph proof.
+4. ✅ **CI ergonomics** `--gate` (non-zero exit on drift) + build-fresh
+   (`schema-drift [dir]`, omitting `--graph`, reusing `--algo`/`--reclaim-sql`).
+   ⏸ **Deferred-by-design:** a real DDL parser (regex held; v2 swap behind the same
+   interface — no speculative dependency in a determinism-critical tree) and
+   Migrator-DDL discovery of the library-owned set (declared lists suffice; discovery
+   needs a concrete library target).
 
-## Open decisions (need a call before/within the build)
+## Decisions (resolved as built)
 
-1. **Gate vs. disclosure for v1.** Disclosure (exit 0, like `frontier`) is the safe
-   default and lets us measure noise first; a `--gate` flag follows once the
-   false-positive surface is confirmed quiet. *Recommend: disclosure in v1,
-   `--gate` in phase 4.*
-2. **DDL parsing depth.** Regex/scan v1 (no new dep, fail-closed) vs. add a real DDL
-   parser now. *Recommend: regex v1 — the prototype's findings held under it, and a
-   new dep is reversible behind the interface.*
-3. **Library-owned set source.** Declared list in `.flowmap.yaml` (v1) vs.
-   Migrator-DDL discovery (later). *Recommend: declared v1.*
-4. **Read emitted graph vs. build fresh.** *Recommend: read the `--reclaim-sql`
-   graph in v1 (keeps "build untouched" literally true); build-fresh convenience
-   later.*
+1. **Gate vs. disclosure.** Disclosure is the default (exit 0, like `frontier`);
+   `--gate` makes drift a non-zero exit for CI, emitted *after* the report so the
+   failure ships its evidence. Both shipped.
+2. **DDL parsing depth.** Regex/scan, fail-closed — the prototype's findings held
+   under it, and a real parser stays a reversible v2 swap behind the interface.
+3. **Library-owned set source.** Declared list (`--library-owned` /
+   `static.schemaCheck.libraryOwnedTables`); Migrator-DDL discovery deferred.
+4. **Read emitted graph vs. build fresh.** Both: `--graph` reads an emitted graph
+   (keeps "build untouched" literally true) and is the default story; omitting it
+   builds fresh from `[dir]` for the one-step CI form.

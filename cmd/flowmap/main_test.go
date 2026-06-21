@@ -134,12 +134,38 @@ func TestRunSchemaDrift(t *testing.T) {
 		t.Errorf("defined_table is defined and must not drift, got: %s", out)
 	}
 
-	// Required flags are guarded.
-	if err := run([]string{"schema-drift", "--migrations", mdir}); err == nil {
-		t.Error("expected an error when --graph is missing")
-	}
+	// With no migrations source (no flag, no config) the check errors rather than
+	// guessing.
 	if err := run([]string{"schema-drift", "--graph", gpath}); err == nil {
-		t.Error("expected an error when --migrations is missing")
+		t.Error("expected an error when no migrations source is given")
+	}
+}
+
+// TestRunSchemaDriftBuildFresh exercises the one-step CI form: no --graph, so the
+// graph is built fresh from the service dir, whose .flowmap.yaml supplies the
+// migrations dir and library-owned set. --gate then turns drift into a non-zero exit.
+func TestRunSchemaDriftBuildFresh(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	svc := filepath.Join(filepath.Dir(file), "..", "..", "testdata", "fixtures", "schemadriftsvc")
+
+	out := captureStdout(t, func() {
+		if err := run([]string{"schema-drift", svc}); err != nil {
+			t.Fatalf("schema-drift build-fresh: %v", err)
+		}
+	})
+	if !strings.Contains(out, "audit_log") || !strings.Contains(out, "queue_messages") {
+		t.Errorf("expected drift on audit_log and queue_messages, got:\n%s", out)
+	}
+	// provisioning_outbox is declared library-owned in the fixture config, so it must
+	// not drift here.
+	if strings.Contains(out, "- provisioning_outbox ") {
+		t.Errorf("provisioning_outbox is library-owned and must not drift, got:\n%s", out)
+	}
+
+	// --gate exits non-zero when drift is present.
+	silenceStdout(t)
+	if err := run([]string{"schema-drift", "--gate", svc}); err == nil {
+		t.Error("--gate should error when drift is present")
 	}
 }
 

@@ -24,7 +24,12 @@ item below stays inside the directive; none asks the tool to guess.
 
 ---
 
-## 1 · Schema-drift cross-check — prototyped, recommended
+## 1 · Schema-drift cross-check — SHIPPED
+
+> **Shipped** as `internal/static/schemadrift` + `flowmap schema-drift` (with `--gate`
+> and build-fresh). See [`schema-drift-check-plan.md`](schema-drift-check-plan.md) for
+> the build record; the `testdata/fixtures/schemadriftsvc` fixture reproduces the
+> `provisioning_outbox` completeness finding below on real graphio-emitted labels.
 
 **Capability.** Cross-check the code's DB targets — *already* in the emitted IR as boundary labels
 (`boundary:db INSERT event_type_subscriptions`) — against the tables the migrations define. A
