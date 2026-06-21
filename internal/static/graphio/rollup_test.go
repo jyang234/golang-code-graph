@@ -223,12 +223,12 @@ func TestRollupDiffWiringNotCode(t *testing.T) {
 // both the plain and diff views.
 func TestRollupCompositionRootMermaidValid(t *testing.T) {
 	g := compositionRootGraph()
-	if err := validateMermaid(g.RollupByPackage().Mermaid()); err != nil {
+	if err := validateMermaid(g.RollupByPackage().Mermaid(RollupMermaidOptions{})); err != nil {
 		t.Errorf("composition-root rollup Mermaid invalid: %v", err)
 	}
 	branch := compositionRootGraph()
 	branch.Edges = branch.Edges[:1]
-	if err := validateMermaid(RollupMermaidDiff(g, branch)); err != nil {
+	if err := validateMermaid(RollupMermaidDiff(g, branch, RollupMermaidOptions{})); err != nil {
 		t.Errorf("composition-root rollup diff Mermaid invalid: %v", err)
 	}
 }
@@ -252,19 +252,19 @@ func TestRollupDeterministic(t *testing.T) {
 	g := rollupSampleGraph()
 	base := rollupSampleGraph() // a second graph for the diff render path
 	first := g.RollupByPackage()
-	firstMermaid := first.Mermaid()
-	firstDiffMermaid := RollupMermaidDiff(base, g)
+	firstMermaid := first.Mermaid(RollupMermaidOptions{})
+	firstDiffMermaid := RollupMermaidDiff(base, g, RollupMermaidOptions{})
 	for i := 0; i < 50; i++ {
 		got := g.RollupByPackage()
 		if !reflect.DeepEqual(got, first) {
 			t.Fatalf("rollup model not deterministic on run %d:\n%+v\nvs\n%+v", i, got, first)
 		}
-		if m := got.Mermaid(); m != firstMermaid {
+		if m := got.Mermaid(RollupMermaidOptions{}); m != firstMermaid {
 			t.Fatalf("rollup Mermaid not deterministic on run %d:\n%s\nvs\n%s", i, m, firstMermaid)
 		}
 		// The diff render is its own ordering path (union node-id allocation + linkStyle
 		// index assignment), so it ships with its own determinism check.
-		if m := RollupMermaidDiff(base, g); m != firstDiffMermaid {
+		if m := RollupMermaidDiff(base, g, RollupMermaidOptions{}); m != firstDiffMermaid {
 			t.Fatalf("rollup diff Mermaid not deterministic on run %d:\n%s\nvs\n%s", i, m, firstDiffMermaid)
 		}
 	}

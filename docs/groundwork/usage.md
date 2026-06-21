@@ -1117,8 +1117,22 @@ Edges carry a `kind` that is also their honesty class, never conflated:
 A trivial (plumbing-tier) `ExternalBoundaryCall` is excluded — the same
 `severity` split that tiers the `func()` channel keeps the component view signal.
 
+Each component also carries a `band` (`omitempty`): its **architectural role** read
+from the package name — `transport` / `application` / `provisioning` / `storage` /
+`infrastructure` / `tests`, with `application` the disclosed fallback for a name with
+no role signal. It is the SEMANTIC sibling of the topological edges (where the edges
+say who-calls-whom, the band says what-kind-of-thing) and is **not** the layering
+layer: bands are a name-read view axis, layers (`fitness.proposeLayers`) a topological
+call-rank the `layering` policy gates on. A band is a **view, never a gate** — it
+computes no verdict, which is what makes a name heuristic acceptable here. The
+composition root is left bandless (it is named by `role`, a graph fact).
+
 - `--rollup package` alone → the rollup JSON (`{components[], edges[]}`).
 - `--rollup package --mermaid` → the component flowchart (solid vs dashed).
+- `--rollup package --mermaid --rollup-bands` → the same flowchart with the boxes
+  grouped into architectural **band** lanes (the root drawn outside them). Opt-in: the
+  default render is byte-identical to the pre-band flat layout. A view grouping, never
+  a gate.
 - `--rollup package --diff BASE` → the component delta, split
   `{code_added, code_removed, disclosure_added, disclosure_removed}`. **The split
   is load-bearing:** a `call`/`effect` delta is a real dependency change; a

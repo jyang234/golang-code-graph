@@ -133,6 +133,7 @@ func cmdGraph(args []string) error {
 	rootAt := fs.String("root", "", `with --mermaid, scope to one entry point at RENDER time (e.g. "POST /loan-application") — unlike --entry this keeps the frontier markers in the per-handler view`)
 	maxNodes := fs.Int("max-nodes", 300, "with --mermaid, cap how many nodes a diagram draws; above the cap it renders an index of entry points to --root at instead of an illegible hairball (0 = uncapped)")
 	rollup := fs.String("rollup", "", `emit a component-level (C3) rollup grouping nodes by package: "package". Default output is the rollup JSON; with --mermaid it renders the component flowchart, with --diff BASE the component delta (code-vs-disclosure split)`)
+	rollupBands := fs.Bool("rollup-bands", false, "with --rollup --mermaid, group the component boxes into architectural BAND lanes (transport/application/provisioning/storage/infrastructure/tests, read from the package name) with the composition root drawn outside the lanes; a view grouping, never a gate (no-op without --mermaid)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,7 +159,7 @@ func cmdGraph(args []string) error {
 		graphio.ApplyReclaimers(g, res)
 	}
 	if *rollup != "" {
-		return cmdGraphRollup(*rollup, g, *asMermaid, *diffBase, *rootAt, *entry)
+		return cmdGraphRollup(*rollup, g, *asMermaid, *diffBase, *rootAt, *entry, *rollupBands)
 	}
 	if *asMermaid {
 		// The Mermaid flowchart is a deterministic view of the graph, so it carries
@@ -227,7 +228,7 @@ func cmdGraph(args []string) error {
 // disclosed). Default output is canonical JSON; --mermaid renders the flowchart;
 // --diff BASE renders the component delta. The rollup is a VIEW like --mermaid, so it
 // carries no stamp/tool provenance (those gate-adjacent fields ride the graph JSON).
-func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, rootAt, entry string) error {
+func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, rootAt, entry string, bands bool) error {
 	if kind != "package" {
 		return fmt.Errorf(`graph --rollup: only "package" is supported, got %q`, kind)
 	}
@@ -247,13 +248,13 @@ func cmdGraphRollup(kind string, g *graphio.Graph, asMermaid bool, diffBase, roo
 			return fmt.Errorf("--diff base graph: %w", err)
 		}
 		if asMermaid {
-			_, err = os.Stdout.WriteString(render.Fence(graphio.RollupMermaidDiff(base, g)))
+			_, err = os.Stdout.WriteString(render.Fence(graphio.RollupMermaidDiff(base, g, graphio.RollupMermaidOptions{Bands: bands})))
 			return err
 		}
 		return emitCanonJSON(graphio.RollupDiff(base, g))
 	}
 	if asMermaid {
-		_, err := os.Stdout.WriteString(render.Fence(g.RollupByPackage().Mermaid()))
+		_, err := os.Stdout.WriteString(render.Fence(g.RollupByPackage().Mermaid(graphio.RollupMermaidOptions{Bands: bands})))
 		return err
 	}
 	return emitCanonJSON(g.RollupByPackage())
