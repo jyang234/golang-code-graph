@@ -1,0 +1,9 @@
+service: schemadriftsvc
+classify:
+  db:
+    - "database/sql"
+static:
+  schemaCheck:
+    migrationsDir: db/migrations
+    libraryOwnedTables:
+      - provisioning_outbox

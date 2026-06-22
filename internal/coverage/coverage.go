@@ -73,7 +73,16 @@ func Delta(c *boundary.Contract, traces []*ir.CanonicalTrace) Report {
 	}
 	for _, d := range c.ExternalDeps {
 		for _, op := range d.Ops {
-			if k := externalKey(d, op); !seen[k] {
+			// Skip kinds with no behavioral op vocabulary (object storage, cache):
+			// externalKey cannot produce a key any collected span would carry, so
+			// counting them would report a forever-Unexercised effect no flow could
+			// ever cover — noise, not a measurement. Honest coverage only measures
+			// surfaces it can match.
+			k, ok := externalKey(d, op)
+			if !ok {
+				continue
+			}
+			if !seen[k] {
 				out = append(out, Effect{External, k, d.Tier})
 			}
 		}
@@ -112,11 +121,11 @@ func collectOps(s *ir.CanonicalSpan, into map[string]bool) {
 	}
 }
 
-// externalKey renders a boundary external-dependency op into the same canonical
-// key a behavioral client span carries. An HTTP dependency stores its op as
-// "<METHOD> <route>"; the behavioral span keys it as "HTTP <METHOD> <peer>
-// <route>", so the peer is spliced in after the method.
-func externalKey(d boundary.ExternalDep, op string) string {
+// externalKey renders a boundary external-dependency op into the canonical key a
+// behavioral client span carries, plus ok=false for a kind that has NO behavioral
+// vocabulary (object storage / cache today) — for which no span key exists, so the
+// caller must skip it rather than emit a forever-unmatchable key.
+func externalKey(d boundary.ExternalDep, op string) (string, bool) {
 	switch d.Kind {
 	case "http":
 		method, route, _ := strings.Cut(op, " ")
@@ -124,10 +133,10 @@ func externalKey(d boundary.ExternalDep, op string) string {
 		if route != "" {
 			parts = append(parts, route)
 		}
-		return strings.Join(parts, " ")
+		return strings.Join(parts, " "), true
 	case "rpc", "grpc":
-		return opkey.RPCPrefix + op
+		return opkey.RPCPrefix + op, true
 	default:
-		return strings.ToUpper(d.Kind) + " " + d.Peer + " " + op
+		return "", false // no behavioral op vocabulary for this kind (e.g. blob, cache)
 	}
 }

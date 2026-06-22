@@ -151,18 +151,18 @@ func diffDeps(base, branch []ExternalDep) []Change {
 	b := depMap(base)
 	h := depMap(branch)
 	var out []Change
-	for peer, hops := range h {
-		bops, ok := b[peer]
+	for key, hd := range h {
+		bd, ok := b[key]
 		switch {
 		case !ok:
-			out = append(out, Change{Op: "+", Surface: "dependency", Name: peer})
-		case bops != hops:
-			out = append(out, Change{Op: "~", Surface: "dependency", Name: peer})
+			out = append(out, Change{Op: "+", Surface: "dependency", Name: hd.peer})
+		case bd.sig != hd.sig:
+			out = append(out, Change{Op: "~", Surface: "dependency", Name: hd.peer})
 		}
 	}
-	for peer := range b {
-		if _, ok := h[peer]; !ok {
-			out = append(out, Change{Op: "-", Surface: "dependency", Name: peer})
+	for key, bd := range b {
+		if _, ok := h[key]; !ok {
+			out = append(out, Change{Op: "-", Surface: "dependency", Name: bd.peer})
 		}
 	}
 	return out
@@ -184,14 +184,23 @@ func eventKeys(es []Event) map[string]bool {
 	return m
 }
 
-// depMap keys dependencies by peer, with a stable signature of their ops so a
-// changed op set is detectable.
-func depMap(deps []ExternalDep) map[string]string {
-	m := make(map[string]string, len(deps))
+// depSig is a dependency's diff identity: the bare peer (for the human-facing change
+// name) plus a stable op signature (so a changed op set is detectable).
+type depSig struct {
+	peer string
+	sig  string
+}
+
+// depMap keys dependencies by peer AND kind, so one peer that is reached by two
+// kinds (e.g. an HTTP call and an object-store call to the same package) does not
+// collapse to a single entry and silently hide one kind's surface movement from the
+// diff. Keying by peer alone dropped the second kind.
+func depMap(deps []ExternalDep) map[string]depSig {
+	m := make(map[string]depSig, len(deps))
 	for _, d := range deps {
 		ops := append([]string(nil), d.Ops...)
 		sort.Strings(ops)
-		m[d.Peer] = d.Kind + ":" + strings.Join(ops, ",")
+		m[d.Peer+"\x00"+d.Kind] = depSig{peer: d.Peer, sig: d.Kind + ":" + strings.Join(ops, ",")}
 	}
 	return m
 }

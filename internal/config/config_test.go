@@ -203,6 +203,24 @@ func TestFanOutThreshold(t *testing.T) {
 	}
 }
 
+// TestLoadSchemaCheck pins that the schema-drift schema source parses off
+// static.schemaCheck (and that an unknown key under it is still rejected).
+func TestLoadSchemaCheck(t *testing.T) {
+	c, err := Load([]byte("static:\n  schemaCheck:\n    migrationsDir: db/migrations\n    libraryOwnedTables:\n      - provisioning_outbox\n      - inbox\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Static.SchemaCheck.MigrationsDir != "db/migrations" {
+		t.Errorf("migrationsDir = %q, want db/migrations", c.Static.SchemaCheck.MigrationsDir)
+	}
+	if got := c.Static.SchemaCheck.LibraryOwnedTables; len(got) != 2 || got[0] != "provisioning_outbox" || got[1] != "inbox" {
+		t.Errorf("libraryOwnedTables = %v, want [provisioning_outbox inbox]", got)
+	}
+	if _, err := Load([]byte("static:\n  schemaCheck:\n    bogus: x\n")); err == nil {
+		t.Fatal("expected error on unknown schemaCheck key")
+	}
+}
+
 // TestDiscoverIsModuleBounded is the guard against the walk-up escaping the
 // service module: a stray .flowmap.yaml above the module root (a parent module,
 // the repo root, or a developer's $HOME) must never be discovered. Discovery

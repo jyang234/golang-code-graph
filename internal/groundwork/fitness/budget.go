@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/effectkind"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
@@ -29,7 +30,9 @@ func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 	r.RouteWrites = routes
 	unclassRoutes := 0
 	blindRoutes := 0
+	unclassEffectRoutes := 0
 	unclassified := map[string]bool{}
+	unclassEffects := map[string]bool{}
 	for _, src := range setutil.SortedKeys(routes) {
 		writes := routes[src].Writes
 		if len(writes) > max {
@@ -44,6 +47,12 @@ func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 			unclassRoutes++
 			for _, l := range routes[src].Unclassified {
 				unclassified[l] = true
+			}
+		}
+		if len(routes[src].UnclassifiedEffects) > 0 {
+			unclassEffectRoutes++
+			for _, l := range routes[src].UnclassifiedEffects {
+				unclassEffects[l] = true
 			}
 		}
 		if routes[src].Blind {
@@ -67,6 +76,19 @@ func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 			Severity: Caution,
 			Summary: fmt.Sprintf("write budget unenforceable on %d route(s): %d DB effect label(s) are unclassified (%s) — built from non-constant SQL the labeler cannot read as a write, so a within-budget pass here does not prove the write surface is bounded",
 				unclassRoutes, len(unclassified), strings.Join(setutil.SortedKeys(unclassified), ", ")),
+		})
+	}
+	// (1b) The non-DB analog of (1): a typed outbound effect (object storage) whose
+	// operation is a method name the budget cannot read as a write. We do not guess
+	// it mutates (a method-name heuristic would manufacture false violations); we
+	// disclose that "within budget" does not prove the write surface is bounded where
+	// such an effect is reached. Kept distinct from (1) because the kind differs.
+	if unclassEffectRoutes > 0 {
+		r.add(Finding{
+			Rule:     "io_budget",
+			Severity: Caution,
+			Summary: fmt.Sprintf("write budget unenforceable on %d route(s): %d external effect label(s) (%s) whose operation the budget cannot read as a write — a within-budget pass here does not prove the write surface is bounded",
+				unclassEffectRoutes, len(unclassEffects), strings.Join(setutil.SortedKeys(unclassEffects), ", ")),
 		})
 	}
 	// (2) A route whose forward cone touches a blind frontier — a dynamic-dispatch
@@ -100,6 +122,10 @@ type RouteIO struct {
 	Writes       []string
 	Blind        bool
 	Unclassified []string
+	// UnclassifiedEffects are typed outbound effects (object storage) whose write-ness
+	// the budget cannot read — the non-DB analog of Unclassified. Their presence makes
+	// the write count a non-proof, disclosed by checkIOBudget.
+	UnclassifiedEffects []string
 }
 
 // RouteWrites computes the write surface of every route (non-root entrypoint),
@@ -117,6 +143,7 @@ func RouteWrites(p *policy.Policy, ix *graph.Index) map[string]RouteIO {
 		effects := ix.Effects(cone...)
 		writes := map[string]bool{}
 		unclassified := map[string]bool{}
+		unclassEffects := map[string]bool{}
 		for _, e := range effects {
 			if label, ok := WriteLabel(e); ok {
 				writes[label] = true
@@ -124,12 +151,16 @@ func RouteWrites(p *policy.Policy, ix *graph.Index) map[string]RouteIO {
 			if label, ok := UnclassifiedDBLabel(e); ok {
 				unclassified[label] = true
 			}
+			if label, ok := UnclassifiedEffectLabel(e); ok {
+				unclassEffects[label] = true
+			}
 		}
 		_, blind := frontierBlindSiteWith(ix, cone, effects)
 		out[src] = RouteIO{
-			Writes:       setutil.SortedKeys(writes),
-			Blind:        blind,
-			Unclassified: setutil.SortedKeys(unclassified),
+			Writes:              setutil.SortedKeys(writes),
+			Blind:               blind,
+			Unclassified:        setutil.SortedKeys(unclassified),
+			UnclassifiedEffects: setutil.SortedKeys(unclassEffects),
 		}
 	}
 	return out
@@ -205,6 +236,34 @@ func nonMutatingDBControl(op string) bool {
 		strings.HasPrefix(up, "SETMAX") || strings.HasPrefix(up, "SETCONN")
 }
 
+// methodNamedEffect reports whether the boundary-label fields name a method-named
+// outbound effect (blob/cache/rpc, per the shared effectkind set) — a kind token
+// followed by exactly the callee method name, i.e. EXACTLY two fields. The two-field
+// shape is load-bearing: an outbound HTTP edge is "<peer> <METHOD> <route>" (three
+// fields), so requiring len==2 keeps an HTTP peer that happens to be NAMED "blob"/
+// "cache"/"rpc" from colliding with a kind token and being mis-dropped from the
+// write surface. The kind set itself lives in internal/effectkind (one source of
+// truth with the static labeler that produces these labels).
+func methodNamedEffect(f []string) bool {
+	return len(f) == 2 && effectkind.IsMethodNamed(f[0])
+}
+
+// UnclassifiedEffectLabel returns the label (sans "boundary:") of a method-named
+// outbound effect (blob/cache/rpc) whose write-ness the labeler cannot read, plus
+// whether e is one. Kept SEPARATE from UnclassifiedDBLabel — that one is the
+// non-constant-SQL DB frontier, reused by the DB-specific proposals/ratchet — so the
+// two unenforceable-write frontiers stay independently auditable.
+func UnclassifiedEffectLabel(e graph.Edge) (string, bool) {
+	if !e.IsBoundary() {
+		return "", false
+	}
+	f := strings.Fields(strings.TrimPrefix(e.To, "boundary:"))
+	if !methodNamedEffect(f) {
+		return "", false
+	}
+	return strings.TrimPrefix(e.To, "boundary:"), true
+}
+
 // WriteLabel returns the effect label (sans "boundary:") of an external write,
 // and whether e is one — the single extraction point for the write surface.
 // The budget, the effect-ratchet audit, and the review's new-target diff all
@@ -218,7 +277,10 @@ func WriteLabel(e graph.Edge) (string, bool) {
 
 // IsWrite reports whether a boundary effect mutates external state. The effect
 // label is "<system> <op> <target>": db with a mutating SQL verb, bus PUBLISH, or
-// an outbound HTTP call with a mutating method. It is shared with the review
+// an outbound HTTP call with a mutating method. A method-named outbound effect
+// (blob/cache/rpc) is NOT counted as a write — its write-ness is unreadable and
+// disclosed as unenforceable instead (see methodNamedEffect / UnclassifiedEffectLabel).
+// It is shared with the review
 // surface, which classifies the same effects in an MR's I/O-effect section.
 func IsWrite(e graph.Edge) bool {
 	if !e.IsBoundary() {
@@ -226,6 +288,13 @@ func IsWrite(e graph.Edge) bool {
 	}
 	f := strings.Fields(strings.TrimPrefix(e.To, "boundary:"))
 	if len(f) < 2 {
+		return false
+	}
+	if methodNamedEffect(f) {
+		// A method-named outbound effect (blob/cache/rpc): the op is a method name the
+		// budget does NOT read as a verb (a method-name heuristic could be silently
+		// wrong, e.g. a method literally named "Delete"). Not counted as a write;
+		// disclosed as unenforceable via UnclassifiedEffectLabel instead.
 		return false
 	}
 	op := strings.ToUpper(f[1])

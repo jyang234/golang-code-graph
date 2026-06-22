@@ -1,0 +1,9 @@
+service: taintsvc
+taint:
+  sourceFuncs:
+    - "example.com/taintsvc#sourceDirect"
+  sourceFields:
+    - "example.com/taintsvc#Recipient.Secret"
+  sinks:
+    - "example.com/taintsvc#sinkDirect"
+    - "example.com/taintsvc#sinkFieldRead"

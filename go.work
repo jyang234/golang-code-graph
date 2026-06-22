@@ -17,6 +17,10 @@ use (
 	./testdata/fixtures/reclaimsvc
 	./testdata/fixtures/sqlbuildersvc
 	./testdata/fixtures/sqlpassthroughsvc
+	./testdata/fixtures/schemadriftsvc
+	./testdata/fixtures/topicfoldsvc
+	./testdata/fixtures/blobsvc
+	./testdata/fixtures/taintsvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc

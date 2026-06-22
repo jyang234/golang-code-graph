@@ -429,6 +429,7 @@ type BuildOption func(*buildOptions)
 
 type buildOptions struct {
 	foldSQL bool
+	foldBus bool
 }
 
 // WithSQLFold enables the SQL const-accumulation label reclaimer (--reclaim-sql):
@@ -437,6 +438,14 @@ type buildOptions struct {
 // via=sqlfold.Via. Off by default; sound-or-abstain (docs/design/
 // sql-constfold-reclaim-plan.md).
 func WithSQLFold() BuildOption { return func(o *buildOptions) { o.foldSQL = true } }
+
+// WithTopicFold enables the bus reclaim-topic label reclaimer (--reclaim-topic): a
+// PUBLISH/CONSUME whose topic is non-constant at the call site but resolves to a
+// finite, provably-complete set of constants gets that set named (one edge per topic,
+// tagged via=viaTopicFold) instead of <dynamic>. The reclaim-sql analog for bus
+// targets; off by default, sound-or-abstain, and verdict-neutral (the topic is only a
+// target name).
+func WithTopicFold() BuildOption { return func(o *buildOptions) { o.foldBus = true } }
 
 func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, error) {
 	var o buildOptions
@@ -557,7 +566,7 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 		// label and the ssa call site coexist (IT-3 scoping note).
 		var nodeEdges []Edge
 		for _, e := range n.Out {
-			edges := edgeOf(ext, hints, e, scope, o.foldSQL, callers)
+			edges := edgeOf(ext, hints, e, scope, o.foldSQL, o.foldBus, callers)
 			nodeEdges = append(nodeEdges, edges...)
 			// Record a committed effect only when the site yields exactly ONE — the
 			// unambiguous case. A fold-resolved finite-table write fans the site out
@@ -826,7 +835,7 @@ func (e *EntryNotFoundError) Error() string { return "no entry point named " + e
 // edgeOf renders zero or one graph edges for an SSA call edge: a typed boundary
 // edge for publish/HTTP/DB calls, an internal edge for first-party→first-party
 // calls, and nothing for calls into unhinted stdlib/third-party code.
-func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool, foldSQL bool, callers map[*ssa.Function][]ssa.CallInstruction) []Edge {
+func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool, foldSQL, foldBus bool, callers map[*ssa.Function][]ssa.CallInstruction) []Edge {
 	from := e.Caller.Func.RelString(nil)
 	callee := e.Callee.Func
 	f := ext.Edge(e.Caller.Func, callee, e.Site)
@@ -848,9 +857,9 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 		}
 		return nil
 	case hints.IsPublish(callee):
-		return []Edge{{From: from, To: "boundary:bus PUBLISH " + eventLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
+		return busEdges(from, "boundary:bus PUBLISH ", e.Site, foldBus, tier, string(f.Boundary), concurrent)
 	case hints.IsConsume(callee):
-		return []Edge{{From: from, To: "boundary:bus CONSUME " + eventLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
+		return busEdges(from, "boundary:bus CONSUME ", e.Site, foldBus, tier, string(f.Boundary), concurrent)
 	case hints.IsHTTP(callee):
 		return []Edge{{From: from, To: "boundary:" + httpLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
 	case hints.IsDB(callee):
@@ -870,11 +879,40 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 			edges = append(edges, Edge{From: from, To: "boundary:db " + label, Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent, Via: via})
 		}
 		return edges
+	case methodNamedOutboundKind(hints, callee) != "":
+		// A method-named outbound kind (blob/cache/rpc) carries no readable
+		// peer/op/target triple, so the operation is the callee method name
+		// (sinkMethodName — the same opaque label db falls back to), e.g.
+		// "boundary:blob PutObject", "boundary:cache Get", "boundary:rpc Charge".
+		kind := methodNamedOutboundKind(hints, callee)
+		return []Edge{{From: from, To: "boundary:" + kind + " " + sinkMethodName(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
 	case scope[callee]:
 		return []Edge{{From: from, To: callee.RelString(nil), Tier: tier, Concurrent: concurrent}}
 	default:
 		return nil // a call into unhinted stdlib/third-party code; not part of the view
 	}
+}
+
+// methodNamedOutboundKind returns the blob/cache/rpc kind token for callee, or ""
+// if it is not a method-named outbound effect. A thin string-returning wrapper over
+// the hint helper so the edgeOf switch can both test and use the kind in one place.
+func methodNamedOutboundKind(hints *features.HintSet, callee *ssa.Function) string {
+	kind, _ := hints.MethodNamedOutboundKind(callee)
+	return kind
+}
+
+// busEdges builds the boundary edge(s) for a bus PUBLISH/CONSUME site. The topic
+// labeler (eventLabels) returns one name normally, or — under --reclaim-topic — a
+// finite constant set that fans out into one edge per topic (an over-approximation in
+// the safe direction, mirroring the DB table fanout). Every edge carries the same via
+// provenance so a reviewer can tell a reclaimed target from a base one.
+func busEdges(from, prefix string, site ssa.CallInstruction, foldBus bool, tier int, boundary string, concurrent bool) []Edge {
+	labels, via := eventLabels(site, foldBus)
+	edges := make([]Edge, 0, len(labels))
+	for _, label := range labels {
+		edges = append(edges, Edge{From: from, To: prefix + label, Tier: tier, Boundary: boundary, Concurrent: concurrent, Via: via})
+	}
+	return edges
 }
 
 // callerIndex maps each function to the call instructions that invoke it, over the

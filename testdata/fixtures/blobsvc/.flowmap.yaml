@@ -1,0 +1,10 @@
+service: blobsvc
+classify:
+  objectStore:
+    - "example.com/blobsvc/blobstore#PutObject"
+    - "example.com/blobsvc/blobstore#GetObject"
+  cache:
+    - "example.com/blobsvc/cacheclient#Get"
+    - "example.com/blobsvc/cacheclient#Set"
+  rpc:
+    - "example.com/blobsvc/rpcclient#Charge"

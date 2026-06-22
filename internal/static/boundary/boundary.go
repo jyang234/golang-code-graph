@@ -132,6 +132,33 @@ func Extract(res *analyze.Result) *Contract {
 						d.Tier = tier // surface the most consequential op's tier
 					}
 				}
+			case features.IsPackageInit(callee):
+				// A synthesized package initializer matched a bare-package classify hint
+				// (init-ordering plumbing, not an operation). edgeOf guards this for the
+				// graph view; the contract's own loop must too, or a bare hint would
+				// list "init" as an operation.
+			default:
+				// A method-named outbound effect (blob/cache/rpc) is an external
+				// dependency like an HTTP peer, so it belongs in the gated contract (not
+				// dropped). It carries no const peer/op triple — the peer is the client
+				// package and the op is the method name — so it is named without a
+				// constant-arg guard. This is what keeps promoting such a call from a
+				// blind spot to a typed kind from silently losing its gated disclosure.
+				if kind, ok := hints.MethodNamedOutboundKind(callee); ok {
+					peer := features.PkgPath(callee)
+					op := callee.Name()
+					tier, _ := ext.Classify(ext.External(peer + " " + op))
+					key := peer + "|" + kind
+					d := deps[key]
+					if d == nil {
+						d = &ExternalDep{Peer: peer, Kind: kind, Tier: tier}
+						deps[key] = d
+					}
+					d.Ops = appendUnique(d.Ops, op)
+					if tier < d.Tier {
+						d.Tier = tier
+					}
+				}
 			}
 		}
 	}

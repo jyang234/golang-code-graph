@@ -523,6 +523,9 @@ func isExternalBoundary(prog *ssabuild.Program, hints *features.HintSet, callee 
 		// boundary worth disclosing per the noise it would otherwise generate.
 		return false
 	}
+	if _, ok := hints.MethodNamedOutboundKind(callee); ok {
+		return false // a typed method-named outbound effect (blob/cache/rpc), disclosed there
+	}
 	return !hints.IsTelemetry(callee) && !hints.IsPublish(callee) && !hints.IsConsume(callee) &&
 		!hints.IsDB(callee) && !hints.IsHTTP(callee)
 }

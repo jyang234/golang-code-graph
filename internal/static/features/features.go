@@ -72,10 +72,23 @@ func (e *Extractor) Edge(caller, callee *ssa.Function, site ssa.CallInstruction)
 		f.Boundary, f.Effect = model.BoundaryOutboundSync, model.EffectIO
 	case e.hints.IsDB(callee):
 		f.Boundary, f.Effect = model.BoundaryOutboundSync, dbEffect(callee, site)
+	case methodNamedOutbound(e.hints, callee):
+		// A method-named outbound effect (object storage, cache, non-HTTP RPC) is an
+		// outbound-sync external effect like HTTP. Its write-ness is not read from the
+		// method name (no sound verb), so EffectIO — the budget discloses it as
+		// unenforceable rather than guessing a mutation.
+		f.Boundary, f.Effect = model.BoundaryOutboundSync, model.EffectIO
 	default:
 		f.Boundary, f.Effect = e.structural(caller, callee), model.EffectCompute
 	}
 	return f
+}
+
+// methodNamedOutbound reports whether callee is a method-named outbound effect
+// (object storage, cache, or non-HTTP RPC) — the kinds whose op is the method name.
+func methodNamedOutbound(hints *HintSet, callee *ssa.Function) bool {
+	_, ok := hints.MethodNamedOutboundKind(callee)
+	return ok
 }
 
 // Inbound returns the features of an entry-point operation (an HTTP handler or a

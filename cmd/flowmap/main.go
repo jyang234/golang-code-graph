@@ -32,6 +32,8 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/callgraph"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
+	"github.com/jyang234/golang-code-graph/internal/static/schemadrift"
+	"github.com/jyang234/golang-code-graph/internal/static/taint"
 	"github.com/jyang234/golang-code-graph/internal/syscontext"
 	"github.com/jyang234/golang-code-graph/ir"
 )
@@ -63,6 +65,10 @@ func run(args []string) error {
 		return cmdGraph(args[1:])
 	case "frontier":
 		return cmdFrontier(args[1:])
+	case "schema-drift":
+		return cmdSchemaDrift(args[1:])
+	case "taint":
+		return cmdTaint(args[1:])
 	case "diff":
 		return cmdDiff(args[1:])
 	case "coverage":
@@ -126,6 +132,7 @@ func cmdGraph(args []string) error {
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch — fewer spurious callees), "cha" (rootless fallback)`)
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers (opt-in; adds provenance-tagged edges that close the strict-server seam)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer (opt-in; recovers verbs from constant-fragment SQL builders, tagging them via=sql-constfold)")
+	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer (opt-in; recovers PUBLISH/CONSUME targets from constant-set topics, tagging them via=topic-constfold)")
 	asMermaid := fs.Bool("mermaid", false, "render the graph as a human-readable Mermaid flowchart instead of JSON (a view, never gated); scope with --entry")
 	showPlumbing := fs.Bool("show-plumbing", false, "with --mermaid, include low-salience plumbing nodes (tier 3: telemetry, compute-only closures) instead of collapsing them")
 	allBlindSpots := fs.Bool("all-blind-spots", false, "with --mermaid, draw every blind-spot/frontier disclosure node (trivial boundaries and those orphaned onto collapsed plumbing) instead of rolling the plumbing-tier ones into a counted header note; restores the full honesty channel without un-collapsing plumbing nodes")
@@ -150,7 +157,7 @@ func cmdGraph(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, *entry, sqlFoldOpts(*reclaimSQLFlag)...)
+	g, err := graphio.Build(res, *entry, reclaimOpts(*reclaimSQLFlag, *reclaimTopicFlag)...)
 	if err != nil {
 		return err
 	}
@@ -306,6 +313,7 @@ func cmdFrontier(args []string) error {
 	asJSON := fs.Bool("json", false, "emit the full marker inventory as canonical JSON")
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers before classifying (shows the frontier with the seam closed)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer before classifying (recovers verbs from constant-fragment SQL builders, shrinking the B2 opaque-SQL frontier)")
+	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer before classifying (recovers PUBLISH/CONSUME targets from constant-set topics, shrinking the dynamic-bus frontier)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -322,7 +330,7 @@ func cmdFrontier(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, "", sqlFoldOpts(*reclaimSQLFlag)...)
+	g, err := graphio.Build(res, "", reclaimOpts(*reclaimSQLFlag, *reclaimTopicFlag)...)
 	if err != nil {
 		return err
 	}
@@ -346,6 +354,186 @@ func cmdFrontier(args []string) error {
 	return nil
 }
 
+// cmdSchemaDrift cross-checks the DB tables a service's code writes against the
+// tables its migrations define (docs/design/schema-drift-check-plan.md, §1). The
+// code-side write set comes from the graph's boundary:db labels — read off an
+// already-emitted --graph, or, when --graph is omitted, built fresh from [dir]
+// (the one-step CI form). Either way it is a deterministic post-process over the
+// graph; a code-side table absent from the defined schema is the
+// `relation "X" does not exist` deploy-hazard class.
+//
+// Soundness: the drift verdict is sound iff the defined-schema set is COMPLETE, so
+// the library-owned tables (outbox/inbox, auto-migrated by a library and named by no
+// migration) must be declared (--library-owned or static.schemaCheck). The check
+// inherits the db-call frontier — a write whose SQL is non-constant carries no table
+// — so "no drift" means "no drift among resolved writes"; --reclaim-sql shrinks that
+// opaque residual. Default is a disclosure (exit 0); --gate makes drift a non-zero
+// exit for CI.
+func cmdSchemaDrift(args []string) error {
+	fs := flag.NewFlagSet("schema-drift", flag.ContinueOnError)
+	graphPath := fs.String("graph", "", "path to an emitted graph JSON; omit to build the graph fresh from [dir]")
+	migrationsDir := fs.String("migrations", "", "directory of SQL migrations (overrides static.schemaCheck.migrationsDir)")
+	libraryOwned := fs.String("library-owned", "", "comma-separated tables a library auto-migrates (outbox/inbox), folded into the defined schema (overrides static.schemaCheck.libraryOwnedTables)")
+	algo := fs.String("algo", "", `with build-fresh (no --graph): call-graph algorithm "rta" (default), "vta", "cha"`)
+	reclaimSQL := fs.Bool("reclaim-sql", false, "with build-fresh: apply the SQL const-accumulation label reclaimer (recommended — shrinks the opaque-write frontier)")
+	gate := fs.Bool("gate", false, "exit non-zero if any drift is found (CI gate)")
+	asJSON := fs.Bool("json", false, "emit the report as canonical JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	dir, err := dirArg(fs)
+	if err != nil {
+		return err
+	}
+
+	// The [dir]'s .flowmap.yaml supplies the schema source (migrations dir,
+	// library-owned tables); flags override it. dirArg defaults dir to ".", so an
+	// absent config just yields the zero value and the flags stand alone.
+	cfg, err := config.LoadDir(dir)
+	if err != nil {
+		return err
+	}
+	migPath := *migrationsDir
+	if migPath == "" && cfg.Static.SchemaCheck.MigrationsDir != "" {
+		migPath = filepath.Join(dir, cfg.Static.SchemaCheck.MigrationsDir) // config path is relative to the service dir
+	}
+	if migPath == "" {
+		return fmt.Errorf("schema-drift: no migrations source — pass --migrations <dir> or set static.schemaCheck.migrationsDir in %s", filepath.Join(dir, config.FileName))
+	}
+	libOwned := splitList(*libraryOwned)
+	if len(libOwned) == 0 {
+		libOwned = cfg.Static.SchemaCheck.LibraryOwnedTables
+	}
+
+	// Code-side edges: read an emitted graph (the build stays literally untouched),
+	// or build fresh from [dir] when --graph is omitted.
+	edges, source, err := schemaDriftEdges(*graphPath, dir, *algo, *reclaimSQL)
+	if err != nil {
+		return err
+	}
+	files, err := schemadrift.LoadMigrations(migPath)
+	if err != nil {
+		return err
+	}
+
+	rep := schemadrift.Check(edges, files, libOwned)
+	if *asJSON {
+		b, err := canonjson.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stdout.Write(b); err != nil {
+			return err
+		}
+	} else {
+		fmt.Print(schemadrift.Render(source, rep))
+	}
+	// --gate turns the disclosure into a CI gate AFTER the report is emitted, so the
+	// failure always ships the evidence with it.
+	if *gate && len(rep.Drift) > 0 {
+		return fmt.Errorf("schema-drift: %d table(s) written by code but absent from the defined schema (see report)", len(rep.Drift))
+	}
+	return nil
+}
+
+// schemaDriftEdges returns the code's boundary edges and a label for the report.
+// With graphPath set it reads the emitted graph (the build is untouched); otherwise
+// it builds the graph fresh from dir, applying the same algo/SQL-fold options the
+// other static views use.
+func schemaDriftEdges(graphPath, dir, algo string, reclaimSQL bool) ([]schemadrift.Edge, string, error) {
+	if graphPath != "" {
+		g, err := loadGraphJSON(graphPath)
+		if err != nil {
+			return nil, "", err
+		}
+		return graphEdges(g), graphPath, nil
+	}
+	opt, err := algoOption(algo)
+	if err != nil {
+		return nil, "", err
+	}
+	res, err := analyze.Analyze(dir, opt)
+	if err != nil {
+		return nil, "", err
+	}
+	g, err := graphio.Build(res, "", reclaimOpts(reclaimSQL, false)...) // schema-drift is DB-only; topic fold is irrelevant
+	if err != nil {
+		return nil, "", err
+	}
+	warnSkippedAnnotations(os.Stderr, g)
+	return graphEdges(g), dir, nil
+}
+
+// cmdTaint runs the forward value-flow analysis (docs/design/flowmap-capability-
+// headroom.md §3) over a service: it reports whether declared sensitive SOURCES can
+// flow to declared SINK arguments, as a sound trichotomy — FLOW (candidate),
+// NO-FLOW (proven), or ABSTAIN (taint escaped a modeled construct, so no-flow cannot
+// be proven). A false NO-FLOW would be a false SATISFIED, so it abstains at every
+// frontier. Default is a measurement (exit 0); --gate makes a FLOW a non-zero exit
+// (the must-not-flow gate). Sources/sinks come from the dir's .flowmap.yaml taint
+// section.
+func cmdTaint(args []string) error {
+	fs := flag.NewFlagSet("taint", flag.ContinueOnError)
+	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta", "cha"`)
+	gate := fs.Bool("gate", false, "exit non-zero on a FLOW finding (the must-not-flow gate)")
+	asJSON := fs.Bool("json", false, "emit the report as canonical JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	dir, err := dirArg(fs)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.LoadDir(dir)
+	if err != nil {
+		return err
+	}
+	tc, err := taint.FromConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if tc.Empty() {
+		return fmt.Errorf("taint: no sources/sinks declared — set taint.{sourceFuncs,sourceFields,sinks} in %s", filepath.Join(dir, config.FileName))
+	}
+	opt, err := algoOption(*algo)
+	if err != nil {
+		return err
+	}
+	res, err := analyze.Analyze(dir, opt)
+	if err != nil {
+		return err
+	}
+	rep := taint.Analyze(res.Program, tc)
+	if *asJSON {
+		b, err := canonjson.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stdout.Write(b); err != nil {
+			return err
+		}
+	} else {
+		fmt.Print(taint.Render(dir, rep))
+	}
+	// --gate fails on a proven could-flow. ABSTAIN stays a disclosure (a strict
+	// fail-closed mode that also fails on abstain is a follow-up).
+	if *gate && rep.Verdict == taint.Flow {
+		return fmt.Errorf("taint: %d source→sink flow(s) found (must-not-flow gate)", len(rep.Flows))
+	}
+	return nil
+}
+
+// graphEdges adapts the emitted graph's edges to the schemadrift Edge view (From/To
+// only), keeping the schemadrift core decoupled from the graph builder (the same
+// decoupling frontier.Input uses).
+func graphEdges(g *graphio.Graph) []schemadrift.Edge {
+	out := make([]schemadrift.Edge, len(g.Edges))
+	for i, e := range g.Edges {
+		out[i] = schemadrift.Edge{From: e.From, To: e.To}
+	}
+	return out
+}
+
 // algoOption maps the --algo flag to a call-graph Options. The empty string and
 // "rta" both select the default (RTA); only "vta" and "cha" deviate. An unknown
 // value is rejected here with a friendly message rather than deferred to the
@@ -363,14 +551,20 @@ func algoOption(s string) (callgraph.Options, error) {
 	}
 }
 
-// sqlFoldOpts maps the --reclaim-sql flag to the build options. It is its own knob
-// (not folded into --reclaim) so a label-reclaimed verdict and an edge-reclaimed
-// verdict stay separately auditable on the substrate line.
-func sqlFoldOpts(on bool) []graphio.BuildOption {
-	if on {
-		return []graphio.BuildOption{graphio.WithSQLFold()}
+// reclaimOpts maps the --reclaim-sql / --reclaim-topic flags to build options. Each
+// is its own knob (not folded into --reclaim) so a label-reclaimed verdict and an
+// edge-reclaimed verdict stay separately auditable on the substrate line; the SQL and
+// bus label folds are likewise kept distinct so each reclaimed target names its
+// reclaimer (via=sqlfold.Via vs. via=topic-constfold).
+func reclaimOpts(reclaimSQL, reclaimTopic bool) []graphio.BuildOption {
+	var opts []graphio.BuildOption
+	if reclaimSQL {
+		opts = append(opts, graphio.WithSQLFold())
 	}
-	return nil
+	if reclaimTopic {
+		opts = append(opts, graphio.WithTopicFold())
+	}
+	return opts
 }
 
 // warnSkippedAnnotations writes, to w (stderr at the CLI boundary), one warning per
@@ -1094,8 +1288,10 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL labels)
-  frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL/bus labels)
+  frontier [--algo A] [--reclaim] [--reclaim-sql] [--reclaim-topic] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  schema-drift [--graph G] [--migrations D] [--library-owned a,b] [--reclaim-sql] [--gate] [--json] [dir]  cross-check code DB writes against the migration-defined schema (omit --graph to build fresh from dir; dir's .flowmap.yaml supplies static.schemaCheck; --gate: non-zero exit on drift)
+  taint [--gate] [--json] [dir]  forward value-flow: do declared sensitive sources reach declared sinks? FLOW/NO-FLOW/ABSTAIN (dir's .flowmap.yaml supplies taint.{sourceFuncs,sourceFields,sinks}; --gate: non-zero exit on FLOW)
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects

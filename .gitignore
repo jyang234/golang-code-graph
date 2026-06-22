@@ -1,6 +1,10 @@
 # built binaries
 /flowmap
 /testdata/fixtures/loansvc/loansvc
+/testdata/fixtures/blobsvc/blobsvc
+/testdata/fixtures/topicfoldsvc/topicfoldsvc
+/testdata/fixtures/schemadriftsvc/schemadriftsvc
+/testdata/fixtures/taintsvc/taintsvc
 # test & build detritus
 *.test
 *.out

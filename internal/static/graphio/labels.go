@@ -14,15 +14,35 @@ import (
 // boundary as a concretely-named effect (see committedEffect).
 const dynamicLabel = "<dynamic>"
 
-// eventLabel is the published event name, or dynamicLabel if not constant.
-func eventLabel(site ssa.CallInstruction) string {
+// viaTopicFold tags a bus boundary edge whose topic the reclaim-topic fold recovered
+// from a finite, provably-complete constant set (the reclaim-sql analog for bus
+// targets). Kept distinct from sqlfold.Via so a reviewer can tell which reclaimer
+// named a target. The topic NAME is verdict-neutral — publish vs. consume is fixed by
+// the hint, not the topic — so recovering or over-listing it can only refine a target
+// name or a diff, never move a pole.
+const viaTopicFold = "topic-constfold"
+
+// eventLabels is the bus analog of dbLabel: the published/consumed topic name(s) for
+// a bus boundary edge. A compile-time-constant topic yields one name (via=""). When
+// foldBus is set (the opt-in --reclaim-topic reclaimer) and the topic is NOT a
+// call-site constant, it tries the general const-set resolver (sqlfold.ConstStringSet):
+// a finite, provably-complete set of constant topics fans out into one label per
+// topic — an over-approximation in the safe direction — carrying via=viaTopicFold.
+// Sound-or-abstain: anything it cannot prove complete stays dynamicLabel, exactly as
+// a foldless build, so the default build is unchanged.
+func eventLabels(site ssa.CallInstruction, foldBus bool) (labels []string, via string) {
 	args := features.StringArgs(site)
 	if len(args) >= 1 {
 		if s, ok := features.ConstString(args[0]); ok {
-			return s
+			return []string{s}, ""
+		}
+		if foldBus {
+			if topics, ok := sqlfold.ConstStringSet(args[0]); ok && len(topics) > 0 {
+				return topics, viaTopicFold
+			}
 		}
 	}
-	return dynamicLabel
+	return []string{dynamicLabel}, ""
 }
 
 // httpLabel is "peer method route" for a constant outbound call, else dynamicLabel.

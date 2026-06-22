@@ -52,6 +52,19 @@ type Config struct {
 	// Obligation layer (path-obligations plan): domain lifecycle rules evaluated
 	// over each function's SSA control-flow graph.
 	Obligations []ObligationRule `yaml:"obligations"`
+
+	// Value-flow / taint layer (headroom §3): the declared sensitive sources and
+	// must-not-receive sinks the `flowmap taint` analysis runs against.
+	Taint TaintConfig `yaml:"taint"`
+}
+
+// TaintConfig declares the sources and sinks for the forward value-flow analysis.
+// SourceFuncs and Sinks are "importpath#Name" (the classify-hint shape); SourceFields
+// is "importpath#Type.Field" — a sensitive struct field whose reads are sources.
+type TaintConfig struct {
+	SourceFuncs  []string `yaml:"sourceFuncs"`
+	SourceFields []string `yaml:"sourceFields"`
+	Sinks        []string `yaml:"sinks"`
 }
 
 // ObligationRule declares one path obligation, keyed to our named functions —
@@ -161,6 +174,24 @@ type StaticConfig struct {
 	// none is a load-time error (a stale FQN is drift, fail closed), surfaced where
 	// the merge runs (graphio), not silently dropped.
 	Annotations []Annotation `yaml:"annotations,omitempty"`
+
+	// SchemaCheck declares the schema source for `flowmap schema-drift`, the
+	// deterministic cross-check of code DB-write labels against the migration-defined
+	// schema (docs/design/schema-drift-check-plan.md). CLI flags override it. It is
+	// DISCLOSURE-ONLY config: schema-drift is a measurement view, not a gate, so an
+	// entry here can only change what the check reads, never a verdict.
+	SchemaCheck SchemaCheckConfig `yaml:"schemaCheck,omitempty"`
+}
+
+// SchemaCheckConfig is the per-service schema-drift configuration. MigrationsDir is
+// resolved RELATIVE to the service directory. LibraryOwnedTables names the tables a
+// library auto-migrates (the outbox/inbox pattern) that no migration script creates;
+// they are folded into the defined schema so they do not false-fire as drift — the
+// load-bearing COMPLETENESS condition (a drift flag is sound only against a complete
+// schema set).
+type SchemaCheckConfig struct {
+	MigrationsDir      string   `yaml:"migrationsDir,omitempty"`
+	LibraryOwnedTables []string `yaml:"libraryOwnedTables,omitempty"`
 }
 
 // Annotation is one piece of human/AI context on a detected blind spot. Site is
@@ -342,6 +373,16 @@ type ClassifyHints struct {
 	// three string arguments are the peer, method, and route template, read by the
 	// boundary extractor to name the external dependency.
 	HTTP []string `yaml:"http"`
+	// ObjectStore, Cache, and RPC name the "method-named outbound" effect kinds: an
+	// object-store/blob SDK (kind `blob`), a cache client (kind `cache`), and a
+	// non-HTTP RPC peer (kind `rpc`). Unlike HTTP they carry no readable
+	// peer/method/route triple, so the operation is the callee method name and their
+	// write-ness is NOT inferred from it (a method-name heuristic could be silently
+	// wrong) — it is disclosed as a budget-unenforceable effect, the same fail-closed
+	// treatment as a non-constant DB call.
+	ObjectStore []string `yaml:"objectStore"`
+	Cache       []string `yaml:"cache"`
+	RPC         []string `yaml:"rpc"`
 }
 
 // EntrypointHints declares the entry points root discovery cannot reach by

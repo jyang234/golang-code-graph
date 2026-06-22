@@ -7,6 +7,8 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/jyang234/golang-code-graph/internal/effectkind"
+
 	"github.com/jyang234/golang-code-graph/internal/config"
 )
 
@@ -46,11 +48,14 @@ func (h hint) matches(fn *ssa.Function) bool {
 // (the stdlib loggers, the near-ubiquitous zap structured logger, and
 // database/sql).
 type HintSet struct {
-	telemetry  []hint
-	busPublish []hint
-	busConsume []hint
-	db         []hint
-	http       []hint
+	telemetry   []hint
+	busPublish  []hint
+	busConsume  []hint
+	db          []hint
+	http        []hint
+	objectStore []hint
+	cache       []hint
+	rpc         []hint
 	// externalExempt are package-path prefixes treated as infrastructure/plumbing
 	// rather than a dependency boundary, suppressing their ExternalBoundaryCall
 	// disclosures. Prefix (not exact-path) so one entry covers a dependency's
@@ -101,6 +106,9 @@ func NewHintSet(cfg *config.Config) *HintSet {
 		hs.busConsume = append(hs.busConsume, parseHints(cfg.Classify.BusConsume)...)
 		hs.db = append(hs.db, parseHints(cfg.Classify.DB)...)
 		hs.http = append(hs.http, parseHints(cfg.Classify.HTTP)...)
+		hs.objectStore = append(hs.objectStore, parseHints(cfg.Classify.ObjectStore)...)
+		hs.cache = append(hs.cache, parseHints(cfg.Classify.Cache)...)
+		hs.rpc = append(hs.rpc, parseHints(cfg.Classify.RPC)...)
 		hs.externalExempt = append(hs.externalExempt, cfg.Static.ExternalBoundaryExempt...)
 		hs.externalTrivial = append(hs.externalTrivial, cfg.Static.ExternalBoundaryTrivial...)
 	}
@@ -149,6 +157,35 @@ func (hs *HintSet) IsDB(fn *ssa.Function) bool {
 
 // IsHTTP reports whether fn is an outbound HTTP/RPC seam call.
 func (hs *HintSet) IsHTTP(fn *ssa.Function) bool { return anyMatch(hs.http, fn) }
+
+// IsObjectStore reports whether fn is an object-storage / blob-store call (the
+// `blob` boundary kind).
+func (hs *HintSet) IsObjectStore(fn *ssa.Function) bool { return anyMatch(hs.objectStore, fn) }
+
+// IsCache reports whether fn is a cache-client call (the `cache` boundary kind).
+func (hs *HintSet) IsCache(fn *ssa.Function) bool { return anyMatch(hs.cache, fn) }
+
+// IsRPC reports whether fn is a non-HTTP RPC-peer call (the `rpc` boundary kind).
+func (hs *HintSet) IsRPC(fn *ssa.Function) bool { return anyMatch(hs.rpc, fn) }
+
+// MethodNamedOutboundKind returns the boundary-kind token for an outbound effect
+// whose operation is the callee METHOD NAME — object storage (`blob`), cache
+// (`cache`), or non-HTTP RPC (`rpc`) — and whether fn is one. These three share a
+// shape: no readable peer/op/target triple, so the op is the method name and their
+// write-ness is disclosed-unenforceable rather than guessed. One helper so the
+// labeler, the contract extractor, the blind-spot filter, and the budget all agree
+// on the set (CLAUDE.md: one source of truth).
+func (hs *HintSet) MethodNamedOutboundKind(fn *ssa.Function) (string, bool) {
+	switch {
+	case hs.IsObjectStore(fn):
+		return effectkind.Blob, true
+	case hs.IsCache(fn):
+		return effectkind.Cache, true
+	case hs.IsRPC(fn):
+		return effectkind.RPC, true
+	}
+	return "", false
+}
 
 // IsExternalBoundaryExempt reports whether fn's package is exempt from the
 // ExternalBoundaryCall disclosure — observability/infrastructure plumbing rather
