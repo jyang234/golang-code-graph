@@ -249,10 +249,18 @@ func nonMutatingDBControl(op string) bool {
 // write surface. This residual is irreducible at the label layer — a blob method
 // genuinely named "Delete" ("blob Delete") is structurally identical to an
 // empty-route "blob DELETE" — and is shared with the pre-existing peer/kind overlap
-// for "db"/"bus" peers. The real fix is to namespace HTTP labels with an "http"
-// token like every other kind (a graphio change with golden churn, tracked
-// separately); the case requires a peer named exactly after a kind AND an empty
-// route, so it is pathological, not common.
+// for "db"/"bus" peers.
+//
+// The tempting "real fix" — namespace HTTP labels with an "http" token like every
+// other kind — was PRESSURE-TESTED and rejected: HTTP's peer-first label shape is a
+// load-bearing convention, not an accident. boundaryPeer (rollup.go) reads the first
+// token as the C3 external-system identity, so each HTTP peer is its own component;
+// an "http" prefix collapses every external service into one "http" box (verified on
+// loansvc: credit-bureau + payment-gw → "http"). impact.ResolvePeer keys "who calls
+// peer X" off the same peer-first prefix and would silently return nothing. So the
+// prefix trades a pathological collision (a peer named exactly after a kind AND an
+// empty route) for a real C3/triage regression plus new compensating special-cases —
+// the cure is worse than the disease. The residual stays documented, not "fixed".
 func methodNamedEffect(f []string) bool {
 	return len(f) == 2 && effectkind.IsMethodNamed(f[0])
 }
