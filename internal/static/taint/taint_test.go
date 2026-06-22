@@ -209,6 +209,128 @@ func TestAnalyzeBySource_Decomposes(t *testing.T) {
 	}
 }
 
+// decompCfg is the multi-source × multi-sink config the decomposition tests share.
+func decompCfg() taint.Config {
+	return taint.Config{
+		SourceFuncs:  []taint.FuncSpec{src("sourceDirect"), src("sourceMap"), src("sourceClean")},
+		SourceFields: []taint.FieldSpec{{Pkg: pkg, Type: "Recipient", Field: "Secret"}},
+		Sinks:        []taint.FuncSpec{sink("sinkDirect"), sink("sinkMap"), sink("sinkClean"), sink("sinkFieldRead")},
+	}
+}
+
+// combine is how a set of cell verdicts marginalises: FLOW if any flows, else ABSTAIN if
+// any cone escaped, else NO-FLOW — the same precedence as the aggregate trichotomy.
+func combine(vs []taint.Verdict) taint.Verdict {
+	anyAbstain := false
+	for _, v := range vs {
+		switch v {
+		case taint.Flow:
+			return taint.Flow
+		case taint.Abstain:
+			anyAbstain = true
+		}
+	}
+	if anyAbstain {
+		return taint.Abstain
+	}
+	return taint.NoFlow
+}
+
+// AnalyzeBySink must PARTITION the aggregate without inventing a verdict: the per-sink
+// flows union back to exactly the aggregate's, each flow is filed under its own sink, and
+// — the soundness guard — a sink reads NO-FLOW only when the WHOLE forward cone was
+// complete (else ABSTAIN, never a false no-flow from a sink-local view).
+func TestAnalyzeBySink_Decomposes(t *testing.T) {
+	cfg := decompCfg()
+	prog := analyzeFixture(t).Program
+	agg := taint.Analyze(prog, cfg)
+	per := taint.AnalyzeBySink(prog, cfg)
+
+	if len(per) != len(cfg.Sinks) {
+		t.Fatalf("want %d per-sink reports, got %d", len(cfg.Sinks), len(per))
+	}
+	for i := 1; i < len(per); i++ {
+		if per[i-1].Sink >= per[i].Sink {
+			t.Errorf("per-sink reports not in canonical order: %q before %q", per[i-1].Sink, per[i].Sink)
+		}
+	}
+
+	gotFlows := map[taint.Finding]bool{}
+	for _, sr := range per {
+		for _, f := range sr.Report.Flows {
+			if f.Sink != sr.Sink {
+				t.Errorf("flow %+v filed under the wrong sink %q", f, sr.Sink)
+			}
+			gotFlows[f] = true
+		}
+		// The verdict must match the OBSERVABLE facts directly (a specification, not a
+		// re-derived verdict helper): a sink with flows is FLOW; with none it is ABSTAIN
+		// iff the aggregate cone escaped (the no-false-no-flow soundness guard), else NO-FLOW.
+		switch {
+		case len(sr.Report.Flows) > 0:
+			if sr.Report.Verdict != taint.Flow {
+				t.Errorf("sink %q has flows but verdict %s, want FLOW", sr.Sink, sr.Report.Verdict)
+			}
+		case agg.Escaped:
+			if sr.Report.Verdict != taint.Abstain {
+				t.Errorf("sink %q no-flow on an escaped cone but verdict %s, want ABSTAIN (a false no-flow otherwise)", sr.Sink, sr.Report.Verdict)
+			}
+		default:
+			if sr.Report.Verdict != taint.NoFlow {
+				t.Errorf("sink %q no-flow on a complete cone but verdict %s, want NO-FLOW", sr.Sink, sr.Report.Verdict)
+			}
+		}
+	}
+	if len(gotFlows) != len(agg.Flows) {
+		t.Errorf("union of per-sink flows = %d, aggregate = %d", len(gotFlows), len(agg.Flows))
+	}
+	for _, f := range agg.Flows {
+		if !gotFlows[f] {
+			t.Errorf("aggregate flow %+v not present in any per-sink report", f)
+		}
+	}
+}
+
+// The (source × sink) matrix is the full decomposition; its cells must MARGINALISE back to
+// both AnalyzeBySource (collapsing sinks) and AnalyzeBySink (collapsing sources). This is
+// the soundness contract: the matrix neither invents a flow the aggregate lacks nor drops
+// one it has, in either projection.
+func TestAnalyzeBySourceAndSink_Marginalises(t *testing.T) {
+	cfg := decompCfg()
+	prog := analyzeFixture(t).Program
+	matrix := taint.AnalyzeBySourceAndSink(prog, cfg)
+	bySource := taint.AnalyzeBySource(prog, cfg)
+	bySink := taint.AnalyzeBySink(prog, cfg)
+
+	wantCells := (len(cfg.SourceFuncs) + len(cfg.SourceFields)) * len(cfg.Sinks)
+	if len(matrix) != wantCells {
+		t.Fatalf("matrix has %d cells, want %d (sources × sinks)", len(matrix), wantCells)
+	}
+	for i := 1; i < len(matrix); i++ {
+		a, b := matrix[i-1], matrix[i]
+		if a.Source > b.Source || (a.Source == b.Source && a.Sink >= b.Sink) {
+			t.Errorf("matrix not in canonical (Source, Sink) order at %d: %q/%q then %q/%q", i, a.Source, a.Sink, b.Source, b.Sink)
+		}
+	}
+
+	bySrcV := map[string][]taint.Verdict{}
+	bySnkV := map[string][]taint.Verdict{}
+	for _, c := range matrix {
+		bySrcV[c.Source] = append(bySrcV[c.Source], c.Report.Verdict)
+		bySnkV[c.Sink] = append(bySnkV[c.Sink], c.Report.Verdict)
+	}
+	for _, sr := range bySource {
+		if got := combine(bySrcV[sr.Source]); got != sr.Report.Verdict {
+			t.Errorf("source %q: matrix marginal %s != by-source %s", sr.Source, got, sr.Report.Verdict)
+		}
+	}
+	for _, sr := range bySink {
+		if got := combine(bySnkV[sr.Sink]); got != sr.Report.Verdict {
+			t.Errorf("sink %q: matrix marginal %s != by-sink %s", sr.Sink, got, sr.Report.Verdict)
+		}
+	}
+}
+
 // The report must be byte-identical across repeated runs: Go randomizes map-iteration
 // order per range, so an unsorted EscapeSites/Flows collection would surface here.
 func TestDeterministic(t *testing.T) {
@@ -254,6 +376,35 @@ func TestAnalyzeBySourceDeterministic(t *testing.T) {
 		}
 		if string(got) != string(want) {
 			t.Fatalf("per-source decomposition not deterministic across runs:\n want %s\n got  %s", want, got)
+		}
+	}
+}
+
+// The by-sink and (source × sink) matrix are new canonical-ordering paths too — each sorts
+// on its intrinsic key — so they ship byte-identical-across-runs guards (CLAUDE.md). The
+// matrix order also depends on the per-source iteration, which the sort must canonicalise.
+func TestAnalyzeBySinkAndMatrixDeterministic(t *testing.T) {
+	cfg := decompCfg()
+	prog := analyzeFixture(t).Program
+	for _, gen := range []struct {
+		name string
+		fn   func() any
+	}{
+		{"by-sink", func() any { return taint.AnalyzeBySink(prog, cfg) }},
+		{"matrix", func() any { return taint.AnalyzeBySourceAndSink(prog, cfg) }},
+	} {
+		want, err := json.Marshal(gen.fn())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 25; i++ {
+			got, err := json.Marshal(gen.fn())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(want) {
+				t.Fatalf("%s decomposition not deterministic across runs:\n want %s\n got  %s", gen.name, want, got)
+			}
 		}
 	}
 }

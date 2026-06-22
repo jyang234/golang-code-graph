@@ -228,6 +228,11 @@ func TestTxClosureReclaimsGenericWrapper(t *testing.T) {
 		if strings.Contains(e.From, "StashCommand") || strings.Contains(e.To, "StashCommand") {
 			t.Errorf("R2 violation: connected a stored-but-never-invoked closure: %s -> %s", e.From, e.To)
 		}
+		// Soundness: MaybeCommand dispatches through an interface with a LAZY impl that
+		// never invokes the closure, so it must NOT be connected (every impl must invoke).
+		if strings.Contains(e.From, "MaybeCommand") || strings.Contains(e.To, "MaybeCommand") {
+			t.Errorf("soundness violation: connected a closure whose interface runner has a non-invoking impl: %s -> %s", e.From, e.To)
+		}
 		got[e.From] = e.To
 	}
 
@@ -236,6 +241,10 @@ func TestTxClosureReclaimsGenericWrapper(t *testing.T) {
 	assertReclaimed(t, got, "CreateSubscriptionCommand).Handle")
 	// The DIRECT runner command is recovered too (closure invoked by RunInTx directly).
 	assertReclaimed(t, got, "DirectCommand).Handle")
+	// The INTERFACE tx-runner command (the dominant real shape): the runner call inside the
+	// generic wrapper is interface-dispatched, so recovery requires resolving the interface
+	// method to its single concrete impl and proving it invokes the parameter.
+	assertReclaimed(t, got, "IfaceCommand).Handle")
 }
 
 // Integration: folding TxClosure's edges into the graph makes the orphaned write

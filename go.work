@@ -24,6 +24,7 @@ use (
 	./testdata/fixtures/txrunnersvc
 	./testdata/fixtures/unionsvc
 	./testdata/fixtures/escapemodessvc
+	./testdata/fixtures/ifaceunionsvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc

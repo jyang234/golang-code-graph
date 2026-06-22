@@ -11,6 +11,13 @@
 // enclosing-fn→own-closure edge and REMOVEs the shared runner→closure union edges, so a
 // command reaches only its own write.
 //
+// The runner may be reached through a STATIC callee or held as an INTERFACE (the dominant
+// real shape, where the union forms at the concrete implementation's fn(exec) site). For
+// an interface runner the pass resolves the method to its implementations and removes the
+// union edge from EVERY one — but only when every implementation DIRECTLY invokes the
+// parameter, so no implementation merely stores the closure to invoke it on some other
+// site the removal would miss. Otherwise it abstains.
+//
 // Removing the union edge is sound ONLY when the closure is CONFINED to the one runner
 // call we rebind: its sole use in its parent is that call argument. Any escape — the
 // closure passed to a second invoker (a helper), stored, returned, sent on a channel, or
@@ -44,15 +51,20 @@ type Plan struct {
 	Remove [][2]string // (runner, closure) union edges to drop
 }
 
-// Compute returns the de-union Plan for res: for every closure passed to a static
-// callee that DIRECTLY invokes the corresponding parameter (so the graph carries a
-// concrete runner→closure union edge) AND that is CONFINED to that single call, it adds
-// enclosing→closure and removes runner→closure. A closure that escapes its parent keeps
-// its union (it contributes neither an add nor a remove).
+// Compute returns the de-union Plan for res: for every closure that is CONFINED to a
+// single call passing it to a runner that DIRECTLY invokes the corresponding parameter
+// (so the graph carries a concrete runner→closure union edge), it adds enclosing→closure
+// and removes the runner→closure union edge(s). The runner may be a STATIC callee (one
+// removal) or an INTERFACE-dispatched method (one removal per resolved implementation,
+// and only when every implementation directly invokes — see runnersToDeUnion). A closure
+// that escapes its parent keeps its union (it contributes neither an add nor a remove).
 func Compute(res *analyze.Result) Plan {
 	var plan Plan
 	addSeen := map[[2]string]bool{}
 	remSeen := map[[2]string]bool{}
+	// One memoising impl-finder shared across the pass (interface resolution is call-site-
+	// independent), so the RuntimeTypes scan runs once per (interface, method).
+	finder := reclaim.NewImplFinder(reclaim.ProgOf(res))
 	for _, n := range res.Graph.Nodes {
 		f := n.Func
 		if f == nil {
@@ -65,19 +77,19 @@ func Compute(res *analyze.Result) Plan {
 					continue
 				}
 				common := call.Common()
-				runner := common.StaticCallee()
-				if runner == nil {
-					continue
-				}
 				for i, arg := range common.Args {
 					closure := reclaim.ClosureFn(arg)
-					if closure == nil {
+					if closure == nil || !confined(arg, call) {
 						continue
 					}
-					// The runner must carry a concrete runner→closure union edge (it
-					// invokes the parameter directly), and the closure must be confined to
-					// THIS call — else removing the union edge would be unsound.
-					if !reclaim.DirectlyInvokesParam(runner, i) || !confined(arg, call) {
+					// The runner(s) whose union→closure edge can be soundly removed: a
+					// static runner that directly invokes the parameter, or — for an
+					// interface-dispatched runner — EVERY resolved implementation, but only
+					// when every one directly invokes it. nil means abstain (keep the union).
+					// The closure must also be confined to THIS call (checked above) so the
+					// removed edges are re-attributed to exactly one command→closure edge.
+					runners := runnersToDeUnion(finder, common, i)
+					if len(runners) == 0 {
 						continue
 					}
 					add := [2]string{n.FQN, closure.RelString(nil)}
@@ -85,10 +97,12 @@ func Compute(res *analyze.Result) Plan {
 						addSeen[add] = true
 						plan.Add = append(plan.Add, Edge{From: add[0], To: add[1]})
 					}
-					rem := [2]string{runner.RelString(nil), closure.RelString(nil)}
-					if !remSeen[rem] {
-						remSeen[rem] = true
-						plan.Remove = append(plan.Remove, rem)
+					for _, runnerFQN := range runners {
+						rem := [2]string{runnerFQN, closure.RelString(nil)}
+						if !remSeen[rem] {
+							remSeen[rem] = true
+							plan.Remove = append(plan.Remove, rem)
+						}
 					}
 				}
 			}
@@ -107,6 +121,40 @@ func Compute(res *analyze.Result) Plan {
 		return plan.Remove[i][1] < plan.Remove[j][1]
 	})
 	return plan
+}
+
+// runnersToDeUnion returns the runner node FQNs whose union→closure edge should be removed
+// when de-unioning the closure passed at arg index i of common, or nil to ABSTAIN (keep
+// the union).
+//
+//   - Static runner: the single callee, iff it DIRECTLY invokes parameter i (so the graph
+//     carries a concrete runner→closure union edge).
+//   - Interface-dispatched runner: EVERY resolved implementation, and only when every one
+//     DIRECTLY invokes the parameter (for an invoke call common.Args excludes the receiver,
+//     so arg index i maps to an implementation's parameter i+1). Requiring "every" is what
+//     keeps the de-union sound: the added command→closure edge is then unconditionally a
+//     real can-reach edge, and — because no implementation merely stores the parameter —
+//     there is no second invocation site for the closure that the removal would miss. If
+//     any implementation cannot be proven to directly invoke, abstain and keep the union.
+func runnersToDeUnion(finder *reclaim.ImplFinder, common *ssa.CallCommon, i int) []string {
+	if common.IsInvoke() {
+		impls := finder.Of(common)
+		if len(impls) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(impls))
+		for _, impl := range impls {
+			if len(impl.Blocks) == 0 || !reclaim.DirectlyInvokesParam(impl, i+1) {
+				return nil
+			}
+			out = append(out, impl.RelString(nil))
+		}
+		return out
+	}
+	if runner := common.StaticCallee(); runner != nil && reclaim.DirectlyInvokesParam(runner, i) {
+		return []string{runner.RelString(nil)}
+	}
+	return nil
 }
 
 // confined reports whether the closure value c is used in its parent ONLY as an argument

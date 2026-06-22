@@ -53,6 +53,39 @@ func RenderBySource(reports []SourceReport) string {
 	return b.String()
 }
 
+// RenderBySink formats the per-sink decomposition (AnalyzeBySink) as an additive block:
+// one line per declared sink with its INDEPENDENT verdict — which sink actually receives
+// source data, and from where. A pure function of the reports, so it is deterministic.
+// Returns "" when there are no sinks (nothing to add).
+func RenderBySink(reports []SinkReport) string {
+	if len(reports) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  by sink (independent — which sink receives source data):\n")
+	for _, sr := range reports {
+		switch sr.Report.Verdict {
+		case Flow:
+			fmt.Fprintf(&b, "    %-8s %s  ← %s\n", sr.Report.Verdict, sr.Sink, flowSites(sr.Report.Flows))
+		case Abstain:
+			fmt.Fprintf(&b, "    %-8s %s  (taint escaped a modeled construct — cannot prove no-flow)\n", sr.Report.Verdict, sr.Sink)
+		default: // NoFlow
+			fmt.Fprintf(&b, "    %-8s %s\n", sr.Report.Verdict, sr.Sink)
+		}
+	}
+	return b.String()
+}
+
+// flowSites renders the first-party sites where a sink is reached, joined — the "which
+// callers leak into this sink" detail the aggregate verdict collapses.
+func flowSites(flows []Finding) string {
+	parts := make([]string, 0, len(flows))
+	for _, f := range flows {
+		parts = append(parts, f.Site)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // flowTargets renders a source's FLOW findings as "sink at site" entries, joined — the
 // "which field reaches which sink where" detail the aggregate verdict collapses.
 func flowTargets(flows []Finding) string {

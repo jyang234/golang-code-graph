@@ -105,6 +105,86 @@ func (c *StashCommand) Handle(_ context.Context) {
 	})
 }
 
+// --- Interface tx-runner: the dominant real shape, where the unit-of-work is an
+// INTERFACE so the runner call inside the generic wrapper is INTERFACE-dispatched (no
+// static callee). The reclaimer must resolve the interface method to its concrete
+// implementation(s) to prove the wrapper closure — and thus the command's closure — is
+// invoked; otherwise the write stays orphaned exactly as with the concrete runner. ---
+
+// TxRunner is the unit-of-work as an INTERFACE.
+type TxRunner interface {
+	RunInTx(ctx context.Context, fn func(*Exec) error) error
+}
+
+// SQLRunner is the concrete implementation; like UnitOfWork.RunInTx it invokes fn directly.
+type SQLRunner struct{ db *sql.DB }
+
+func (r *SQLRunner) RunInTx(ctx context.Context, fn func(*Exec) error) error {
+	e := &Exec{db: r.db}
+	return fn(e)
+}
+
+// RunInTxIface is the generic wrapper over the INTERFACE runner: it wraps fn into a
+// closure handed to u.RunInTx — an interface-dispatched call with no static callee.
+func RunInTxIface[T any](ctx context.Context, u TxRunner, fn func(*Exec) (T, error)) (T, error) {
+	var out T
+	err := u.RunInTx(ctx, func(e *Exec) error {
+		v, ferr := fn(e)
+		out = v
+		return ferr
+	})
+	return out, err
+}
+
+// IfaceCommand runs its write through the generic wrapper over the INTERFACE runner —
+// the orphaned shape real event-bus commands take.
+type IfaceCommand struct {
+	u  TxRunner
+	st *Store
+}
+
+func (c *IfaceCommand) Handle(ctx context.Context) error {
+	_, err := RunInTxIface(ctx, c.u, func(e *Exec) (int, error) {
+		return c.st.InsertSubscription(ctx, e)
+	})
+	return err
+}
+
+// --- Adversarial: an interface runner with TWO implementations, one of which does NOT
+// invoke fn. The reclaimer must ABSTAIN — it cannot prove the closure is invoked, because
+// the dynamic implementation might be the lazy one. This pins that the recovery requires
+// EVERY implementation to invoke the parameter, not merely some (a sound-direction guard). ---
+
+// MaybeRunner has two impls with divergent behavior.
+type MaybeRunner interface {
+	RunInTx(fn func(*Exec) error) error
+}
+
+// EagerRunner invokes fn; LazyRunner only STORES it (never invokes).
+type EagerRunner struct{}
+
+func (EagerRunner) RunInTx(fn func(*Exec) error) error { return fn(nil) }
+
+type LazyRunner struct{ saved func(*Exec) error }
+
+func (l *LazyRunner) RunInTx(fn func(*Exec) error) error { l.saved = fn; return nil }
+
+func runMaybe(u MaybeRunner, fn func(*Exec) error) error { return u.RunInTx(fn) }
+
+// MaybeCommand dispatches its closure through MaybeRunner — the reclaimer must NOT connect
+// it, because LazyRunner (a possible dynamic type) never invokes the closure.
+type MaybeCommand struct {
+	u  MaybeRunner
+	st *Store
+}
+
+func (c *MaybeCommand) Handle() error {
+	return runMaybe(c.u, func(e *Exec) error {
+		_, err := c.st.InsertSubscription(context.Background(), e)
+		return err
+	})
+}
+
 func main() {
 	db, _ := sql.Open("postgres", "")
 	u := &UnitOfWork{db: db}
@@ -113,4 +193,8 @@ func main() {
 	_ = (&CreateSubscriptionCommand{u: u, st: st}).Handle(ctx)
 	_ = (&DirectCommand{u: u, st: st}).Handle(ctx)
 	(&StashCommand{reg: &Registry{}, st: st}).Handle(ctx)
+	_ = (&IfaceCommand{u: &SQLRunner{db: db}, st: st}).Handle(ctx)
+	// Box BOTH MaybeRunner impls so the call graph's runtime type set contains each.
+	_ = (&MaybeCommand{u: EagerRunner{}, st: st}).Handle()
+	_ = (&MaybeCommand{u: &LazyRunner{}, st: st}).Handle()
 }

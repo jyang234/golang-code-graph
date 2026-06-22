@@ -201,19 +201,36 @@ func TestTaintRendersPerSourceDecomposition(t *testing.T) {
 		}
 	}
 
+	// The by-sink block shows which sink receives data: sinkDirect/sinkFieldRead FLOW,
+	// and a sink the cone can't clear reads ABSTAIN (the map escape is global).
+	if !strings.Contains(out, "by sink") {
+		t.Fatalf("taint must emit the per-sink block:\n%s", out)
+	}
+	for _, want := range []string{
+		"FLOW     example.com/taintsvc#sinkDirect",
+		"FLOW     example.com/taintsvc#sinkFieldRead",
+		"ABSTAIN  example.com/taintsvc#sinkMap",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("per-sink block missing %q:\n%s", want, out)
+		}
+	}
+
 	// The decomposition is additive: the aggregate verdict is unchanged (still FLOW).
 	if !strings.Contains(out, "verdict: FLOW") {
 		t.Errorf("aggregate verdict must be unchanged (FLOW):\n%s", out)
 	}
 
-	// --json carries the same decomposition as an additive BySource array.
+	// --json carries every decomposition as additive arrays (the matrix among them).
 	jsonOut := captureStdout(t, func() {
 		if err := run([]string{"taint", "--json", svc}); err != nil {
 			t.Fatalf("taint --json: %v", err)
 		}
 	})
-	if !strings.Contains(jsonOut, `"BySource"`) {
-		t.Errorf("--json must include the additive BySource array:\n%s", jsonOut)
+	for _, want := range []string{`"BySource"`, `"BySink"`, `"BySourceAndSink"`} {
+		if !strings.Contains(jsonOut, want) {
+			t.Errorf("--json must include the additive %s array:\n%s", want, jsonOut)
+		}
 	}
 }
 
