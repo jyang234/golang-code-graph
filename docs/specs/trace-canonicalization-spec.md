@@ -39,10 +39,13 @@ The IR is the golden file. Its shape encodes the hard decisions (ordering, concu
 // CanonicalTrace is the deterministic representation of one exercised flow.
 // Equality of two CanonicalTraces is the snapshot assertion.
 type CanonicalTrace struct {
-    Flow     string           // stable flow id (test name / triggering route)
-    Service  string           // the self lifeline (emitted in §3.5; the renderer uses it)
-    Root     *CanonicalSpan   // normalized span tree
-    Discards DiscardManifest  // what was dropped, for transparency in review
+    Flow          string           // stable flow id (test name / triggering route)
+    Service       string           // the self lifeline (emitted in §3.5; the renderer uses it)
+    SchemaVersion string           // on-disk canonical form, "flowmap.trace/v1"; part of
+                                   // snapshot equality, so a bump deliberately stales every
+                                   // committed golden (coordinated regen, the golden-diff spec)
+    Root          *CanonicalSpan   // normalized span tree
+    Discards      DiscardManifest  // what was dropped, for transparency in review
 
     // Identity/provenance fields — carried alongside the structural snapshot, with
     // deliberately different equality treatment (see below and the golden-diff spec):
@@ -56,9 +59,14 @@ type CanonicalSpan struct {
     Op        string            // derived canonical operation key (see §3.5)
     Kind      string            // server|client|internal|producer|consumer
     Peer      string            // counterparty lifeline (see §3.5); "" => self/internal
+    Service   string            // owning service (OTel resource service.name); "" for an
+                                // in-process single-service capture, set on a cross-service
+                                // whole-flow capture so each op lands on its own lifeline
     Tier      int               // salience tier, assigned in §3.6 (1 = most consequential)
     Status    string            // ok|error|unset
     ErrorType string            // normalized error class; "" if none
+    Async     bool              // reached across a broker via an OTLP span link (FOLLOWS_FROM),
+                                // not a synchronous in-process call edge; omitted when false
     Attrs     map[string]string // secondary salient detail (keys sorted on serialize)
     Children  []ChildGroup      // ordered groups (see §3.3)
 }
@@ -68,7 +76,10 @@ type CanonicalSpan struct {
 //   - Within a group flagged Concurrent, member order is a race, so members are
 //     stored in canonical-key order and the concurrency is surfaced, not hidden.
 type ChildGroup struct {
-    Concurrent   bool
+    Concurrent   bool              // asserts parallelism (a race) between members
+    Unordered    bool              // relative order could not be reliably established
+                                   // (out-of-process siblings, or untimed) — distinct from
+                                   // Concurrent: claims neither a sequence nor a race
     Multiplicity string            // "1" | "0..1" | "1..*" | exact e.g. "3"
     Members      []*CanonicalSpan  // canonical-key-sorted when Concurrent or order unreliable
 }

@@ -6,9 +6,10 @@ description: Orchestrate the groundwork/flowmap MCP tools when editing or debugg
 # groundwork workflow
 
 `groundwork mcp` serves a Go service's call graph as **read-only** MCP tools
-(`ground`, `reach`, `triage`, `entrypoints`, `fleet-events`, `chains`,
-`fitness`, `reload`, `exceptions`). There is no write tool — you consult the
-graph, then edit code with normal file tools.
+(`ground`, `reach`, `annotate`, `triage`, `entrypoints`, `fleet-events`,
+`chains`, `fitness`, `reload`, `exceptions`, and — only with `--corpus` — the
+audit-only `impeach`). There is no write tool — you consult the graph, then
+edit code with normal file tools.
 
 The full, harness-neutral guidance lives in
 [`docs/groundwork/agent-workflow.md`](../../../docs/groundwork/agent-workflow.md).

@@ -16,9 +16,10 @@ that touch capture/await/canon/harness.
 
 The **engine module keeps a Go 1.24 floor** (`go.mod: go 1.24.0`) — that is the
 version adopters build against, and it must build standalone (`GOWORK=off go
-build ./...`). The **workspace and the test fixture use 1.25** (`go.work`,
-`testdata/fixtures/loansvc`) because the fixture's test-only dependencies (the
-pure-Go SQLite driver) require it.
+build ./...`). The **workspace stays at 1.25** (`go.work: go 1.25.0`) because a
+few fixture modules declare `go 1.25.0` (e.g. `testdata/fixtures/{reflectsvc,
+impeachsvc,reclaimsvc,dispatchsvc}`) and the workspace `go` directive must be at
+least the highest of its member modules.
 
 `go get`-ing a new dependency can silently bump the `go` directive to match the
 local toolchain. After adding a dependency:

@@ -1,6 +1,6 @@
 # SQL const-accumulation fold — reclaiming the constant-fragment builder frontier
 
-> **`PROPOSAL`** · exploratory, building the case · _drafted 2026-06-18_
+> **`DESIGN RECORD`** · all three phases shipped (opt-in `--reclaim-sql`) · _drafted 2026-06-18_
 
 **Status:** phase 1 (the fold + trichotomy + provenance) is **shipped, opt-in** as
 `internal/static/sqlfold`, wired into the labeler via `graphio.WithSQLFold`

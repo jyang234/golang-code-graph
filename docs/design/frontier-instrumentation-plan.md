@@ -4,8 +4,10 @@
 
 **Status:** Phase 1 (the classifier + attribution check) is **shipped** as
 `flowmap frontier` (`internal/static/frontier`, `frontier_test.go`); the committed
-fixture `testdata/fixtures/strictsvc` is its motivating measurement. Phases 2–4
-(disclosure, reclaimers, the trace lane) remain designed-not-built. The framing
+fixture `testdata/fixtures/strictsvc` is its motivating measurement. Components 2
+and 3 also shipped — structured frontier disclosure (the `graphio.Graph`
+`frontier` section) and the opt-in `internal/static/reclaim` edge reclaimers;
+only the fenced trace lane (§6) remains designed-not-built. The framing
 question this doc answers for the owner: **how do we instrument the frontier
 without violating "determinism over everything"?**
 

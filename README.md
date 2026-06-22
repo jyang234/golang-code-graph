@@ -144,9 +144,9 @@ threaded through every output.
 ## Layout
 
 ```
-cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--algo] [--reclaim] [--stamp] | frontier | diff | coverage | behavior ingest | version
-cmd/groundwork/  CLI: reach | triage | ground | fitness | review | verify | diff | verify-artifact
-                      | exceptions | policy-check | mcp | version
+cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--algo] [--reclaim] [--stamp] | frontier | schema-drift | taint | diff | coverage | behavior ingest | version
+cmd/groundwork/  CLI: reach | triage | ground | chains | fitness | review | verify | diff | verify-artifact
+                      | exceptions | transcript | init | policy-check | mcp | version
 harness/ capture/ flow/ ir/   PUBLIC: in-process flow-test capture + the canonical IR
 internal/        the engines (static/, canon/, groundwork/, …)
 testdata/        hermetic fixture services (own modules) + committed goldens

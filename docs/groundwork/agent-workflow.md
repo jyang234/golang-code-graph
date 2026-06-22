@@ -1,5 +1,7 @@
 # Working with the groundwork MCP tools (agent workflow)
 
+> **`ACTIVE`** · how-to for orchestrating the MCP tools from a coding agent · _reviewed 2026-06-22_
+
 This is harness-neutral guidance for any coding agent (Claude Code, or any
 other MCP client) editing a Go service whose graph is served by
 `groundwork mcp`. It covers **how to orchestrate the tools**, not what each

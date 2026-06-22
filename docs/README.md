@@ -61,6 +61,7 @@ design record behind them.
 |---|---|---|
 | [`README.md`](groundwork/README.md) | `ACTIVE` | Overview + index into the design record. |
 | [`usage.md`](groundwork/usage.md) | `ACTIVE` | Practical guide: commands and a worked review. |
+| [`agent-workflow.md`](groundwork/agent-workflow.md) | `ACTIVE` | Harness-neutral guidance for orchestrating the MCP tools from a coding agent (the ground → edit → verify loop). |
 | [`personas.md`](groundwork/personas.md) | `ACTIVE` | Before/after for the responder, developer, and reviewer. |
 | [`distilled-learnings.md`](groundwork/distilled-learnings.md) | `DESIGN RECORD` | The thesis and what was established about the substrate. |
 | [`mr-review-artifacts.md`](groundwork/mr-review-artifacts.md) | `DESIGN RECORD` | The unfakeable MR review artifact design. |
@@ -77,9 +78,11 @@ decision record; a few are still in flight.
 | Doc | Status | What it covers |
 |---|---|---|
 | [`correctness-expansion-plan.md`](design/correctness-expansion-plan.md) | `ACTIVE` | The correctness (CX) expansion; the CX-5 gate is the one phase still awaiting implementation. |
-| [`behavioral-impeachment-plan.md`](design/behavioral-impeachment-plan.md) | `PROPOSAL` | Joining the static graph with captured behavior to find counterexamples to the analyzer's own negatives (the impeachment cell); fully designed (incl. a recorded pressure test), not built. |
+| [`behavioral-impeachment-plan.md`](design/behavioral-impeachment-plan.md) | `DESIGN RECORD` | Joining the static graph with captured behavior to find counterexamples to the analyzer's own negatives (the impeachment cell). Loop closed: Phases 0–5 shipped behind a default-off opt-in and proven end-to-end on the `impeachsvc` fixture (incl. a recorded pressure test). |
 | [`flowmap-capability-headroom.md`](design/flowmap-capability-headroom.md) | `PROPOSAL` | Headroom pass on flowmap's *scope* (not its soundness): schema-drift cross-check (prototyped), effect-kind recognizers, value-flow/taint (PoC). Ranked by soundness × utility; substrate claims verified against pin `85ca0a9`. |
 | [`schema-drift-check-plan.md`](design/schema-drift-check-plan.md) | `DESIGN RECORD` | §1 of the headroom analysis, **shipped** as `internal/static/schemadrift` + `flowmap schema-drift`: a post-process diffing IR db-write labels against the migration-defined schema (Flyway ∪ library-owned), with `--gate` and build-fresh. Kept for the soundness/completeness contract. |
+| [`frontier-instrumentation-plan.md`](design/frontier-instrumentation-plan.md) | `PROPOSAL` | Measuring and reclaiming the static frontier. Components 1–3 shipped (the `flowmap frontier` classifier, structured frontier disclosure, and the opt-in `internal/static/reclaim` edge reclaimers); only the fenced trace lane remains deferred. |
+| [`sql-constfold-reclaim-plan.md`](design/sql-constfold-reclaim-plan.md) | `DESIGN RECORD` | The SQL-label analogue of the frontier edge reclaimer, **shipped** opt-in as `internal/static/sqlfold` (`flowmap graph --reclaim-sql`): folds constant-fragment SQL builders so a write's table resolves to its proven constant set, abstaining on every completeness gap. |
 | [`correctness-field-run.md`](design/correctness-field-run.md) | `DESIGN RECORD` | Protocol for the 2026-06-12 field measurement run. |
 | [`cx5-chains-surface.md`](design/cx5-chains-surface.md) | `DESIGN RECORD` | The shipped cross-service chain surface (observational; the gate is unbuilt). |
 | [`cx5-inputs-response.md`](design/cx5-inputs-response.md) | `DESIGN RECORD` | The field response feeding CX-5, recorded and independently verified. |
@@ -100,6 +103,7 @@ decision record; a few are still in flight.
 |---|---|
 | [`ideas/incident-triage.md`](design/ideas/incident-triage.md) | [`incident-triage-plan.md`](design/incident-triage-plan.md) |
 | [`ideas/path-obligations.md`](design/ideas/path-obligations.md) | [`path-obligations-plan.md`](design/path-obligations-plan.md) |
+| [`ideas/front-end-test-hardening.md`](design/ideas/front-end-test-hardening.md) | Implemented directly as a focused front-end test-hardening PR (`SHIPPED`) — no intervening plan. |
 
 ## archive/ — superseded · **`HISTORICAL`**
 
