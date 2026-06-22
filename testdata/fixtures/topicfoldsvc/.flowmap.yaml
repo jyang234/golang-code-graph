@@ -1,0 +1,4 @@
+service: topicfoldsvc
+classify:
+  busPublish:
+    - "example.com/topicfoldsvc/bus#Publish"

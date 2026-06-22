@@ -78,10 +78,18 @@ Appendix A.
 `db`/`bus`/`http` is what's *built*, not the limit. Other external write surfaces — object storage,
 a cache, a non-HTTP RPC peer — render today as disclosed boundaries (named, not budget-counted).
 Adding recognizers (or `classify` categories) for them is additive, deterministic, and sound — a
-declared boundary in the same shape as the existing five hints, with zero soundness cost. A sibling:
-a `reclaim-topic` const-fold (the `reclaim-sql` analog) to recover const-derived bus targets, shrinking
-the `<dynamic>` residual. Low effort, no risk; not prototyped because there is little to prototype —
-it is pattern addition.
+declared boundary in the same shape as the existing five hints, with zero soundness cost.
+
+> **Shipped (the `reclaim-topic` sibling).** The `reclaim-sql` analog for bus targets is built:
+> `graphio.WithTopicFold()` / `flowmap graph|frontier --reclaim-topic`. A PUBLISH/CONSUME whose topic
+> resolves to a finite, provably-complete constant set is named (one edge per topic, tagged
+> `via=topic-constfold`) instead of `<dynamic>`, shrinking the dynamic-bus residual. It reuses the
+> SQL fold's const-set resolver (`sqlfold.ConstStringSet`) — one source of truth for the completeness
+> discipline — and is *safer* than the SQL fold: the topic is a verdict-neutral target name, so it
+> can never move a pole. Sound-or-abstain; off by default. Fixture: `testdata/fixtures/topicfoldsvc`.
+
+The remaining recognizers (object storage, cache, non-HTTP RPC) stay additive pattern work — low
+effort, no risk, not yet built.
 
 ## 3 · Value-flow / taint — spiked (PoC built); feasible medium build, precision-gated
 

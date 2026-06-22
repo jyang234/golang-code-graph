@@ -62,6 +62,17 @@ func resolveTable(frags []frag, prefix, op string) ([]string, bool) {
 	return sortedKeys(set), true
 }
 
+// ConstStringSet resolves v to the complete, finite set of compile-time string
+// constants it can hold, or ok=false when it cannot PROVE completeness. It is the
+// general const-string-set resolver the SQL table fold is built on (resolveConstSet),
+// exposed so other sound label reclaimers reuse the SAME completeness discipline
+// rather than re-deriving it — the bus reclaim-topic fold names a publish/consume
+// target this way. The recovered set is verdict-neutral for its callers (a table or
+// topic NAME), so over-listing can only refine a name or a diff, never move a pole.
+func ConstStringSet(v ssa.Value) ([]string, bool) {
+	return resolveConstSet(v, map[ssa.Value]bool{})
+}
+
 // resolveConstSet resolves v to the complete, finite set of compile-time string
 // constants it can hold, or ok=false when it cannot prove completeness. It handles
 // a constant (singleton), a Phi (the union of its operands), and a struct-field

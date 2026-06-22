@@ -129,6 +129,7 @@ func cmdGraph(args []string) error {
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch — fewer spurious callees), "cha" (rootless fallback)`)
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers (opt-in; adds provenance-tagged edges that close the strict-server seam)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer (opt-in; recovers verbs from constant-fragment SQL builders, tagging them via=sql-constfold)")
+	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer (opt-in; recovers PUBLISH/CONSUME targets from constant-set topics, tagging them via=topic-constfold)")
 	asMermaid := fs.Bool("mermaid", false, "render the graph as a human-readable Mermaid flowchart instead of JSON (a view, never gated); scope with --entry")
 	showPlumbing := fs.Bool("show-plumbing", false, "with --mermaid, include low-salience plumbing nodes (tier 3: telemetry, compute-only closures) instead of collapsing them")
 	allBlindSpots := fs.Bool("all-blind-spots", false, "with --mermaid, draw every blind-spot/frontier disclosure node (trivial boundaries and those orphaned onto collapsed plumbing) instead of rolling the plumbing-tier ones into a counted header note; restores the full honesty channel without un-collapsing plumbing nodes")
@@ -153,7 +154,7 @@ func cmdGraph(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, *entry, sqlFoldOpts(*reclaimSQLFlag)...)
+	g, err := graphio.Build(res, *entry, reclaimOpts(*reclaimSQLFlag, *reclaimTopicFlag)...)
 	if err != nil {
 		return err
 	}
@@ -309,6 +310,7 @@ func cmdFrontier(args []string) error {
 	asJSON := fs.Bool("json", false, "emit the full marker inventory as canonical JSON")
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers before classifying (shows the frontier with the seam closed)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer before classifying (recovers verbs from constant-fragment SQL builders, shrinking the B2 opaque-SQL frontier)")
+	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer before classifying (recovers PUBLISH/CONSUME targets from constant-set topics, shrinking the dynamic-bus frontier)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -325,7 +327,7 @@ func cmdFrontier(args []string) error {
 	if err != nil {
 		return err
 	}
-	g, err := graphio.Build(res, "", sqlFoldOpts(*reclaimSQLFlag)...)
+	g, err := graphio.Build(res, "", reclaimOpts(*reclaimSQLFlag, *reclaimTopicFlag)...)
 	if err != nil {
 		return err
 	}
@@ -451,7 +453,7 @@ func schemaDriftEdges(graphPath, dir, algo string, reclaimSQL bool) ([]schemadri
 	if err != nil {
 		return nil, "", err
 	}
-	g, err := graphio.Build(res, "", sqlFoldOpts(reclaimSQL)...)
+	g, err := graphio.Build(res, "", reclaimOpts(reclaimSQL, false)...) // schema-drift is DB-only; topic fold is irrelevant
 	if err != nil {
 		return nil, "", err
 	}
@@ -487,14 +489,20 @@ func algoOption(s string) (callgraph.Options, error) {
 	}
 }
 
-// sqlFoldOpts maps the --reclaim-sql flag to the build options. It is its own knob
-// (not folded into --reclaim) so a label-reclaimed verdict and an edge-reclaimed
-// verdict stay separately auditable on the substrate line.
-func sqlFoldOpts(on bool) []graphio.BuildOption {
-	if on {
-		return []graphio.BuildOption{graphio.WithSQLFold()}
+// reclaimOpts maps the --reclaim-sql / --reclaim-topic flags to build options. Each
+// is its own knob (not folded into --reclaim) so a label-reclaimed verdict and an
+// edge-reclaimed verdict stay separately auditable on the substrate line; the SQL and
+// bus label folds are likewise kept distinct so each reclaimed target names its
+// reclaimer (via=sqlfold.Via vs. via=topic-constfold).
+func reclaimOpts(reclaimSQL, reclaimTopic bool) []graphio.BuildOption {
+	var opts []graphio.BuildOption
+	if reclaimSQL {
+		opts = append(opts, graphio.WithSQLFold())
 	}
-	return nil
+	if reclaimTopic {
+		opts = append(opts, graphio.WithTopicFold())
+	}
+	return opts
 }
 
 // warnSkippedAnnotations writes, to w (stderr at the CLI boundary), one warning per
@@ -1218,8 +1226,8 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL labels)
-  frontier [--algo A] [--reclaim] [--reclaim-sql] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL/bus labels)
+  frontier [--algo A] [--reclaim] [--reclaim-sql] [--reclaim-topic] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   schema-drift [--graph G] [--migrations D] [--library-owned a,b] [--reclaim-sql] [--gate] [--json] [dir]  cross-check code DB writes against the migration-defined schema (omit --graph to build fresh from dir; dir's .flowmap.yaml supplies static.schemaCheck; --gate: non-zero exit on drift)
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises

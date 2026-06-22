@@ -18,6 +18,7 @@ use (
 	./testdata/fixtures/sqlbuildersvc
 	./testdata/fixtures/sqlpassthroughsvc
 	./testdata/fixtures/schemadriftsvc
+	./testdata/fixtures/topicfoldsvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc
