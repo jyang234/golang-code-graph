@@ -327,15 +327,41 @@ func Discover(prog *ssabuild.Program, registrars []Registrar, declared ...Declar
 	}
 
 	// Library fallback: no PRIMARY entry point (main, HTTP handler, bus consumer, or
-	// declared callback/worker) to root from, so root at every exported function.
+	// declared callback/worker) to root from, so root at every exported function AND
+	// every exported method of an exported type (the API surface a library consumer
+	// can call).
 	// Init and export roots are excluded from the primary test — every package has a
 	// synthesized init, so counting init would permanently suppress the fallback and
 	// leave a pure library's exported surface unrooted.
 	if !hasPrimaryRoot(res.Roots) {
 		for _, p := range prog.ServicePkgs {
 			for _, m := range p.Members {
-				if fn, ok := m.(*ssa.Function); ok && fn.Object() != nil && fn.Object().Exported() {
-					add(fn, KindExport, "")
+				switch x := m.(type) {
+				case *ssa.Function:
+					if x.Object() != nil && x.Object().Exported() {
+						add(x, KindExport, "")
+					}
+				case *ssa.Type:
+					// Exported METHODS are part of a library's API surface too, but
+					// methods are NOT package-level SSA members — they live only in the
+					// type's method sets. MethodSet(T) omits pointer-receiver (*T)
+					// methods, so walk BOTH the value and pointer sets; the dominant *T
+					// idiom (a *Store/*Client API) would otherwise be unrooted and its
+					// forward cone invisible — a false "no path"/NEVER absence proof.
+					// add() dedups the value-receiver overlap. Only EXPORTED methods of
+					// EXPORTED types are an API entry.
+					if !x.Object().Exported() {
+						continue // unexported type: not an API entry
+					}
+					for _, recv := range []types.Type{x.Type(), types.NewPointer(x.Type())} {
+						ms := prog.Prog.MethodSets.MethodSet(recv)
+						for i := 0; i < ms.Len(); i++ {
+							fn := prog.Prog.MethodValue(ms.At(i))
+							if fn != nil && fn.Object() != nil && fn.Object().Exported() {
+								add(fn, KindExport, "")
+							}
+						}
+					}
 				}
 			}
 		}

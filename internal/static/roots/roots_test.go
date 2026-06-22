@@ -525,3 +525,46 @@ func write(t *testing.T, dir, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestDiscoverLibraryExportsMethods pins that the library-mode fallback roots
+// EXPORTED METHODS, not just package-level funcs. A pure library whose API is
+// methods on an exported type (the dominant Go shape — a *Store/*Client) must have
+// those methods rooted, or their forward cones are invisible in the call graph and
+// any "no path / NEVER / covered" verdict over it is a false absence proof. Walking
+// p.Members alone misses every method (methods are not package-level SSA members).
+func TestDiscoverLibraryExportsMethods(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := t.TempDir()
+	write(t, dir, "go.mod", "module lib\n\ngo 1.24\n")
+	write(t, dir, "lib.go", `package lib
+type Store struct{}
+func New() *Store { return &Store{} }
+func (s *Store) Save(x string) {} // exported POINTER-receiver method
+func (s Store) Read() string     { return "" } // exported VALUE-receiver method
+func unexported() {}
+`)
+	svc, err := loader.Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	prog, err := ssabuild.Build(svc)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	res := roots.Discover(prog, nil)
+
+	exports := map[string]bool{}
+	for _, r := range res.Roots {
+		if r.Kind == roots.KindExport {
+			exports[r.Func.Name()] = true
+		}
+	}
+	for _, want := range []string{"New", "Save", "Read"} {
+		if !exports[want] {
+			t.Errorf("exported library API %q must be a KindExport root; got %v", want, exports)
+		}
+	}
+	if exports["unexported"] {
+		t.Error("unexported function must not be a library root")
+	}
+}
