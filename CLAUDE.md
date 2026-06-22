@@ -60,6 +60,23 @@ make a change both correct and trustworthy, make it abstain.
   in a comment **and** guarded by a test. Do not copy a predicate and let the copies
   drift.
 
+### Sound scope — collect functions completely
+When a pass enumerates functions and the result feeds a **soundness claim** (an
+absence proof — PROVEN / NO-FLOW / NEVER / "no path" / "covered" — or a blind-spot
+*disclosure*), collect them through a **complete** walk: `ssautil.AllFunctions` (which
+includes pointer-receiver methods, wrappers, and nested closures) or the already-built
+RTA/VTA call-graph node set (`res.Graph.Nodes`). **Never hand-roll the collection from
+`pkg.Members` or a value-type method set** (`MethodSets.MethodSet(T)`): `Members` omits
+*all* methods (methods are not package-level members), and `MethodSet(T)` omits the
+**pointer-receiver (`*T`) methods** that are the dominant Go idiom. A silently-omitted
+function under an absence claim is a *false PROVEN* — the worst outcome (tenet 4), and
+exactly how this bit us twice (`taint.firstPartyFuncs`, the `roots` library-export
+fallback). The asymmetry: over-collection only costs precision; under-collection costs
+soundness. If you must walk a type's methods directly, walk **both** `MethodSet(T)` and
+`MethodSet(types.NewPointer(T))`, and ship a regression test that exercises a source/
+entry located inside a `*T` method (e.g. `taint`'s `TestPointerReceiverFieldSourceIsSeeded`,
+`roots`'s `TestDiscoverLibraryExportsMethods`).
+
 ### Comments are load-bearing — keep them honest
 Comments here encode **intent and invariants**, not narration; they are the oracle a
 reviewer uses to tell a bug from a feature. A stale comment misleads everyone,
