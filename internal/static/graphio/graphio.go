@@ -654,34 +654,39 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 	// attribution-loss signal would be a scoping artifact, not a finding. Gate it on
 	// the unscoped build, the same convention those sections use.
 	if entry == "" {
-		g.reclaimEdges = strictServerReclaimEdges(res, g.nodeSet())
+		g.reclaimEdges = reclaimEdges(res, g.nodeSet())
 		g.Frontier = frontierSection(g)
 	}
 	return g, nil
 }
 
-// strictServerReclaimEdges returns the strict-server reclaimer's edges whose BOTH
-// endpoints are graph nodes — computed as a DRY RUN over res WITHOUT folding the edges,
-// so even the default (un-reclaimed) frontier knows which severed closures are genuinely
-// reclaimable. It is the SINGLE in-graph reclaim-edge predicate (CLAUDE.md: one source
-// of truth): the frontier dry run derives its reclaimable-closure set from `.To` here,
-// and ApplyReclaimers folds these same edges, so the "is this seam reclaimable" answer
-// cannot differ between the prediction and the apply (§21.②). Deduped on (From, To); the
-// StrictServer iteration order is deterministic, so the result is too.
-func strictServerReclaimEdges(res *analyze.Result, nodes map[string]bool) []reclaim.Edge {
+// reclaimEdges returns every sound reclaimer's edges whose BOTH endpoints are graph
+// nodes — computed as a DRY RUN over res WITHOUT folding the edges, so even the default
+// (un-reclaimed) frontier knows which severed closures are genuinely reclaimable. It is
+// the SINGLE in-graph reclaim-edge predicate (CLAUDE.md: one source of truth): the
+// frontier dry run derives its reclaimable-closure set from `.To` here, and
+// ApplyReclaimers folds these same edges, so the "is this seam reclaimable" answer
+// cannot differ between the prediction and the apply (§21.②). Each reclaimer's iteration
+// order is deterministic and the cross-reclaimer concatenation order is fixed, so the
+// result is too; deduped on (From, To) across all reclaimers.
+func reclaimEdges(res *analyze.Result, nodes map[string]bool) []reclaim.Edge {
 	seen := map[[2]string]bool{}
 	var out []reclaim.Edge
-	for _, e := range reclaim.StrictServer(res) {
-		if !nodes[e.From] || !nodes[e.To] {
-			continue
+	add := func(edges []reclaim.Edge) {
+		for _, e := range edges {
+			if !nodes[e.From] || !nodes[e.To] {
+				continue
+			}
+			key := [2]string{e.From, e.To}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, e)
 		}
-		key := [2]string{e.From, e.To}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, e)
 	}
+	add(reclaim.StrictServer(res))
+	add(reclaim.TxClosure(res))
 	return out
 }
 
@@ -782,7 +787,7 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 	// unscoped path and the folded edges match the frontier's reclaimable prediction.
 	edges := g.reclaimEdges
 	if g.Entrypoint != "" {
-		edges = strictServerReclaimEdges(res, g.nodeSet())
+		edges = reclaimEdges(res, g.nodeSet())
 	}
 	added := 0
 	for _, e := range edges {

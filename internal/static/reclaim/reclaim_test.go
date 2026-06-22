@@ -205,3 +205,110 @@ func TestStrictServerReconnectedButDisclosed(t *testing.T) {
 		t.Fatal("strict-server reclaim should reconnect the closure yet still DISCLOSE the residual middleware seam; found none")
 	}
 }
+
+// On the tx-runner fixture the TxClosure reclaimer recovers the enclosing-fn→closure
+// edges the builder lost at the higher-order tx-runner seam: both the GENERIC wrapper
+// (RunInTxResult[T]) and the DIRECT (u.RunInTx(closure)) commands, each From the
+// enclosing function To its OWN `$1` closure, attributed via=tx-closure. The R2
+// NEGATIVE — a closure handed to a runner that only STORES it (StashCommand→Register)
+// — is NOT connected: no execution path invokes it.
+func TestTxClosureReclaimsGenericWrapper(t *testing.T) {
+	edges := reclaim.TxClosure(analyzeFixture(t, "txrunnersvc"))
+
+	got := map[string]string{} // From -> To
+	for _, e := range edges {
+		if e.Via != reclaim.ViaTxClosure {
+			t.Errorf("edge %v not attributed to the tx-closure reclaimer (via=%q)", e, e.Via)
+		}
+		// Every recovered edge connects a function to its OWN closure.
+		if base := trimClosureSuffix(e.To); base != e.From {
+			t.Errorf("edge does not connect a function to its own closure: %s -> %s", e.From, e.To)
+		}
+		// R2 negative: the stored-but-never-invoked closure must never be a target.
+		if strings.Contains(e.From, "StashCommand") || strings.Contains(e.To, "StashCommand") {
+			t.Errorf("R2 violation: connected a stored-but-never-invoked closure: %s -> %s", e.From, e.To)
+		}
+		got[e.From] = e.To
+	}
+
+	// The GENERIC wrapper command (RunInTxResult[T]) — the measured under-reporter — is
+	// recovered: its writing closure is reconnected to the command.
+	assertReclaimed(t, got, "CreateSubscriptionCommand).Handle")
+	// The DIRECT runner command is recovered too (closure invoked by RunInTx directly).
+	assertReclaimed(t, got, "DirectCommand).Handle")
+}
+
+// Integration: folding TxClosure's edges into the graph makes the orphaned write
+// VISIBLE from the command — the false-clean fix. Before reclaim, the forward reach of
+// CreateSubscriptionCommand.Handle never crosses its closure, so the INSERT is invisible;
+// after --reclaim it is reachable. base goldens are unaffected because Build never folds.
+func TestTxClosureMakesOrphanedWriteVisible(t *testing.T) {
+	res := analyzeFixture(t, "txrunnersvc")
+	g, err := graphio.Build(res, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	const handle = "(*example.com/txrunnersvc.CreateSubscriptionCommand).Handle"
+	if reachesInsert(g, handle) {
+		t.Fatalf("precondition: the generic-wrapper write should be orphaned (invisible) before reclaim")
+	}
+
+	added := graphio.ApplyReclaimers(g, res)
+	if added == 0 {
+		t.Fatal("ApplyReclaimers folded no tx-closure edges")
+	}
+	taggedFound := false
+	for _, e := range g.Edges {
+		if e.Via == reclaim.ViaTxClosure {
+			taggedFound = true
+		}
+	}
+	if !taggedFound {
+		t.Error("reclaimed edges must carry their via=tx-closure provenance in the graph")
+	}
+	if !reachesInsert(g, handle) {
+		t.Error("after --reclaim the command must reach its orphaned INSERT (the false-clean fix)")
+	}
+}
+
+// reachesInsert reports whether the forward reach of fqn in g crosses an
+// event_type_subscriptions INSERT boundary effect.
+func reachesInsert(g *graphio.Graph, fqn string) bool {
+	reachable := map[string]bool{fqn: true}
+	for changed := true; changed; {
+		changed = false
+		for _, e := range g.Edges {
+			if reachable[e.From] && !reachable[e.To] {
+				reachable[e.To] = true
+				changed = true
+			}
+		}
+	}
+	for to := range reachable {
+		if strings.Contains(to, "INSERT") && strings.Contains(to, "event_type_subscriptions") {
+			return true
+		}
+	}
+	return false
+}
+
+func trimClosureSuffix(fqn string) string {
+	if i := strings.LastIndex(fqn, "$"); i >= 0 {
+		return fqn[:i]
+	}
+	return fqn
+}
+
+func assertReclaimed(t *testing.T, got map[string]string, fromSuffix string) {
+	t.Helper()
+	for from, to := range got {
+		if strings.HasSuffix(from, fromSuffix) {
+			if !strings.Contains(to, "$") {
+				t.Errorf("reclaimed To for %s is not a closure: %q", fromSuffix, to)
+			}
+			return
+		}
+	}
+	t.Errorf("missing recovered tx-closure edge for %s; got %v", fromSuffix, got)
+}
