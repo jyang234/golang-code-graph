@@ -10,6 +10,7 @@ package reclaim
 import (
 	"go/token"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/ssa"
 
@@ -380,8 +381,22 @@ func Implementations(prog *ssa.Program, common *ssa.CallCommon) []*ssa.Function 
 // implementationsOver is the resolution kernel: the concrete implementations of meth over
 // the types in prog.RuntimeTypes() that implement iface. It is a pure function of
 // (prog, iface, meth) — which is why ImplFinder can memoise it.
+//
+// For a VALUE-receiver method, prog.RuntimeTypes() carries BOTH T and *T, and
+// prog.MethodValue(*T) is a synthesized promotion wrapper, not the real method (the dominant
+// real-fleet shape: event-bus's SQLUnitOfWork.RunInTx is a value receiver). unwrapPromotion
+// collapses that wrapper to the value method it delegates to, and the dedup folds the T / *T
+// pair into the one real impl — so the "every impl invokes" guard (allImplsInvokeParam) is not
+// poisoned by a wrapper whose body invokesParam cannot trace (a false abstain that, on a SHARED
+// interface resolution, would silently spread to every command dispatching through it).
+//
+// Dedup keeps the first occurrence. prog.RuntimeTypes() ranges a map, so its order is NOT
+// stable run-to-run; output determinism does not rest on this slice's order but on every
+// consumer being order-insensitive — allImplsInvokeParam is an all-quantifier, rebind sorts its
+// removals — exactly the contract Implementations documents below.
 func implementationsOver(prog *ssa.Program, iface *types.Interface, meth *types.Func) []*ssa.Function {
 	var out []*ssa.Function
+	seen := map[*ssa.Function]bool{}
 	for _, T := range prog.RuntimeTypes() {
 		if !types.Implements(T, iface) {
 			continue
@@ -390,11 +405,50 @@ func implementationsOver(prog *ssa.Program, iface *types.Interface, meth *types.
 		if sel == nil {
 			continue
 		}
-		if fn := prog.MethodValue(sel); fn != nil {
-			out = append(out, fn)
+		fn := unwrapPromotion(prog.MethodValue(sel))
+		if fn == nil || seen[fn] {
+			continue
 		}
+		seen[fn] = true
+		out = append(out, fn)
 	}
 	return out
+}
+
+// unwrapPromotion resolves a synthesized *T promotion wrapper to the value method (T).M it
+// delegates to. For a value-receiver method M, go/ssa synthesizes prog.MethodValue(*T) as a
+// wrapper (`t0 = ssa:wrapnilchk(recv); t1 = *t0; tail-call (T).M(t1, args…)`) whose own body
+// does NOT invoke M's func-value parameter — so invokesParam / DirectlyInvokesParam read FALSE
+// on it even though the real value method does invoke. The wrapper is not a distinct dynamic
+// target — it IS (T).M — so resolving it to its sole same-named static delegate is EXACT: the
+// wrapper invokes its parameter iff its delegate does, keeping the reclaimer R2-sound.
+//
+// The unwrap fires ONLY on a genuine promotion/indirection wrapper, identified by go/ssa's
+// Synthetic provenance prefix "wrapper for " (see go/ssa createWrapper). This is deliberately
+// NARROWER than "any synthetic function": a generic method INSTANCE is also synthetic
+// (Synthetic "instance of M") but has a real body and an SSA name (M[targs]) that go/ssa marks
+// "may not be unique" — scanning its body for a same-named static callee could substitute an
+// unrelated, name-colliding function as a bogus "delegate", which on rebind's edge-REMOVE path
+// would be a false absence and on TxClosure a false edge (an R2 violation). Gating on the
+// wrapper prefix excludes instances, thunks ("thunk for "), and bound methods, so a real method
+// and every non-wrapper synthetic is returned unchanged (identity) — only an actual promotion
+// wrapper is ever collapsed into its delegate.
+func unwrapPromotion(fn *ssa.Function) *ssa.Function {
+	if fn == nil || !strings.HasPrefix(fn.Synthetic, "wrapper for ") {
+		return fn // real method or non-wrapper synthetic: identity
+	}
+	for _, b := range fn.Blocks {
+		for _, instr := range b.Instrs {
+			call, ok := instr.(ssa.CallInstruction)
+			if !ok {
+				continue
+			}
+			if callee := call.Common().StaticCallee(); callee != nil && callee.Name() == fn.Name() {
+				return callee // the wrapper's sole delegation to (T).M
+			}
+		}
+	}
+	return fn
 }
 
 // implKey identifies an interface-method resolution. The interface is keyed by its

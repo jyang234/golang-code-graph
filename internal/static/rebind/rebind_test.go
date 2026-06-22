@@ -183,6 +183,7 @@ func TestRebindIsOptInOnly(t *testing.T) {
 const (
 	ifaceCmdA = "(*example.com/ifaceunionsvc.CmdA).Handle"
 	ifaceCmdB = "(*example.com/ifaceunionsvc.CmdB).Handle"
+	ifaceCmdC = "(*example.com/ifaceunionsvc.CmdC).Handle"
 	ifaceHub  = "example.com/ifaceunionsvc.invoke"
 )
 
@@ -213,6 +214,57 @@ func TestRebindDeUnionsInterfaceRunner(t *testing.T) {
 	}
 	if !reaches(g, ifaceCmdB, "table_b") || reaches(g, ifaceCmdB, "table_a") {
 		t.Error("CmdB must reach only its own write table_b after de-union")
+	}
+}
+
+// The soundness-dangerous REMOVE path on a VALUE-receiver interface runner: CmdC dispatches
+// through ValueRunner (value receiver), whose go/ssa *ValueRunner promotion wrapper does not
+// itself invoke the parameter. De-union must still resolve that wrapper to (ValueRunner).RunInTx
+// (DirectlyInvokesParam), REMOVE the value method's union edge, and ADD CmdC's own edge — so
+// CmdC reaches only table_c. Because ValueRunner shares TxRunner with *SQLRunner, this also
+// pins the CONTAGION repair on the remove side: the wrapper must NOT make the shared resolution
+// abstain (which would suppress de-union for CmdA/CmdB too). Differential: without the
+// unwrapPromotion fix runnersToDeUnion abstains interface-wide and every assertion here fails.
+func TestRebindDeUnionsValueReceiverInterfaceRunner(t *testing.T) {
+	res := analyzeFixture(t, "ifaceunionsvc")
+
+	// The value method's union→closure edge for CmdC is among the planned removals — proving the
+	// remove path reaches the VALUE receiver (not the unrelated *ValueRunner wrapper).
+	plan := rebind.Compute(res)
+	removedValueRunnerForC := false
+	for _, r := range plan.Remove {
+		if strings.Contains(r[0], "ifaceunionsvc.ValueRunner") && !strings.Contains(r[0], "*") &&
+			strings.Contains(r[1], "CmdC") {
+			removedValueRunnerForC = true
+		}
+	}
+	if !removedValueRunnerForC {
+		t.Errorf("value-receiver de-union must remove (ValueRunner).RunInTx→CmdC closure; got removals %v", plan.Remove)
+	}
+
+	g, err := graphio.Build(res, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	// Precondition: the shared interface union over-reports — CmdC reaches another command's write.
+	if !reaches(g, ifaceCmdC, "table_c") || !reaches(g, ifaceCmdC, "table_a") {
+		t.Fatalf("precondition: CmdC should reach its own table_c AND the unioned table_a before rebind")
+	}
+
+	added, removed := graphio.ApplyRebind(g, res)
+	if added == 0 || removed == 0 {
+		t.Fatalf("value-receiver interface rebind must add and remove edges, got +%d -%d", added, removed)
+	}
+	if !reaches(g, ifaceCmdC, "table_c") {
+		t.Error("CmdC must still reach its own write table_c after rebind")
+	}
+	if reaches(g, ifaceCmdC, "table_a") || reaches(g, ifaceCmdC, "table_b") {
+		t.Error("CmdC must NOT reach a sibling's write after de-union (the value-receiver over-report removed)")
+	}
+	// Contagion guard: the value-receiver impl must not have suppressed the pointer-receiver
+	// siblings' de-union.
+	if reaches(g, ifaceCmdA, "table_b") || reaches(g, ifaceCmdB, "table_a") {
+		t.Error("contagion: a value-receiver impl must not suppress de-union of the pointer-receiver siblings")
 	}
 }
 

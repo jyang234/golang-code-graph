@@ -5,6 +5,11 @@
 // CmdB's write. The escape-guarded de-union ADDs each command's own enclosing→closure edge
 // and REMOVEs the impl→closure union edges, so each command reaches only its own write.
 //
+// CmdC mirrors CmdA/CmdB but its runner (ValueRunner) has a VALUE receiver — the dominant
+// real shape, whose de-union is only reachable once the *ValueRunner promotion wrapper is
+// unwrapped; sharing TxRunner, it also guards that a value-receiver impl does not poison the
+// pointer-receiver siblings' de-union (contagion on the soundness-dangerous remove path).
+//
 // LeakCmd is the confinement adversary: its closure is passed both to the runner and to a
 // helper, so it ESCAPES and its union must be kept. MaybeCmd is the soundness adversary:
 // it dispatches through a SECOND interface (MaybeRunner) that has an eager AND a lazy impl,
@@ -35,6 +40,20 @@ func (r *SQLRunner) RunInTx(fn func(*Exec) error) error {
 	return fn(e)
 }
 
+// ValueRunner is a SECOND impl of TxRunner with a VALUE receiver (event-bus's dominant
+// shape). For a value receiver go/ssa carries both ValueRunner and a synthesized *ValueRunner
+// promotion wrapper; the wrapper does not itself invoke fn, so without unwrapping it the
+// "every impl directly invokes" check in runnersToDeUnion ABSTAINS — and because it rides the
+// SHARED TxRunner resolution, that abstain is CONTAGIOUS: it would suppress de-union for the
+// pointer-receiver CmdA/CmdB too. With the wrapper unwrapped to (ValueRunner).RunInTx, the
+// remove path correctly de-unions value-receiver runners as well.
+type ValueRunner struct{ db *sql.DB }
+
+func (r ValueRunner) RunInTx(fn func(*Exec) error) error {
+	e := &Exec{db: r.db}
+	return fn(e)
+}
+
 // Store holds the per-command writes (distinct tables so the over-report is observable).
 type Store struct{ db *sql.DB }
 
@@ -50,6 +69,11 @@ func (s *Store) writeB(ctx context.Context) error {
 
 func (s *Store) writeLeak(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, "INSERT INTO table_leak (id) VALUES ($1)", "1")
+	return err
+}
+
+func (s *Store) writeC(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "INSERT INTO table_c (id) VALUES ($1)", "1")
 	return err
 }
 
@@ -70,6 +94,17 @@ type CmdB struct {
 
 func (c *CmdB) Handle(ctx context.Context) error {
 	return c.u.RunInTx(func(e *Exec) error { return c.st.writeB(ctx) })
+}
+
+// CmdC is CONFINED like CmdA/CmdB but runs through the VALUE-receiver ValueRunner — the shape
+// whose de-union is only reachable once the *ValueRunner promotion wrapper is unwrapped.
+type CmdC struct {
+	u  TxRunner
+	st *Store
+}
+
+func (c *CmdC) Handle(ctx context.Context) error {
+	return c.u.RunInTx(func(e *Exec) error { return c.st.writeC(ctx) })
 }
 
 // invoke is a helper that ALSO invokes the closure handed to it.
@@ -121,6 +156,9 @@ func main() {
 	_ = (&CmdA{u: r, st: st}).Handle(ctx)
 	_ = (&CmdB{u: r, st: st}).Handle(ctx)
 	_ = (&LeakCmd{u: r, st: st}).Handle(ctx)
+	// Box a VALUE ValueRunner into TxRunner: the runtime type set then carries both
+	// ValueRunner and the synthesized *ValueRunner promotion wrapper sharing TxRunner.
+	_ = (&CmdC{u: ValueRunner{db: db}, st: st}).Handle(ctx)
 	// Box BOTH MaybeRunner impls so the runtime type set contains each.
 	_ = (&MaybeCmd{u: EagerRunner{}, st: st}).Handle(ctx)
 	_ = (&MaybeCmd{u: &LazyRunner{}, st: st}).Handle(ctx)

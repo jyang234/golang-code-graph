@@ -245,6 +245,13 @@ func TestTxClosureReclaimsGenericWrapper(t *testing.T) {
 	// generic wrapper is interface-dispatched, so recovery requires resolving the interface
 	// method to its single concrete impl and proving it invokes the parameter.
 	assertReclaimed(t, got, "IfaceCommand).Handle")
+	// The VALUE-receiver interface impl (event-bus's dominant shape): prog.MethodValue(*T) is a
+	// synthesized promotion wrapper that does not itself invoke the parameter, so without
+	// unwrapPromotion the "every impl invokes" guard abstains and this write stays orphaned.
+	// ValueRunner shares TxRunner with *SQLRunner, so this also pins the CONTAGION repair: a
+	// value-receiver impl must NOT poison the pointer-receiver IfaceCommand above. Differential:
+	// this assertion (and IfaceCommand's) fail without the unwrap+dedup fix.
+	assertReclaimed(t, got, "ValueIfaceCommand).Handle")
 }
 
 // Integration: folding TxClosure's edges into the graph makes the orphaned write

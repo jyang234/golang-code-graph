@@ -150,6 +150,37 @@ func (c *IfaceCommand) Handle(ctx context.Context) error {
 	return err
 }
 
+// --- Value-receiver interface impl: the dominant real-fleet shape. event-bus's
+// SQLUnitOfWork.RunInTx is a VALUE receiver, and for a value receiver go/ssa carries BOTH
+// ValueRunner and *ValueRunner in the runtime type set, where prog.MethodValue(*ValueRunner)
+// is a SYNTHESIZED promotion wrapper (deref + tail-call (ValueRunner).RunInTx) whose own body
+// does not invoke fn. Without unwrapping the wrapper, the "every impl invokes" guard abstains
+// and the write stays orphaned exactly as before the interface fix. ValueRunner shares TxRunner
+// with *SQLRunner, so this is also the CONTAGION case: the spurious wrapper rides the SHARED
+// (interface, method) resolution, so without the fix it would poison IfaceCommand too. ---
+
+// ValueRunner implements TxRunner with a VALUE receiver; like SQLRunner it invokes fn directly.
+type ValueRunner struct{ db *sql.DB }
+
+func (r ValueRunner) RunInTx(ctx context.Context, fn func(*Exec) error) error {
+	e := &Exec{db: r.db}
+	return fn(e)
+}
+
+// ValueIfaceCommand mirrors IfaceCommand but its runner has a VALUE receiver — the shape that
+// stays orphaned until the *ValueRunner promotion wrapper is unwrapped to the value method.
+type ValueIfaceCommand struct {
+	u  TxRunner
+	st *Store
+}
+
+func (c *ValueIfaceCommand) Handle(ctx context.Context) error {
+	_, err := RunInTxIface(ctx, c.u, func(e *Exec) (int, error) {
+		return c.st.InsertSubscription(ctx, e)
+	})
+	return err
+}
+
 // --- Adversarial: an interface runner with TWO implementations, one of which does NOT
 // invoke fn. The reclaimer must ABSTAIN — it cannot prove the closure is invoked, because
 // the dynamic implementation might be the lazy one. This pins that the recovery requires
@@ -194,6 +225,9 @@ func main() {
 	_ = (&DirectCommand{u: u, st: st}).Handle(ctx)
 	(&StashCommand{reg: &Registry{}, st: st}).Handle(ctx)
 	_ = (&IfaceCommand{u: &SQLRunner{db: db}, st: st}).Handle(ctx)
+	// Box a VALUE ValueRunner into TxRunner: the runtime type set then carries both
+	// ValueRunner and the synthesized *ValueRunner promotion wrapper sharing TxRunner.
+	_ = (&ValueIfaceCommand{u: ValueRunner{db: db}, st: st}).Handle(ctx)
 	// Box BOTH MaybeRunner impls so the call graph's runtime type set contains each.
 	_ = (&MaybeCommand{u: EagerRunner{}, st: st}).Handle()
 	_ = (&MaybeCommand{u: &LazyRunner{}, st: st}).Handle()
