@@ -233,13 +233,20 @@ func (c Card) Render() string {
 	if c.CoverOverApprox {
 		// The reverse reach crossed a HighFanOut dispatch — the set is an upper
 		// bound (every caller fanned onto every implementation), not a count.
-		entryTitle += " ≤ (over-approx via dispatch)"
+		entryTitle += graph.OverApproxCoverNote
 	}
 	section(entryTitle, c.Entrypoints)
 	section("⚡ Effects CERTAINLY committed before the fault", c.CertainlyCommitted)
 	section("⚡ Effects possibly committed before the fault", c.PossiblyCommitted)
 	section("Upstream callers", c.Callers)
-	section("Reachable boundary effects", c.Effects)
+	effectsTitle := "Reachable boundary effects"
+	if c.EffectsOverApprox {
+		// The forward cone crossed a HighFanOut dispatch — the effect set may include
+		// sibling-closure effects past the seam, so it is an upper bound (parity with
+		// the CLI `reach` lens, one source of truth for the wording).
+		effectsTitle += graph.OverApproxEffectsNote
+	}
+	section(effectsTitle, c.Effects)
 	if len(c.BlindSpots) > 0 {
 		fmt.Fprintf(&b, "🕳️  Blind spots on the traversed paths (%d) — claims above are unsound past these\n", len(c.BlindSpots))
 		graph.WriteBlindSpots(&b, c.BlindSpots, c.Annotations, func(s graph.BlindSpot) string {

@@ -322,6 +322,18 @@ func (ix *Index) DBEffects() (effects []DBEffect, unreadable int) {
 // so an entrypoint cover counted across one is an upper bound, not a count.
 const KindHighFanOut = "HighFanOut"
 
+// OverApproxCoverNote and OverApproxEffectsNote are the canonical disclosures appended
+// when a reach crosses a HighFanOut dispatch seam. They live here, with the schema owner
+// of CrossesHighFanOut, as ONE source of truth for the wording — both the CLI `reach`
+// and the MCP `impact` card render them, so the two lenses cannot drift (CLAUDE.md "one
+// source of truth"). Cover is the BACKWARD over-approx (every caller fanned onto every
+// implementation); Effects is the FORWARD one (the dispatch fans onto every sibling
+// closure, so the effect set may include their effects). Both are upper bounds ("≤").
+const (
+	OverApproxCoverNote   = " ≤ (over-approx via dispatch)"
+	OverApproxEffectsNote = " ≤ (over-approx via dispatch — may include sibling-closure effects past a HighFanOut seam)"
+)
+
 // CrossesHighFanOut reports whether any of the given nodes sits on a HighFanOut
 // blind spot — the test a cover renderer uses to mark its count as an
 // over-approximation when the reverse reach fanned out through a dispatch seam.

@@ -36,6 +36,13 @@ type Card struct {
 	// caller onto every implementation. The entrypoints are "≤", not a count.
 	CoverOverApprox bool `json:"cover_over_approx,omitempty"`
 
+	// EffectsOverApprox marks the reachable-effect set as an upper bound: the FORWARD
+	// reach passed through a HighFanOut dispatch seam (a shared higher-order runner
+	// fanning onto every closure that flows to it), so the effects may include
+	// sibling-closure effects past the seam, not just the suspects'. The dual of
+	// CoverOverApprox; the CLI `reach` lens discloses the same signal.
+	EffectsOverApprox bool `json:"effects_over_approx,omitempty"`
+
 	// Fault marks the what-if framing: the suspects are HYPOTHESIZED to be
 	// failing, and the card reads as fault propagation — entrypoints degraded,
 	// effects that may not have happened. Same evidence, same determinism; only
@@ -167,7 +174,9 @@ func ForNodes(ix *graph.Index, fqns []string) Card {
 		BlindSpots:  blind,
 		Annotations: annot,
 		// The implicated-entrypoint count is an upper bound iff the reverse reach
-		// to those entrypoints fanned out through a HighFanOut dispatch seam.
-		CoverOverApprox: ix.CrossesHighFanOut(callers),
+		// to those entrypoints fanned out through a HighFanOut dispatch seam; the
+		// reachable-effect set is an upper bound iff the FORWARD cone did.
+		CoverOverApprox:   ix.CrossesHighFanOut(callers),
+		EffectsOverApprox: ix.CrossesHighFanOut(coneSorted),
 	}
 }

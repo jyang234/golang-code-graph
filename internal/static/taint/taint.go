@@ -132,22 +132,76 @@ type analysis struct {
 	escapeSites map[string]bool
 }
 
+// prepared holds the cfg-INDEPENDENT indexes over prog's first-party code: the function
+// set (a whole-program ssautil.AllFunctions walk) and the field-load / caller indexes.
+// They are a pure function of prog, so prepare builds them ONCE and analyze reuses them
+// for every cfg — which is what lets AnalyzeBySource run per declared source without
+// re-walking the whole program each time. None of the shared maps/slices is mutated by a
+// run (seed/run only read fieldLoads/callsTo), so sharing them across runs is safe.
+type prepared struct {
+	prog       *ssabuild.Program
+	funcs      []*ssa.Function
+	fieldLoads map[fieldKey][]ssa.Value
+	callsTo    map[*ssa.Function][]ssa.CallInstruction
+}
+
+// prepare walks prog's first-party code once and builds the cfg-independent indexes.
+func prepare(prog *ssabuild.Program) *prepared {
+	p := &prepared{
+		prog:       prog,
+		funcs:      firstPartyFuncs(prog),
+		fieldLoads: map[fieldKey][]ssa.Value{},
+		callsTo:    map[*ssa.Function][]ssa.CallInstruction{},
+	}
+	for _, fn := range p.funcs {
+		for _, b := range fn.Blocks {
+			for _, instr := range b.Instrs {
+				switch x := instr.(type) {
+				case *ssa.FieldAddr:
+					if k, ok := fieldKeyOf(x.X.Type(), x.Field); ok {
+						for _, ref := range refs(x) {
+							if u, ok := ref.(*ssa.UnOp); ok && u.Op == token.MUL {
+								p.fieldLoads[k] = append(p.fieldLoads[k], u)
+							}
+						}
+					}
+				case *ssa.Field:
+					if k, ok := fieldKeyOf(x.X.Type(), x.Field); ok {
+						p.fieldLoads[k] = append(p.fieldLoads[k], x)
+					}
+				}
+				if call, ok := instr.(ssa.CallInstruction); ok {
+					if callee := call.Common().StaticCallee(); callee != nil {
+						p.callsTo[callee] = append(p.callsTo[callee], call)
+					}
+				}
+			}
+		}
+	}
+	return p
+}
+
 // Analyze runs the forward taint analysis over prog's first-party code and returns
 // the trichotomy report.
 func Analyze(prog *ssabuild.Program, cfg Config) Report {
+	return prepare(prog).analyze(cfg)
+}
+
+// analyze runs the forward taint analysis for one cfg over the prepared (cfg-independent)
+// indexes, with its own fresh per-run state.
+func (p *prepared) analyze(cfg Config) Report {
 	a := &analysis{
 		cfg:          cfg,
-		prog:         prog,
+		prog:         p.prog,
+		funcs:        p.funcs,
+		fieldLoads:   p.fieldLoads,
+		callsTo:      p.callsTo,
 		tainted:      map[ssa.Value]bool{},
 		taintedField: map[fieldKey]bool{},
-		fieldLoads:   map[fieldKey][]ssa.Value{},
-		callsTo:      map[*ssa.Function][]ssa.CallInstruction{},
 		retTainted:   map[*ssa.Function]bool{},
 		flowSeen:     map[Finding]bool{},
 		escapeSites:  map[string]bool{},
 	}
-	a.funcs = firstPartyFuncs(prog)
-	a.index()
 	sources := a.seed()
 	a.run()
 
@@ -192,52 +246,26 @@ func Analyze(prog *ssabuild.Program, cfg Config) Report {
 // pins the union identity. The point is that an aggregate FLOW from one source no
 // longer MASKS the others' NO-FLOW/ABSTAIN/FLOW status.
 func AnalyzeBySource(prog *ssabuild.Program, cfg Config) []SourceReport {
+	// Prepare the cfg-independent indexes ONCE and reuse them for every per-source run,
+	// rather than re-walking the whole program (firstPartyFuncs + index) per source.
+	p := prepare(prog)
 	var out []SourceReport
 	for _, fs := range cfg.SourceFuncs {
 		out = append(out, SourceReport{
 			Source: fs.Pkg + "#" + fs.Name,
-			Report: Analyze(prog, Config{SourceFuncs: []FuncSpec{fs}, Sinks: cfg.Sinks}),
+			Report: p.analyze(Config{SourceFuncs: []FuncSpec{fs}, Sinks: cfg.Sinks}),
 		})
 	}
 	for _, fs := range cfg.SourceFields {
 		out = append(out, SourceReport{
 			Source: fs.Pkg + "#" + fs.Type + "." + fs.Field,
-			Report: Analyze(prog, Config{SourceFields: []FieldSpec{fs}, Sinks: cfg.Sinks}),
+			Report: p.analyze(Config{SourceFields: []FieldSpec{fs}, Sinks: cfg.Sinks}),
 		})
 	}
 	// Canonical, run-independent order (the config slices are author-ordered; sorting on
 	// the intrinsic Source key keeps the decomposition byte-identical across runs).
 	sort.Slice(out, func(i, j int) bool { return out[i].Source < out[j].Source })
 	return out
-}
-
-// index precomputes the field-load and caller indexes over first-party code.
-func (a *analysis) index() {
-	for _, fn := range a.funcs {
-		for _, b := range fn.Blocks {
-			for _, instr := range b.Instrs {
-				switch x := instr.(type) {
-				case *ssa.FieldAddr:
-					if k, ok := fieldKeyOf(x.X.Type(), x.Field); ok {
-						for _, ref := range refs(x) {
-							if u, ok := ref.(*ssa.UnOp); ok && u.Op == token.MUL {
-								a.fieldLoads[k] = append(a.fieldLoads[k], u)
-							}
-						}
-					}
-				case *ssa.Field:
-					if k, ok := fieldKeyOf(x.X.Type(), x.Field); ok {
-						a.fieldLoads[k] = append(a.fieldLoads[k], x)
-					}
-				}
-				if call, ok := instr.(ssa.CallInstruction); ok {
-					if callee := call.Common().StaticCallee(); callee != nil {
-						a.callsTo[callee] = append(a.callsTo[callee], call)
-					}
-				}
-			}
-		}
-	}
 }
 
 // seed taints the source call-results and source field reads, returning how many

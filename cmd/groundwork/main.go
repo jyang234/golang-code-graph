@@ -393,7 +393,7 @@ func cmdReach(args []string) error {
 	if ix.CrossesHighFanOut(callers) {
 		// The reverse reach crossed a HighFanOut dispatch seam — the cover fans
 		// every caller onto every implementation, so this count is an upper bound.
-		coverNote = " ≤ (over-approx via dispatch)"
+		coverNote = graph.OverApproxCoverNote
 	}
 	fmt.Printf("live behind %d entrypoint(s)%s:\n", len(cover), coverNote)
 	for _, e := range cover {
@@ -404,10 +404,10 @@ func cmdReach(args []string) error {
 		// The FORWARD reach crossed a HighFanOut dispatch seam — the context-insensitive
 		// graph fans the single dispatch site onto EVERY callee that flows to it, so this
 		// effect set may include sibling-closure effects past the seam, not just this
-		// function's. An upper bound, mirroring the cover-side disclosure above. The MCP
-		// `reach` lens already discloses this; an agent reading the CLI must not inherit a
-		// silently over-broad blast radius.
-		effectsNote = " ≤ (over-approx via dispatch — may include sibling-closure effects past a HighFanOut seam)"
+		// function's. An upper bound, mirroring the cover-side disclosure above and the MCP
+		// impact card's EffectsOverApprox field (both render graph.OverApproxEffectsNote —
+		// one source of truth), so the CLI and MCP lenses disclose this identically.
+		effectsNote = graph.OverApproxEffectsNote
 	}
 	fmt.Printf("reachable external effects: %d%s\n", len(effects), effectsNote)
 	for _, e := range effects {

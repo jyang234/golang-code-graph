@@ -769,6 +769,31 @@ func frontierInput(g *Graph) *frontier.Input {
 	return in
 }
 
+// edgeKeySet returns the set of (From, To) keys of g's current edges — the dedup base
+// the opt-in fold passes (ApplyReclaimers, ApplyRebind) check against before adding.
+func (g *Graph) edgeKeySet() map[[2]string]bool {
+	m := make(map[[2]string]bool, len(g.Edges))
+	for _, e := range g.Edges {
+		m[[2]string{e.From, e.To}] = true
+	}
+	return m
+}
+
+// foldEdge appends one reclaimer/rebind edge (from→to, tagged via) to g as a Tier-2 edge
+// IFF both endpoints are graph nodes and the edge is not already present, updating
+// `present`. It is the ONE place the node-existence + (From, To) dedup discipline of the
+// opt-in fold passes lives (CLAUDE.md "one source of truth"), so ApplyReclaimers and
+// ApplyRebind cannot drift on what is foldable. Returns whether the edge was added.
+func (g *Graph) foldEdge(from, to, via string, present map[[2]string]bool, nodes map[string]bool) bool {
+	key := [2]string{from, to}
+	if !nodes[from] || !nodes[to] || present[key] {
+		return false
+	}
+	g.Edges = append(g.Edges, Edge{From: from, To: to, Tier: 2, Via: via})
+	present[key] = true
+	return true
+}
+
 // ApplyReclaimers runs the sound dispatch-seam reclaimers (reclaim package) over
 // res and folds the recovered edges into g, re-sorting and re-classifying the
 // frontier so it reflects the reclaimed graph. It is OPT-IN (D2): Build never calls
@@ -778,26 +803,21 @@ func frontierInput(g *Graph) *frontier.Input {
 // base-vs-reclaimed. Returns the number of edges added. Only edges between existing
 // nodes that are not already present are folded in.
 func ApplyReclaimers(g *Graph, res *analyze.Result) int {
-	existing := make(map[[2]string]bool, len(g.Edges))
-	for _, e := range g.Edges {
-		existing[[2]string{e.From, e.To}] = true
-	}
+	present := g.edgeKeySet()
+	nodes := g.nodeSet()
 	// Reuse the in-graph reclaim edges Build already computed (the unscoped case, where
 	// a frontier rides); a scoped build never computed them, so recompute there. Either
 	// way the SAME helper produces the set, so StrictServer runs ONCE on the common
 	// unscoped path and the folded edges match the frontier's reclaimable prediction.
 	edges := g.reclaimEdges
 	if g.Entrypoint != "" {
-		edges = reclaimEdges(res, g.nodeSet())
+		edges = reclaimEdges(res, nodes)
 	}
 	added := 0
 	for _, e := range edges {
-		if existing[[2]string{e.From, e.To}] {
-			continue
+		if g.foldEdge(e.From, e.To, e.Via, present, nodes) {
+			added++
 		}
-		g.Edges = append(g.Edges, Edge{From: e.From, To: e.To, Tier: 2, Via: e.Via})
-		existing[[2]string{e.From, e.To}] = true
-		added++
 	}
 	if added > 0 {
 		sortGraph(g)
@@ -823,19 +843,13 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 // ApplyReclaimers when anything changed.
 func ApplyRebind(g *Graph, res *analyze.Result) (added, removed int) {
 	plan := rebind.Compute(res)
+	present := g.edgeKeySet()
 	nodes := g.nodeSet()
 
-	existing := make(map[[2]string]bool, len(g.Edges))
-	for _, e := range g.Edges {
-		existing[[2]string{e.From, e.To}] = true
-	}
 	for _, e := range plan.Add {
-		if !nodes[e.From] || !nodes[e.To] || existing[[2]string{e.From, e.To}] {
-			continue
+		if g.foldEdge(e.From, e.To, rebind.Via, present, nodes) {
+			added++
 		}
-		g.Edges = append(g.Edges, Edge{From: e.From, To: e.To, Tier: 2, Via: rebind.Via})
-		existing[[2]string{e.From, e.To}] = true
-		added++
 	}
 
 	remove := make(map[[2]string]bool, len(plan.Remove))

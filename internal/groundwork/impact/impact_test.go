@@ -151,6 +151,39 @@ func TestCardCoverOverApproxAcrossDispatch(t *testing.T) {
 	}
 }
 
+// A FORWARD reach that crosses a HighFanOut dispatch over-approximates the reachable-
+// effect set (a shared runner fans onto every sibling closure); the card marks it as an
+// upper bound and discloses it, in parity with the CLI `reach` lens. The dual of
+// TestCardCoverOverApproxAcrossDispatch — here the seam is on the way OUT, not in.
+func TestCardEffectsOverApproxAcrossDispatch(t *testing.T) {
+	const src = "example.com/svc/internal/app.Command"
+	const runner = "(*example.com/svc/internal/tx.UnitOfWork).RunInTx"
+	const sibling = "(*example.com/svc/internal/app.Command).Handle$1"
+	g := &graph.Graph{
+		Nodes: []graph.Node{
+			{FQN: src, Sig: "func()", Tier: 1},
+			{FQN: runner, Sig: "func()", Tier: 1},
+			{FQN: sibling, Sig: "func()", Tier: 1},
+		},
+		Edges: []graph.Edge{
+			{From: src, To: runner, Tier: 2},
+			{From: runner, To: sibling, Tier: 2},
+			{From: sibling, To: "boundary:db INSERT t", Tier: 2, Boundary: "outbound-sync"},
+		},
+		// The shared runner's single invoke site fanned onto many sibling closures.
+		BlindSpots: []graph.BlindSpot{{Kind: graph.KindHighFanOut, Site: runner, Detail: "resolved to 12 closures"}},
+	}
+	ix := graph.NewIndex(g)
+	c := ForNodes(ix, []string{src})
+
+	if !c.EffectsOverApprox {
+		t.Fatalf("forward cone crossed a HighFanOut dispatch but EffectsOverApprox is false")
+	}
+	if !strings.Contains(c.Render(), "sibling-closure effects past a HighFanOut seam") {
+		t.Fatalf("render must annotate the over-approximated effect set:\n%s", c.Render())
+	}
+}
+
 // O2: card determinism across runs.
 func TestCardDeterministic(t *testing.T) {
 	ix := index(t, "layeredsvc.graph.json")

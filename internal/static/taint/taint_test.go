@@ -231,3 +231,29 @@ func TestDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// The per-source decomposition is a new canonical-ordering path (it sorts on the Source
+// key), so it ships its own byte-identical-across-runs guard (CLAUDE.md: "New ordering or
+// canonicalization paths ship with a determinism test"). Map-iteration randomness in the
+// shared prepared indexes or an unsorted per-source list would surface here.
+func TestAnalyzeBySourceDeterministic(t *testing.T) {
+	cfg := taint.Config{
+		SourceFuncs:  []taint.FuncSpec{src("sourceMap"), src("sourceDirect"), src("sourceClean")},
+		SourceFields: []taint.FieldSpec{{Pkg: pkg, Type: "Recipient", Field: "Secret"}},
+		Sinks:        []taint.FuncSpec{sink("sinkMap"), sink("sinkDirect"), sink("sinkFieldRead")},
+	}
+	prog := analyzeFixture(t).Program
+	want, err := json.Marshal(taint.AnalyzeBySource(prog, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 25; i++ {
+		got, err := json.Marshal(taint.AnalyzeBySource(prog, cfg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("per-source decomposition not deterministic across runs:\n want %s\n got  %s", want, got)
+		}
+	}
+}
