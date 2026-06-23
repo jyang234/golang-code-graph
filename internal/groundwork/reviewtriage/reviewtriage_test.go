@@ -7,12 +7,10 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 )
 
-// TestBuildPartitionsVouchedAndFocus pins the core contract: a changed function with
-// a fully-resolved effect surface is VOUCHED (and its complete evidence is rendered),
-// while a changed function that touches a disclosed blind spot is FOCUS (with the
-// reason rendered). Both functions changed (signature moved), so the partition — not
-// the change detection — is what is under test.
-func TestBuildPartitionsVouchedAndFocus(t *testing.T) {
+// TestNewBlindVsAccounted pins the core split: a changed function with a fully-resolved
+// effect surface is ACCOUNTED (complete evidence rendered), while a changed function that
+// introduces a blind spot (the base had none) is NEW BLIND (reason + FLOOR rendered).
+func TestNewBlindVsAccounted(t *testing.T) {
 	base := &graph.Graph{
 		Nodes: []graph.Node{{FQN: "svc.Clean", Sig: "old"}, {FQN: "svc.Blind", Sig: "old"}},
 	}
@@ -29,35 +27,85 @@ func TestBuildPartitionsVouchedAndFocus(t *testing.T) {
 	}
 
 	rep := Build(base, branch)
-
-	if got := len(rep.Vouched) + len(rep.Focus); got != 2 {
-		t.Fatalf("want 2 changed functions partitioned, got %d (%+v / %+v)", got, rep.Vouched, rep.Focus)
+	if len(rep.NewBlind) != 1 || rep.NewBlind[0].FQN != "svc.Blind" {
+		t.Errorf("svc.Blind should be NEW BLIND (base had no blind spot): %+v", rep.NewBlind)
 	}
-	if len(rep.Vouched) != 1 || rep.Vouched[0].FQN != "svc.Clean" {
-		t.Errorf("svc.Clean should be VOUCHED (resolved effect, no blind spot): %+v", rep.Vouched)
+	if len(rep.Accounted) != 1 || rep.Accounted[0].FQN != "svc.Clean" {
+		t.Errorf("svc.Clean should be ACCOUNTED (resolved effect, no blind spot): %+v", rep.Accounted)
 	}
-	if len(rep.Focus) != 1 || rep.Focus[0].FQN != "svc.Blind" {
-		t.Errorf("svc.Blind should be FOCUS (reflection blind spot): %+v", rep.Focus)
-	}
-	if len(rep.Focus) == 1 && len(rep.Focus[0].Reasons) == 0 {
-		t.Error("a FOCUS change must carry at least one reason the tool cannot vouch")
+	if len(rep.Carried) != 0 {
+		t.Errorf("nothing should be carried here: %+v", rep.Carried)
 	}
 
 	md := rep.RenderMarkdown()
-	// The vouched change must expose its complete, checkable effect surface as evidence.
 	if !strings.Contains(md, "db SELECT users") || !strings.Contains(md, "COMPLETE boundary-effect surface") {
-		t.Errorf("vouched evidence (the resolved effect surface) not rendered:\n%s", md)
+		t.Errorf("accounted evidence (the resolved effect surface) not rendered:\n%s", md)
 	}
-	// The focus change must name the blind spot, and its evidence must read as a FLOOR.
 	if !strings.Contains(md, "reflection") || !strings.Contains(md, "FLOOR") {
-		t.Errorf("focus reason/floor not rendered:\n%s", md)
+		t.Errorf("new-blind reason/floor not rendered:\n%s", md)
+	}
+	if !strings.Contains(md, "not approval") {
+		t.Errorf("the accounted zone must state it is NOT approval:\n%s", md)
 	}
 }
 
-// TestSeverityTrivialStaysVouched pins #2: a change whose only forward blind spot is
-// producer-tagged "trivial" (a benign seam) is NOT pulled into focus — it stays
-// vouched, but the benign seam is still disclosed so completeness is never over-claimed.
-func TestSeverityTrivialStaysVouched(t *testing.T) {
+// TestNewVsCarriedBlindness pins the diff-delta heart of the three-zone model: a
+// pre-existing blind spot on an unchanged downstream node is CARRIED (not this MR's
+// fault), while a blind spot the change NEWLY reaches (via an added edge) is NEW. The
+// function that does both lands in NEW (new blindness dominates) and discloses the
+// carried part too.
+func TestNewVsCarriedBlindness(t *testing.T) {
+	base := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.A", Sig: "o"}, {FQN: "svc.B", Sig: "o"}, {FQN: "svc.deep"}},
+		Edges: []graph.Edge{{From: "svc.A", To: "svc.deep"}, {From: "svc.B", To: "svc.deep"}},
+		// deep is already blind on both A and B's paths in the base.
+		BlindSpots: []graph.BlindSpot{{Kind: "reflect", Site: "svc.deep", Detail: "d"}},
+	}
+	branch := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.A", Sig: "n"}, {FQN: "svc.B", Sig: "n2"}, {FQN: "svc.deep"}, {FQN: "svc.new"}},
+		Edges: []graph.Edge{
+			{From: "svc.A", To: "svc.deep"},
+			{From: "svc.B", To: "svc.deep"},
+			{From: "svc.B", To: "svc.new"}, // B newly reaches a newly-blind node
+		},
+		BlindSpots: []graph.BlindSpot{
+			{Kind: "reflect", Site: "svc.deep", Detail: "d"}, // pre-existing
+			{Kind: "reflect", Site: "svc.new", Detail: "x"},  // newly reachable from B
+		},
+	}
+
+	rep := Build(base, branch)
+
+	// A only carries the pre-existing deep blindness ⇒ Carried.
+	if len(rep.Carried) != 1 || rep.Carried[0].FQN != "svc.A" {
+		t.Errorf("svc.A should be CARRIED (deep was already blind in base): carried=%+v", rep.Carried)
+	}
+	// B newly reaches svc.new ⇒ New blind, but it also carries deep. (svc.new, a brand-new
+	// blind function, is correctly NEW too — so locate B by name, don't assume the count.)
+	var b *ChangedFn
+	for i := range rep.NewBlind {
+		if rep.NewBlind[i].FQN == "svc.B" {
+			b = &rep.NewBlind[i]
+		}
+	}
+	if b == nil {
+		t.Fatalf("svc.B should be NEW BLIND (newly reaches svc.new): newBlind=%+v", rep.NewBlind)
+	}
+	if len(b.NewSeams) != 1 || b.NewSeams[0].Site != "svc.new" {
+		t.Errorf("svc.B's NEW seam should be svc.new, got %+v", b.NewSeams)
+	}
+	if len(b.CarriedSeams) != 1 || b.CarriedSeams[0].Site != "svc.deep" {
+		t.Errorf("svc.B should also carry the pre-existing svc.deep seam, got %+v", b.CarriedSeams)
+	}
+	if !strings.Contains(rep.RenderMarkdown(), "also passes through pre-existing blindness") {
+		t.Errorf("a new-blind change that also carries blindness must disclose the carried part:\n%s", rep.RenderMarkdown())
+	}
+}
+
+// TestSeverityTrivialStaysAccounted pins #2 under the three-zone model: a change whose
+// only forward blind spot is producer-tagged "trivial" stays ACCOUNTED (not blind), with
+// the benign seam disclosed so completeness is never over-claimed.
+func TestSeverityTrivialStaysAccounted(t *testing.T) {
 	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.Benign", Sig: "old"}}}
 	branch := &graph.Graph{
 		Nodes:       []graph.Node{{FQN: "svc.Benign", Sig: "new"}},
@@ -65,21 +113,20 @@ func TestSeverityTrivialStaysVouched(t *testing.T) {
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /b", Fn: "svc.Benign"}},
 	}
 	rep := Build(base, branch)
-	if len(rep.Focus) != 0 {
-		t.Fatalf("a trivial-severity seam must not trigger focus, got %+v", rep.Focus)
+	if len(rep.NewBlind) != 0 || len(rep.Carried) != 0 {
+		t.Fatalf("a trivial seam must not be blind: new=%+v carried=%+v", rep.NewBlind, rep.Carried)
 	}
-	if len(rep.Vouched) != 1 || len(rep.Vouched[0].BenignSeams) != 1 {
-		t.Fatalf("the benign seam must be vouched AND disclosed, got %+v", rep.Vouched)
+	if len(rep.Accounted) != 1 || len(rep.Accounted[0].BenignSeams) != 1 {
+		t.Fatalf("the benign seam must be accounted AND disclosed, got %+v", rep.Accounted)
 	}
 	if !strings.Contains(rep.RenderMarkdown(), "producer-tagged trivial") {
 		t.Errorf("the set-aside benign seam was not disclosed:\n%s", rep.RenderMarkdown())
 	}
 }
 
-// TestFocusRankedByConsequence pins #4: focus items are ordered most-consequential
-// first — a critical-tier change ahead of a low-tier one. Both have a forward blind
-// spot, so the partition is fixed and only the ORDER is under test.
-func TestFocusRankedByConsequence(t *testing.T) {
+// TestNewBlindRankedByConsequence pins #4: the new-blind zone orders the most
+// consequential change first (critical tier ahead of low tier).
+func TestNewBlindRankedByConsequence(t *testing.T) {
 	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.Low", Sig: "o"}, {FQN: "svc.Crit", Sig: "o"}}}
 	branch := &graph.Graph{
 		Nodes: []graph.Node{{FQN: "svc.Low", Sig: "n", Tier: 3}, {FQN: "svc.Crit", Sig: "n", Tier: 1}},
@@ -93,17 +140,17 @@ func TestFocusRankedByConsequence(t *testing.T) {
 		},
 	}
 	rep := Build(base, branch)
-	if len(rep.Focus) != 2 {
-		t.Fatalf("want 2 focus changes, got %+v", rep.Focus)
+	if len(rep.NewBlind) != 2 {
+		t.Fatalf("want 2 new-blind changes, got %+v", rep.NewBlind)
 	}
-	if rep.Focus[0].FQN != "svc.Crit" {
-		t.Errorf("focus order = [%s, %s], want the critical-tier change first", rep.Focus[0].FQN, rep.Focus[1].FQN)
+	if rep.NewBlind[0].FQN != "svc.Crit" {
+		t.Errorf("new-blind order = [%s, %s], want critical-tier first", rep.NewBlind[0].FQN, rep.NewBlind[1].FQN)
 	}
 }
 
-// TestCallerBlindSpotDoesNotForceFocus pins #1 at the package boundary: a clean change
-// that is merely CALLED by reflective code stays vouched — the blind spot is in the
-// caller (reverse reach), not in what the change can do.
+// TestCallerBlindSpotDoesNotForceFocus pins #1: a clean change merely CALLED by
+// reflective code stays accounted — the blind spot is in the caller (reverse reach),
+// not in what the change can do.
 func TestCallerBlindSpotDoesNotForceFocus(t *testing.T) {
 	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.Clean", Sig: "o"}}}
 	branch := &graph.Graph{
@@ -116,22 +163,20 @@ func TestCallerBlindSpotDoesNotForceFocus(t *testing.T) {
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /x", Fn: "svc.RefCaller"}},
 	}
 	rep := Build(base, branch)
-	// svc.Clean changed; svc.RefCaller is unchanged (same sig, no new edge in base→branch? it is new here, so it is "changed" too).
-	var clean *ChangedFn
-	for i := range rep.Vouched {
-		if rep.Vouched[i].FQN == "svc.Clean" {
-			clean = &rep.Vouched[i]
+	found := false
+	for _, cf := range rep.Accounted {
+		if cf.FQN == "svc.Clean" {
+			found = true
 		}
 	}
-	if clean == nil {
-		t.Fatalf("svc.Clean must be VOUCHED despite a reflective caller; focus=%+v vouched=%+v", rep.Focus, rep.Vouched)
+	if !found {
+		t.Fatalf("svc.Clean must be ACCOUNTED despite a reflective caller; new=%+v carried=%+v accounted=%+v", rep.NewBlind, rep.Carried, rep.Accounted)
 	}
 }
 
-// TestRenderMermaidZonesAndSafety pins the diagram: it declares both zone classes,
-// colors a focus change with its blind-seam node, a vouched change green, shares an
-// effect node, and entity-escapes the angle brackets a <dynamic> effect carries (an
-// unescaped "<" would break the Mermaid parser).
+// TestRenderMermaidZonesAndSafety pins the diagram: it declares all three zone classes,
+// colors a new-blind change with its seam node, and entity-escapes the angle brackets a
+// <dynamic> effect carries (an unescaped "<" would break the Mermaid parser).
 func TestRenderMermaidZonesAndSafety(t *testing.T) {
 	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.Clean", Sig: "o"}, {FQN: "svc.Dyn", Sig: "o"}}}
 	branch := &graph.Graph{
@@ -143,8 +188,7 @@ func TestRenderMermaidZonesAndSafety(t *testing.T) {
 		BlindSpots: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "svc.Dyn", Detail: "non-const topic"}},
 	}
 	md := Build(base, branch).RenderMermaid()
-
-	for _, want := range []string{"flowchart LR", "classDef focus", "classDef vouched", ":::focus", ":::vouched", ":::blind"} {
+	for _, want := range []string{"flowchart LR", "classDef newblind", "classDef carried", "classDef accounted", ":::newblind", ":::accounted"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("mermaid missing %q:\n%s", want, md)
 		}
@@ -154,13 +198,13 @@ func TestRenderMermaidZonesAndSafety(t *testing.T) {
 	}
 }
 
-// TestBuildNoStructuralChange: identical graphs ⇒ nothing to triage, and the render
-// says so explicitly rather than emitting a blank page (silence is never a silent pass).
+// TestBuildNoStructuralChange: identical graphs ⇒ nothing to triage, and the render says
+// so explicitly rather than emitting a blank page (silence is never a silent pass).
 func TestBuildNoStructuralChange(t *testing.T) {
 	g := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.A", Sig: "s"}}}
 	rep := Build(g, g)
-	if len(rep.Vouched)+len(rep.Focus) != 0 {
-		t.Fatalf("identical graphs must yield no changed functions, got %+v / %+v", rep.Vouched, rep.Focus)
+	if len(rep.NewBlind)+len(rep.Carried)+len(rep.Accounted) != 0 {
+		t.Fatalf("identical graphs must yield no changed functions, got %+v / %+v / %+v", rep.NewBlind, rep.Carried, rep.Accounted)
 	}
 	if !strings.Contains(rep.RenderMarkdown(), "No structural change detected") {
 		t.Errorf("a no-change render must say so explicitly:\n%s", rep.RenderMarkdown())

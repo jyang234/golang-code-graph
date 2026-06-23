@@ -1,39 +1,34 @@
-// Package reviewtriage is a PROTOTYPE human-reviewer triage surface: given the
-// base and branch graphs of an MR, it partitions the *changed* functions into two
-// zones for a human reviewer drowning in diff volume —
+// Package reviewtriage is a PROTOTYPE human-reviewer triage surface: given the base
+// and branch graphs of an MR, it sorts the *changed* functions into three zones for a
+// reviewer drowning in diff volume, by the inverse of the tool's own confidence AND by
+// what THIS diff actually moved —
 //
-//   - VOUCHED: every path through the change is statically resolved, so the tool
-//     can show the COMPLETE evidence (which entrypoints it is live behind, the exact
-//     boundary-effect surface it can reach) and the reviewer can verify that evidence
-//     against the code rather than re-derive it. "Don't take my word for it — here is
-//     the proof, go check it."
-//   - FOCUS: the change touches or sits behind a disclosed blind spot, so the tool
-//     CANNOT give complete evidence. These are exactly where a reviewer's scarce
-//     attention should go — both because the tool can't vouch and because a blind
-//     spot is precisely where a hallucinated or poisoned understanding can hide.
+//   - NEW BLIND (focus): the change introduces or newly reaches a blind spot — the
+//     tool couldn't see here before, and the change now routes into the blindness. This
+//     MR made something newly unverifiable; flag it loud.
+//   - CARRIED BLIND: the change is resolved at its own level, but its effect surface
+//     passes through a blind spot that ALREADY existed on this path. Not introduced
+//     here — so it doesn't dominate — but disclosed, never background.
+//   - ACCOUNTED: the forward cone is fully resolved, so the tool can show the COMPLETE
+//     evidence (entrypoint cover, exact effect surface) for the reviewer to check.
+//     This is NOT "approved": the tool vouches for STRUCTURE, not for correctness or
+//     intent — the reviewer still verifies the resolved effects are the right ones. The
+//     tool accepts nothing at face value; "accounted" only means "nothing here is
+//     hidden from you."
 //
-// The zoning rule is deliberately tight (over-flagging FOCUS destroys the signal it
-// exists to give):
-//
-//  1. FORWARD-ONLY. A change's trustworthiness is about what it can DO (its forward
-//     cone to effects), not who can reach it. A blind spot in a CALLER does not make
-//     the change unverifiable, so only forward-cone blind spots drive FOCUS; the
-//     reverse-reach over-approximation (CoverOverApprox) merely qualifies the
-//     "live behind" evidence.
-//  2. SEVERITY-AWARE. The producer tags benign seams (a context.CancelFunc dispatch
-//     and the like) "trivial"; those are set aside from the FOCUS decision — but
-//     still disclosed, so a vouched change never silently over-claims completeness.
-//  3. RANKED. Focus items are ordered by consequence (salience tier, then whether the
-//     change can mutate state, then blast radius), so a reviewer with little time sees
-//     the most consequential one first.
+// This serves the two founding goals: (a) combat hallucination/context poisoning by
+// being a deterministic reference frame whose incompleteness is LOUD — and, for a diff,
+// whose NEWLY-incomplete regions are loudest, because that is where a poisoned
+// understanding most easily slips in unreviewed; (b) route a reviewer's verification
+// effort by confidence × novelty. Pure composition over the graph index and the impact
+// evidence engine — a pure function of (base, branch), no policy, no verdict.
 //
 // PROTOTYPE scope/limits (ride with the report): the changed set is the set-based
-// node/edge/effect delta (a new call *site* to an already-called target is not a new
-// edge); the per-function evidence is a static blast radius (what the change COULD
-// touch, not the route a given input takes); a VOUCHED change is vouched for STRUCTURE
-// only (whether the resolved effects are the RIGHT ones is the reviewer's call); and a
-// FOCUS blind spot is any in the forward cone, NOT yet distinguished by whether THIS
-// MR introduced it (the planned three-state refinement).
+// node/edge/effect delta; the per-function evidence is a static blast radius (what the
+// change COULD touch, not the route a given input takes); novelty is computed by
+// comparing each function's base vs branch FORWARD blind-spot set, so a brand-new call
+// SITE to an already-reachable blind spot reads as carried, not new (the set-based
+// limit); and "accounted" is structural completeness, never approval.
 package reviewtriage
 
 import (
@@ -48,50 +43,64 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/sqlverb"
 )
 
-// ChangedFn is one changed function with the checkable evidence and, when the tool
-// cannot fully vouch, the reasons why (empty Reasons ⇒ vouched). Deterministic: every
-// field derives from sorted graph data.
+// ChangedFn is one changed function with its evidence and the forward blind spots that
+// keep the tool from fully accounting for it, split by whether THIS MR introduced them.
+// Deterministic: every field derives from sorted graph data.
 type ChangedFn struct {
 	FQN  string `json:"fqn"`
 	Tier int    `json:"tier,omitempty"`
 
 	// Evidence — the facts a reviewer can check against the code.
 	Entrypoints     []string `json:"entrypoints,omitempty"`       // reverse-reach cover: the routes it is live behind
-	CoverUpperBound bool     `json:"cover_upper_bound,omitempty"` // the cover crossed a reverse HighFanOut seam — context, NOT a focus reason (#1)
+	CoverUpperBound bool     `json:"cover_upper_bound,omitempty"` // the cover crossed a reverse HighFanOut seam — context, not a zone reason (#1)
 	Effects         []string `json:"effects,omitempty"`           // forward boundary effects it can reach (human-readable)
 
-	// Reasons the tool cannot fully vouch (empty ⇒ vouched): forward-cone blind spots
-	// of non-trivial severity, plus a forward HighFanOut over-approximation.
-	Reasons           []string          `json:"reasons,omitempty"`
-	Blind             []graph.BlindSpot `json:"blind,omitempty"`               // the raw serious forward blind spots (Reasons rendered; this carries the kinds the diagram colors)
-	EffectsUpperBound bool              `json:"effects_upper_bound,omitempty"` // forward HighFanOut: the effect surface is an upper bound
+	// NewSeams are serious forward blind spots this MR introduced or newly reaches;
+	// CarriedSeams pre-existed on this path. The split is what separates the focus zone
+	// (new) from the carried zone (disclosed, not new).
+	NewSeams     []graph.BlindSpot `json:"new_seams,omitempty"`
+	CarriedSeams []graph.BlindSpot `json:"carried_seams,omitempty"`
+	BenignSeams  []string          `json:"benign_seams,omitempty"` // trivial-severity seams, set aside but disclosed (#2)
 
-	// BenignSeams are trivial-severity forward blind spots set aside from the FOCUS
-	// decision (#2) but disclosed so a vouched change never over-claims completeness.
-	BenignSeams []string `json:"benign_seams,omitempty"`
+	NewOverApprox     bool `json:"new_over_approx,omitempty"`     // a forward HighFanOut over-approximation introduced by this MR
+	CarriedOverApprox bool `json:"carried_over_approx,omitempty"` // a forward HighFanOut that pre-existed
 }
 
-// Report is the two-zone triage of an MR's changed functions. Focus is ordered by
-// consequence; Vouched stays in FQN order (it is the low-priority zone by definition).
+// Report is the three-zone triage of an MR's changed functions, ordered by descending
+// attention: new blindness, then carried blindness, then the fully-accounted rest.
 type Report struct {
 	BaseNodes   int         `json:"base_nodes"`
 	BranchNodes int         `json:"branch_nodes"`
-	Vouched     []ChangedFn `json:"vouched,omitempty"`
-	Focus       []ChangedFn `json:"focus,omitempty"`
+	NewBlind    []ChangedFn `json:"new_blind,omitempty"`
+	Carried     []ChangedFn `json:"carried,omitempty"`
+	Accounted   []ChangedFn `json:"accounted,omitempty"`
 }
 
 // Build computes the triage over the BRANCH graph (the post-merge reality the reviewer
-// is judging). The FOCUS decision uses the FORWARD cone only (#1) and ignores
-// trivial-severity seams (#2); the evidence (entrypoint cover, effect surface) comes
-// from the full impact card. Focus is then ranked by consequence (#4).
+// is judging). For each changed function it compares the branch forward blind-spot set
+// against the BASE one to tell new blindness from carried (the diff-delta that keeps a
+// pre-existing blind spot from reading as this MR's fault, and a new one from blending
+// into the background). The blind zones are consequence-ranked (#4).
 func Build(base, branch *graph.Graph) Report {
-	ix := graph.NewIndex(branch)
+	branchIx, baseIx := graph.NewIndex(branch), graph.NewIndex(base)
+	baseNode := nodeSet(base)
 	tier := tierLookup(branch)
-	var vouched, focus []ChangedFn
+	var newBlind, carried, accounted []ChangedFn
 	for _, fqn := range changedFns(base, branch) {
-		card := impact.ForNodes(ix, []string{fqn})                       // evidence: reverse cover + forward effects
-		fwdBlind, fwdOver := impact.ForwardBlindSpots(ix, []string{fqn}) // decision: forward-only (#1)
-		serious, benign := splitSeverity(fwdBlind)                       // set aside benign seams (#2)
+		card := impact.ForNodes(branchIx, []string{fqn})                             // evidence: reverse cover + forward effects
+		branchBlind, branchOver := impact.ForwardBlindSpots(branchIx, []string{fqn}) // forward-only (#1)
+		branchSerious, benign := splitSeverity(branchBlind)                          // set aside benign seams (#2)
+
+		// Base forward state for the SAME function — empty for a function new in this MR
+		// (so all its blindness is, correctly, new).
+		var baseSerious []graph.BlindSpot
+		baseOver := false
+		if baseNode[fqn] {
+			pb, po := impact.ForwardBlindSpots(baseIx, []string{fqn})
+			baseSerious, _ = splitSeverity(pb)
+			baseOver = po
+		}
+		newSeams, carriedSeams := splitNewCarried(branchSerious, baseSerious)
 
 		cf := ChangedFn{
 			FQN:               fqn,
@@ -99,25 +108,54 @@ func Build(base, branch *graph.Graph) Report {
 			Entrypoints:       card.Entrypoints,
 			CoverUpperBound:   card.CoverOverApprox,
 			Effects:           trimmedEffects(card.Effects),
-			EffectsUpperBound: fwdOver,
+			NewSeams:          newSeams,
+			CarriedSeams:      carriedSeams,
 			BenignSeams:       benignNotes(benign),
+			NewOverApprox:     branchOver && !baseOver,
+			CarriedOverApprox: branchOver && baseOver,
 		}
-		if len(serious) > 0 || fwdOver {
-			cf.Reasons = seriousReasons(serious, fwdOver)
-			cf.Blind = serious
-			focus = append(focus, cf)
-		} else {
-			vouched = append(vouched, cf)
+		switch {
+		case len(cf.NewSeams) > 0 || cf.NewOverApprox:
+			newBlind = append(newBlind, cf) // this MR made it unverifiable — focus
+		case len(cf.CarriedSeams) > 0 || cf.CarriedOverApprox:
+			carried = append(carried, cf) // blind, but not newly so — disclosed, not background
+		default:
+			accounted = append(accounted, cf) // complete evidence — NOT approval
 		}
 	}
-	sortFocus(focus) // most consequential first (#4)
+	sortByConsequence(newBlind)
+	sortByConsequence(carried)
+	// accounted keeps changedFns' FQN order (the low-attention zone).
 	return Report{
 		BaseNodes:   len(base.Nodes),
 		BranchNodes: len(branch.Nodes),
-		Vouched:     vouched,
-		Focus:       focus,
+		NewBlind:    newBlind,
+		Carried:     carried,
+		Accounted:   accounted,
 	}
 }
+
+// splitNewCarried partitions the branch's serious forward blind spots into those NOT
+// present in the base forward set (new — this MR introduced or newly reaches them) and
+// those present in both (carried). The seam identity is (Kind, Site, Detail), the same
+// key the impact engine dedups on, so a blind spot newly REACHED via an added edge (its
+// site existed but was unreachable from this function in the base) is correctly new.
+func splitNewCarried(branchSerious, baseSerious []graph.BlindSpot) (newSeams, carried []graph.BlindSpot) {
+	had := map[string]bool{}
+	for _, b := range baseSerious {
+		had[seamKey(b)] = true
+	}
+	for _, b := range branchSerious {
+		if had[seamKey(b)] {
+			carried = append(carried, b)
+		} else {
+			newSeams = append(newSeams, b)
+		}
+	}
+	return newSeams, carried
+}
+
+func seamKey(b graph.BlindSpot) string { return b.Kind + "\x00" + b.Site + "\x00" + b.Detail }
 
 // changedFns is the sorted set of branch functions the MR structurally moved: new
 // functions, signature changes, and functions that gained an outgoing call or effect.
@@ -126,10 +164,7 @@ func changedFns(base, branch *graph.Graph) []string {
 	for _, n := range base.Nodes {
 		baseSig[n.FQN] = n.Sig
 	}
-	branchNode := make(map[string]bool, len(branch.Nodes))
-	for _, n := range branch.Nodes {
-		branchNode[n.FQN] = true
-	}
+	branchNode := nodeSet(branch)
 	changed := map[string]bool{}
 	for _, n := range branch.Nodes {
 		if old, existed := baseSig[n.FQN]; !existed || old != n.Sig {
@@ -151,10 +186,10 @@ func changedFns(base, branch *graph.Graph) []string {
 	return setutil.SortedKeys(changed)
 }
 
-// splitSeverity divides forward-cone blind spots into the focus-worthy (serious) and
-// the producer-tagged-benign (trivial). Only Severity=="trivial" is benign; every
-// other value — including the empty default that covers reflection, dynamic effects,
-// and unresolved dispatch — is serious (#2 fails toward flagging, never hiding).
+// splitSeverity divides forward-cone blind spots into the zone-worthy (serious) and the
+// producer-tagged-benign (trivial). Only Severity=="trivial" is benign; every other
+// value — including the empty default that covers reflection, dynamic effects, and
+// unresolved dispatch — is serious (#2 fails toward flagging, never hiding).
 func splitSeverity(bs []graph.BlindSpot) (serious, benign []graph.BlindSpot) {
 	for _, b := range bs {
 		if b.Severity == "trivial" {
@@ -166,22 +201,8 @@ func splitSeverity(bs []graph.BlindSpot) (serious, benign []graph.BlindSpot) {
 	return serious, benign
 }
 
-// seriousReasons renders the focus reasons: each serious blind spot, then the forward
-// over-approximation if present. The reverse-reach over-approximation is deliberately
-// absent — it qualifies evidence, it does not make the change unverifiable (#1).
-func seriousReasons(serious []graph.BlindSpot, effectsOverApprox bool) []string {
-	var rs []string
-	for _, b := range serious {
-		rs = append(rs, blindReason(b))
-	}
-	if effectsOverApprox {
-		rs = append(rs, "the reachable-effect surface is an UPPER BOUND — the forward reach crossed a shared dispatch seam (HighFanOut), so it may include effects of sibling code, not just this change")
-	}
-	return rs
-}
-
-// benignNotes renders the set-aside trivial seams as short disclosures, so a vouched
-// change with a benign seam never claims a completeness it does not have.
+// benignNotes renders the set-aside trivial seams, so an accounted change with a benign
+// seam never claims a completeness it does not have.
 func benignNotes(benign []graph.BlindSpot) []string {
 	var out []string
 	for _, b := range benign {
@@ -194,28 +215,35 @@ func benignNotes(benign []graph.BlindSpot) []string {
 	return out
 }
 
-// sortFocus orders the focus zone by consequence so scarce reviewer attention lands on
-// the most consequential change first (#4): most-critical salience tier, then a change
-// that can MUTATE state over a read-only one, then the larger blast radius, then FQN
-// for a deterministic final tie-break.
-func sortFocus(fs []ChangedFn) {
+// seamReasons renders blind spots as reviewer-actionable sentences.
+func seamReasons(seams []graph.BlindSpot) []string {
+	rs := make([]string, 0, len(seams))
+	for _, b := range seams {
+		rs = append(rs, blindReason(b))
+	}
+	return rs
+}
+
+// sortByConsequence orders a blind zone so scarce reviewer attention lands on the most
+// consequential change first (#4): most-critical salience tier, then a change that can
+// MUTATE state over a read-only one, then the larger blast radius, then FQN.
+func sortByConsequence(fs []ChangedFn) {
 	sort.SliceStable(fs, func(i, j int) bool {
 		if a, b := tierRank(fs[i].Tier), tierRank(fs[j].Tier); a != b {
-			return a < b // lower tier number = more critical = first
+			return a < b
 		}
 		if a, b := reachesMutating(fs[i].Effects), reachesMutating(fs[j].Effects); a != b {
-			return a // a state-mutating change before a read-only one
+			return a
 		}
 		if a, b := len(fs[i].Entrypoints), len(fs[j].Entrypoints); a != b {
-			return a > b // bigger blast radius first
+			return a > b
 		}
 		return fs[i].FQN < fs[j].FQN
 	})
 }
 
-// tierRank orders salience tiers most-critical-first and sends the unset tier (0 —
-// synthetic nodes, or graphs built before the field) to the back, so a real tier
-// always outranks "unknown".
+// tierRank orders salience tiers most-critical-first and sends the unset tier (0) to the
+// back, so a real tier always outranks "unknown".
 func tierRank(t int) int {
 	if t <= 0 {
 		return 1 << 30
@@ -223,13 +251,11 @@ func tierRank(t int) int {
 	return t
 }
 
-// reachesMutating is a RANKING-ONLY heuristic (no verdict rests on it): does the
-// change's resolved effect surface include a write — a mutating SQL verb via the one
-// shared sqlverb source, or a bus PUBLISH? A change that can mutate state outranks a
-// read-only one when attention is scarce.
+// reachesMutating is a RANKING-ONLY heuristic (no verdict rests on it): does the change's
+// resolved effect surface include a write — a mutating SQL verb via the one shared
+// sqlverb source, or a bus PUBLISH?
 func reachesMutating(effects []string) bool {
 	for _, e := range effects {
-		// Labels are "db <OP> <table>", "bus PUBLISH <event>", "bus CONSUME <event>", …
 		if f := strings.Fields(e); len(f) >= 2 && f[0] == "db" && sqlverb.Mutating(f[1]) {
 			return true
 		}
@@ -241,9 +267,8 @@ func reachesMutating(effects []string) bool {
 }
 
 // blindReason renders one blind spot as a reviewer-actionable sentence: what the tool
-// cannot see, where, and the implicit thing to verify. Keyed on the disclosed Kind (the
-// vocabulary flowmap emits); an unrecognized kind falls back to an honest generic rather
-// than dropping the disclosure (fail loud).
+// cannot see, where, and the implicit thing to verify. Keyed on the disclosed Kind; an
+// unrecognized kind falls back to an honest generic rather than dropping the disclosure.
 func blindReason(b graph.BlindSpot) string {
 	at := b.Site
 	if at == "" {
@@ -277,42 +302,62 @@ func blindReason(b graph.BlindSpot) string {
 	}
 }
 
-// RenderMarkdown is the human-reviewer report: focus zone first (lead with where
-// attention must go), then the vouched zone with its checkable evidence. A change with
-// no structural movement yields an explicit "nothing to triage" rather than an empty
-// page (silence is never a silent pass).
+// RenderMarkdown is the human-reviewer report: new blindness first (where this diff most
+// needs eyes), then carried blindness (disclosed, not new), then the fully-accounted
+// rest (complete evidence — explicitly NOT approval). A change with no structural
+// movement yields an explicit "nothing to triage" rather than an empty page.
 func (r Report) RenderMarkdown() string {
 	var b strings.Builder
-	v, f := len(r.Vouched), len(r.Focus)
+	n, c, a := len(r.NewBlind), len(r.Carried), len(r.Accounted)
 	fmt.Fprintf(&b, "# MR review triage — where to spend your verification\n")
-	fmt.Fprintf(&b, "_graph %d → %d nodes · %d changed function(s): %d need your eyes, %d the tool can vouch for_\n",
-		r.BaseNodes, r.BranchNodes, v+f, f, v)
+	fmt.Fprintf(&b, "_graph %d → %d nodes · %d changed function(s): %d NEW blind, %d carried blind, %d fully accounted_\n",
+		r.BaseNodes, r.BranchNodes, n+c+a, n, c, a)
 
-	if v+f == 0 {
+	if n+c+a == 0 {
 		b.WriteString("\nNo structural change detected (body-only or no diff). The tool has nothing to triage here — that is not the same as \"safe\"; it means the change did not move the call graph, so verify behavior the usual way.\n")
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "\n## ⚠️  Focus here — %d change(s) the tool CANNOT vouch for\n", f)
-	if f > 0 {
+	fmt.Fprintf(&b, "\n## ⚠️  New blindness — %d change(s) this diff makes newly unverifiable (focus here)\n", n)
+	if n > 0 {
 		b.WriteString("_ordered by consequence: salience tier, then state-mutating, then blast radius_\n")
 	} else {
-		b.WriteString("_None — every changed path is statically resolved (benign seams aside). Still your call, but the tool has no blind spot to flag._\n")
+		b.WriteString("_None — this diff introduces no new blind spot. (Pre-existing blindness, if any, is below.)_\n")
 	}
-	for _, cf := range r.Focus {
+	for _, cf := range r.NewBlind {
 		fmt.Fprintf(&b, "\n### %s%s\n", cf.FQN, tierTag(cf.Tier))
-		b.WriteString("The tool cannot give you complete evidence here:\n")
-		for _, reason := range cf.Reasons {
+		b.WriteString("This change makes new paths unverifiable — the tool could not see here before, and the change now routes into the blindness:\n")
+		for _, reason := range seamReasons(cf.NewSeams) {
 			fmt.Fprintf(&b, "- %s\n", reason)
+		}
+		if cf.NewOverApprox {
+			b.WriteString("- the reachable-effect surface became an UPPER BOUND — the change's forward reach newly crosses a shared dispatch seam (HighFanOut)\n")
+		}
+		if len(cf.CarriedSeams) > 0 || cf.CarriedOverApprox {
+			fmt.Fprintf(&b, "- (it also passes through pre-existing blindness: %s)\n", strings.Join(distinctKinds(cf.CarriedSeams), ", "))
 		}
 		writeEvidence(&b, cf, true)
 	}
 
-	fmt.Fprintf(&b, "\n## ✅ Vouched — %d change(s), fully resolved (check the evidence, don't take the tool's word)\n", v)
-	if v == 0 {
-		b.WriteString("_None — every changed function touches a blind spot above._\n")
+	fmt.Fprintf(&b, "\n## 🟡 Carried blindness — %d change(s) resolved here, but on an already-partly-blind path (disclosed, not new)\n", c)
+	if c == 0 {
+		b.WriteString("_None._\n")
 	}
-	for _, cf := range r.Vouched {
+	for _, cf := range r.Carried {
+		fmt.Fprintf(&b, "\n### %s%s\n", cf.FQN, tierTag(cf.Tier))
+		b.WriteString("Resolved at its own level, but its effect surface passes through a blind spot that ALREADY existed — not introduced by this change. Flagged so it does not blend into the background:\n")
+		for _, reason := range seamReasons(cf.CarriedSeams) {
+			fmt.Fprintf(&b, "- %s\n", reason)
+		}
+		if cf.CarriedOverApprox {
+			b.WriteString("- the reachable-effect surface is an UPPER BOUND through a pre-existing shared dispatch seam (HighFanOut)\n")
+		}
+		writeEvidence(&b, cf, true)
+	}
+
+	fmt.Fprintf(&b, "\n## ✅ Fully accounted — %d change(s): complete evidence shown\n", a)
+	b.WriteString("_The tool can show the COMPLETE structural surface for these. That is not approval — the tool accepts nothing at face value; verify the resolved effects are the ones you intend._\n")
+	for _, cf := range r.Accounted {
 		fmt.Fprintf(&b, "\n### %s%s\n", cf.FQN, tierTag(cf.Tier))
 		if len(cf.BenignSeams) == 0 {
 			b.WriteString("Every path through this change is statically resolved — no dynamic dispatch, reflection, or opaque I/O on any reachable path. Evidence to verify against the code:\n")
@@ -326,14 +371,13 @@ func (r Report) RenderMarkdown() string {
 	}
 
 	b.WriteString("\n---\n")
-	b.WriteString("_Triage is the static MAP (what each change COULD touch), not the route a given input takes; and a vouched change is vouched for STRUCTURE only — whether the resolved effects are the RIGHT ones is your call. PROTOTYPE._\n")
+	b.WriteString("_Triage is the static MAP (what each change COULD touch), not the route a given input takes; \"accounted\" is structural completeness, never approval. PROTOTYPE._\n")
 	return b.String()
 }
 
-// writeEvidence prints the checkable facts of a change: the entrypoints it is live
-// behind and the boundary-effect surface it reaches. partial marks the focus-zone case,
-// where the same facts are a FLOOR (a blind spot may hide more), so the reviewer reads
-// them as a floor, not the whole truth.
+// writeEvidence prints the checkable facts of a change: the entrypoints it is live behind
+// and the boundary-effect surface it reaches. partial marks a blind zone, where the same
+// facts are a FLOOR (a blind spot may hide more).
 func writeEvidence(b *strings.Builder, cf ChangedFn, partial bool) {
 	floor := ""
 	if partial {
@@ -370,30 +414,27 @@ func writeEvidence(b *strings.Builder, cf ChangedFn, partial bool) {
 	}
 }
 
-// RenderMermaid draws the triage as a flowchart for a reviewer who reads a picture
-// faster than a list: changed functions colored by zone (focus = red, vouched = green),
-// each focus function tied to a dashed "⚠ blind" node naming the seam the tool cannot
-// see past, and every change wired to the boundary effects it reaches — dashed from a
-// focus change (a FLOOR, the surface may hide more), solid from a vouched one (the
-// complete surface). Converging changes share an effect node, so a sink several changes
-// touch is visible at a glance. Deterministic: focus is consequence-ordered, effects
-// are emitted in first-seen order, all ids are synthetic.
+// RenderMermaid draws the three-zone triage as a flowchart: changed functions colored by
+// zone (new-blind = red, carried = amber, accounted = green), each blind change tied to a
+// dashed seam node naming what the tool can't see past, and every change wired to the
+// boundary effects it reaches — dashed from a blind change (a FLOOR), solid from an
+// accounted one (the complete surface). Converging changes share an effect node.
+// Deterministic: zones are ordered, effects emitted first-seen, all ids synthetic.
 func (r Report) RenderMermaid() string {
 	var b strings.Builder
 	b.WriteString("flowchart LR\n")
-	b.WriteString("  classDef focus fill:#fde8e8,stroke:#e02424,color:#771d1d;\n")
-	b.WriteString("  classDef vouched fill:#e6f4ea,stroke:#137333,color:#0b4a22;\n")
-	b.WriteString("  classDef blind fill:#fff8f0,stroke:#e02424,stroke-dasharray:4 3,color:#771d1d;\n")
+	b.WriteString("  classDef newblind fill:#fde8e8,stroke:#e02424,color:#771d1d;\n")
+	b.WriteString("  classDef carried fill:#fff4e5,stroke:#d97706,color:#7c4a03;\n")
+	b.WriteString("  classDef accounted fill:#e6f4ea,stroke:#137333,color:#0b4a22;\n")
+	b.WriteString("  classDef nseam fill:#fff8f0,stroke:#e02424,stroke-dasharray:4 3,color:#771d1d;\n")
+	b.WriteString("  classDef cseam fill:#fffaf0,stroke:#d97706,stroke-dasharray:4 3,color:#7c4a03;\n")
 	b.WriteString("  classDef effect fill:#eef2ff,stroke:#3b5bdb,color:#1e3a8a;\n")
 
-	if len(r.Focus)+len(r.Vouched) == 0 {
+	if len(r.NewBlind)+len(r.Carried)+len(r.Accounted) == 0 {
 		b.WriteString("  none[\"No structural change to triage\"]\n")
 		return b.String()
 	}
 
-	// Effect nodes are shared across both zones (deduped, first-seen order) so a sink
-	// multiple changes converge on shows as one node. Edges are collected and emitted
-	// after the subgraphs, since an edge may cross the focus/vouched boundary.
 	effID := map[string]string{}
 	var effOrder []string
 	effFor := func(label string) string {
@@ -408,34 +449,41 @@ func (r Report) RenderMermaid() string {
 	type mmEdge struct{ from, to, style string }
 	var edges []mmEdge
 
-	// Focus subgraph: each change, its blind-seam node, and dashed (floor) effect edges.
-	fmt.Fprintf(&b, "  subgraph FOCUS[\"%s\"]\n", mmLabel(fmt.Sprintf("⚠️ Focus — %d change(s) to verify", len(r.Focus))))
-	for i, cf := range r.Focus {
-		fid := fmt.Sprintf("f%d", i)
-		fmt.Fprintf(&b, "    %s[\"%s\"]:::focus\n", fid, mmLabel(nodeLabel(cf)))
-		if kinds := distinctKinds(cf.Blind); len(kinds) > 0 {
-			bid := fid + "b"
-			fmt.Fprintf(&b, "    %s{{\"%s\"}}:::blind\n", bid, mmLabel("⚠ "+strings.Join(kinds, ", ")))
-			edges = append(edges, mmEdge{fid, bid, "-.->"})
+	// A blind zone subgraph: each change, its seam node (the blind spots that put it in
+	// this zone), and dashed (floor) effect edges.
+	blindZone := func(title, idPrefix, nodeClass, seamClass string, fns []ChangedFn, seamsOf func(ChangedFn) []graph.BlindSpot) {
+		fmt.Fprintf(&b, "  subgraph %s[\"%s\"]\n", strings.ToUpper(idPrefix), mmLabel(title))
+		for i, cf := range fns {
+			id := fmt.Sprintf("%s%d", idPrefix, i)
+			fmt.Fprintf(&b, "    %s[\"%s\"]:::%s\n", id, mmLabel(nodeLabel(cf)), nodeClass)
+			if kinds := distinctKinds(seamsOf(cf)); len(kinds) > 0 {
+				sid := id + "s"
+				fmt.Fprintf(&b, "    %s{{\"%s\"}}:::%s\n", sid, mmLabel("⚠ "+strings.Join(kinds, ", ")), seamClass)
+				edges = append(edges, mmEdge{id, sid, "-.->"})
+			}
+			for _, eff := range cf.Effects {
+				edges = append(edges, mmEdge{id, effFor(eff), "-.->"})
+			}
 		}
+		b.WriteString("  end\n")
+	}
+
+	blindZone(fmt.Sprintf("⚠️ New blind — %d (focus)", len(r.NewBlind)), "n", "newblind", "nseam",
+		r.NewBlind, func(cf ChangedFn) []graph.BlindSpot { return cf.NewSeams })
+	blindZone(fmt.Sprintf("🟡 Carried blind — %d (not new)", len(r.Carried)), "c", "carried", "cseam",
+		r.Carried, func(cf ChangedFn) []graph.BlindSpot { return cf.CarriedSeams })
+
+	// Accounted subgraph: solid (complete) effect edges, no seam node.
+	fmt.Fprintf(&b, "  subgraph ACCOUNTED[\"%s\"]\n", mmLabel(fmt.Sprintf("✅ Accounted — %d (complete evidence, not approval)", len(r.Accounted))))
+	for i, cf := range r.Accounted {
+		id := fmt.Sprintf("a%d", i)
+		fmt.Fprintf(&b, "    %s[\"%s\"]:::accounted\n", id, mmLabel(nodeLabel(cf)))
 		for _, eff := range cf.Effects {
-			edges = append(edges, mmEdge{fid, effFor(eff), "-.->"})
+			edges = append(edges, mmEdge{id, effFor(eff), "-->"})
 		}
 	}
 	b.WriteString("  end\n")
 
-	// Vouched subgraph: each change with solid (complete) effect edges.
-	fmt.Fprintf(&b, "  subgraph VOUCHED[\"%s\"]\n", mmLabel(fmt.Sprintf("✅ Vouched — %d change(s), evidence shown", len(r.Vouched))))
-	for i, cf := range r.Vouched {
-		vid := fmt.Sprintf("v%d", i)
-		fmt.Fprintf(&b, "    %s[\"%s\"]:::vouched\n", vid, mmLabel(nodeLabel(cf)))
-		for _, eff := range cf.Effects {
-			edges = append(edges, mmEdge{vid, effFor(eff), "-->"})
-		}
-	}
-	b.WriteString("  end\n")
-
-	// Shared effect nodes (outside both subgraphs), then every edge.
 	for i, label := range effOrder {
 		fmt.Fprintf(&b, "  e%d[[\"%s\"]]:::effect\n", i, mmLabel(label))
 	}
@@ -445,8 +493,8 @@ func (r Report) RenderMermaid() string {
 	return b.String()
 }
 
-// nodeLabel is the compact function label for the diagram: the short name plus the
-// salience-tier badge (a writer of state earns a marker so the eye finds it).
+// nodeLabel is the compact function label for the diagram: short name, tier badge, and a
+// ✍ marker on a state-mutating change so the eye finds it.
 func nodeLabel(cf ChangedFn) string {
 	s := fitness.ShortName(cf.FQN)
 	if cf.Tier > 0 {
@@ -458,8 +506,8 @@ func nodeLabel(cf ChangedFn) string {
 	return s
 }
 
-// distinctKinds is the sorted, deduped set of blind-spot kinds on a change — the
-// at-a-glance "why can't the tool see here" the diagram colors.
+// distinctKinds is the sorted, deduped set of blind-spot kinds — the at-a-glance "why
+// can't the tool see here" the diagram colors.
 func distinctKinds(bs []graph.BlindSpot) []string {
 	seen := map[string]bool{}
 	for _, b := range bs {
@@ -485,7 +533,7 @@ func tierTag(t int) string {
 	return fmt.Sprintf("  [tier %d]", t)
 }
 
-// tierLookup maps each branch function to its salience tier for ranking and display.
+// tierLookup maps each branch function to its salience tier.
 func tierLookup(g *graph.Graph) map[string]int {
 	m := make(map[string]int, len(g.Nodes))
 	for _, n := range g.Nodes {
@@ -494,9 +542,17 @@ func tierLookup(g *graph.Graph) map[string]int {
 	return m
 }
 
+// nodeSet is the FQN membership set of a graph's nodes.
+func nodeSet(g *graph.Graph) map[string]bool {
+	m := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		m[n.FQN] = true
+	}
+	return m
+}
+
 // trimmedEffects strips the internal "boundary:" prefix from each effect label for
-// display — the same human-readable form the ground/triage cards use — keeping them
-// sorted.
+// display, keeping them sorted.
 func trimmedEffects(effects []string) []string {
 	out := make([]string, 0, len(effects))
 	for _, e := range effects {
