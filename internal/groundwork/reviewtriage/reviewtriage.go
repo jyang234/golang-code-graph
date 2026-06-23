@@ -492,6 +492,115 @@ func writeEvidence(b *strings.Builder, cf ChangedFn, partial bool) {
 	}
 }
 
+// RenderSummary is a COMPACT, MR-comment-friendly digest (GitHub-flavored Markdown): a
+// one-line verdict, then the newly-unverifiable changes to review FRONT AND CENTER, with
+// the lower-attention zones folded into <details> blocks GitHub renders collapsed. Built
+// to paste at the top of an MR — it leads with what to review and never reads "accounted"
+// as approval. FQNs, effect labels, and seam kinds are wrapped in backticks so a
+// <dynamic> label renders literally rather than as stray HTML.
+func (r Report) RenderSummary(o Options) string {
+	var b strings.Builder
+	n, c, a := len(r.NewBlind), len(r.Carried), len(r.Accounted)
+	b.WriteString("### 🔍 groundwork review triage\n\n")
+	if n+c+a == 0 {
+		b.WriteString("No structural change — the diff did not move the call graph. That is not \"safe\"; verify behavior the usual way.\n")
+		return b.String()
+	}
+
+	newPhrase := fmt.Sprintf("⚠️ **%d newly unverifiable**", n)
+	if n == 0 {
+		newPhrase = "⚠️ no new blind spots"
+	}
+	fmt.Fprintf(&b, "**%d changed function(s)** — %s · 🟡 %d carried · ✅ %d accounted.\n", n+c+a, newPhrase, c, a)
+
+	// New blindness: visible — this IS the review list. Consequence-ordered; capped with a
+	// disclosed overflow so the comment stays paste-able (the full list is in the report).
+	if n > 0 {
+		b.WriteString("\n**Review these — the tool cannot verify them:**\n")
+		shown, overflow := r.NewBlind, 0
+		if !o.Full && n > o.budget() {
+			shown, overflow = r.NewBlind[:o.budget()], n-o.budget()
+		}
+		for _, cf := range shown {
+			fmt.Fprintf(&b, "- %s\n", summaryLine(cf, distinctKinds(cf.NewSeams)))
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&b, "- …and %d more — run `groundwork review-triage` for the full list\n", overflow)
+		}
+	}
+
+	// Carried: collapsed — disclosed, but not this diff's fault.
+	if c > 0 {
+		fmt.Fprintf(&b, "\n<details><summary>🟡 Carried blindness — %d (pre-existing on the path, not introduced here)</summary>\n\n", c)
+		shown, overflow := r.Carried, 0
+		if !o.Full && c > o.budget() {
+			shown, overflow = r.Carried[:o.budget()], c-o.budget()
+		}
+		for _, cf := range shown {
+			fmt.Fprintf(&b, "- %s\n", summaryLine(cf, distinctKinds(cf.CarriedSeams)))
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&b, "- …and %d more\n", overflow)
+		}
+		b.WriteString("\n</details>\n")
+	}
+
+	// Accounted: collapsed — rolled up by package when large (same collapse rule as the
+	// other renders), so even a huge clean diff stays a few lines here.
+	if a > 0 {
+		fmt.Fprintf(&b, "\n<details><summary>✅ Fully accounted — %d (complete evidence; structural completeness, not approval)</summary>\n\n", a)
+		if o.collapseAccounted(a) {
+			for _, rl := range rollupAccounted(r.Accounted) {
+				fmt.Fprintf(&b, "- `%s` — %d change(s)%s\n", shortPkg(rl.Pkg), rl.Count, effSuffix(rl.Effects))
+			}
+		} else {
+			for _, cf := range r.Accounted {
+				fmt.Fprintf(&b, "- %s\n", summaryLine(cf, nil))
+			}
+		}
+		b.WriteString("\n</details>\n")
+	}
+
+	b.WriteString("\n_⚠️ = the tool cannot fully verify — review there. \"Accounted\" means the tool can show the complete structure, not that it is correct; you still verify. `groundwork review-triage --full` for per-function evidence._\n")
+	return b.String()
+}
+
+// summaryLine is one compact change row: `ShortName` [tier] ✍, the seam kinds (when in a
+// blind zone), and the effect surface — all backtick-wrapped so special characters render
+// literally in Markdown.
+func summaryLine(cf ChangedFn, kinds []string) string {
+	var sb strings.Builder
+	sb.WriteString("`" + fitness.ShortName(cf.FQN) + "`")
+	if cf.Tier > 0 {
+		fmt.Fprintf(&sb, " [t%d]", cf.Tier)
+	}
+	if reachesMutating(cf.Effects) {
+		sb.WriteString(" ✍")
+	}
+	if len(kinds) > 0 {
+		q := make([]string, len(kinds))
+		for i, k := range kinds {
+			q[i] = "`" + k + "`"
+		}
+		sb.WriteString(" — " + strings.Join(q, ", "))
+	}
+	sb.WriteString(effSuffix(cf.Effects))
+	return sb.String()
+}
+
+// effSuffix renders an effect set as a compact, backtick-quoted "→ a, b" suffix (backticks
+// so a <dynamic> label is literal, not stray HTML), or "" when there are none.
+func effSuffix(effects []string) string {
+	if len(effects) == 0 {
+		return ""
+	}
+	q := make([]string, len(effects))
+	for i, e := range effects {
+		q[i] = "`" + e + "`"
+	}
+	return " → " + strings.Join(q, ", ")
+}
+
 // RenderMermaid draws the three-zone triage as a flowchart. On a large diff it collapses
 // from the low-attention end only: a blind zone over budget caps with a disclosed
 // "+N more" node (new-blind ordered by consequence, so the shown ones matter most), and

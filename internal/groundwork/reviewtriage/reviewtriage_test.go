@@ -248,6 +248,40 @@ func TestScaleRollsUpAccountedNotNewBlind(t *testing.T) {
 	}
 }
 
+// TestRenderSummary pins the MR-comment digest: new blindness is visible (the review
+// list), carried and accounted are folded into <details>, effect labels are backtick-
+// wrapped so a <dynamic> label is literal (not stray HTML), and the "not approval" caveat
+// is present.
+func TestRenderSummary(t *testing.T) {
+	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.Clean", Sig: "o"}, {FQN: "svc.Dyn", Sig: "o"}}}
+	branch := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.Clean", Sig: "n", Tier: 2}, {FQN: "svc.Dyn", Sig: "n", Tier: 1}},
+		Edges: []graph.Edge{
+			{From: "svc.Clean", To: "boundary:db SELECT users", Boundary: "outbound-sync"},
+			{From: "svc.Dyn", To: "boundary:bus PUBLISH <dynamic>", Boundary: "outbound-async"},
+		},
+		BlindSpots: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "svc.Dyn", Detail: "non-const topic"}},
+	}
+	out := Build(base, branch).RenderSummary(Options{})
+
+	// The new-blind review item is visible and appears BEFORE the accounted <details>.
+	iDyn := strings.Index(out, "svc.Dyn")
+	iAcc := strings.Index(out, "Fully accounted")
+	if iDyn < 0 || iAcc < 0 || iDyn > iAcc {
+		t.Errorf("new-blind item must be visible and precede the accounted <details>:\n%s", out)
+	}
+	if !strings.Contains(out, "<details>") || !strings.Contains(out, "Review these") {
+		t.Errorf("summary must lead with the review list and fold lower zones into <details>:\n%s", out)
+	}
+	// The <dynamic> effect must be inside a backtick span (literal), never raw HTML.
+	if !strings.Contains(out, "`bus PUBLISH <dynamic>`") {
+		t.Errorf("the <dynamic> effect must be backtick-wrapped so it renders literally:\n%s", out)
+	}
+	if !strings.Contains(out, "not approval") {
+		t.Errorf("the accounted summary must state it is not approval:\n%s", out)
+	}
+}
+
 // TestRendersAreDeterministic pins CLAUDE.md's prime directive for the new ordering and
 // emission paths: Build and both renders are pure functions of their inputs, byte-identical
 // across repeated runs. It exercises the map-derived paths (rollupAccounted's grouping,

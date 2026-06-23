@@ -170,7 +170,7 @@ usage:
   groundwork chains <graph.json>... [--service <name>=<graph.json>]... [--policy <p.json>]...  cross-service effect chains (CX-5, observational)
   groundwork fitness <policy.json> <graph.json> [--expect <sha>] evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--expect <sha>] [--json]   computed MR review artifact (BLOCK exits non-zero)
-  groundwork review-triage <base.json> <branch.json> [--json|--mermaid] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage (new-blind / carried / accounted); large diffs roll up the accounted zone by package
+  groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage (new-blind / carried / accounted); --summary is an MR-comment digest
   groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--json] pre-flight gate: new violations, scope creep, breaking contract
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]  prove an artifact is authentic (not tampered/stale)
@@ -653,13 +653,14 @@ func ruleCount(p *policy.Policy) int {
 func cmdReviewTriage(args []string) error {
 	asJSON, rest := takeFlag(args, "--json", "-json")
 	asMermaid, rest := takeFlag(rest, "--mermaid", "-mermaid")
+	asSummary, rest := takeFlag(rest, "--summary", "-summary")
 	full, rest := takeFlag(rest, "--full", "-full")
 	maxArg, _, rest := takeValueFlag(rest, "--max-nodes", "-max-nodes")
 	if len(rest) != 2 {
-		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid] [--full] [--max-nodes N]")
+		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid | --summary] [--full] [--max-nodes N]")
 	}
-	if asJSON && asMermaid {
-		return fmt.Errorf("review-triage: choose at most one of --json or --mermaid")
+	if b2i(asJSON)+b2i(asMermaid)+b2i(asSummary) > 1 {
+		return fmt.Errorf("review-triage: choose at most one of --json, --mermaid, --summary")
 	}
 	opts := reviewtriage.Options{Full: full}
 	if maxArg != "" {
@@ -690,10 +691,20 @@ func cmdReviewTriage(args []string) error {
 		return err
 	case asMermaid:
 		fmt.Print(rep.RenderMermaid(opts))
+	case asSummary:
+		fmt.Print(rep.RenderSummary(opts))
 	default:
 		fmt.Print(rep.RenderMarkdown(opts))
 	}
 	return nil
+}
+
+// b2i is 1 for true, 0 for false — for counting how many mutually-exclusive flags are set.
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // cmdReview computes the base-vs-branch MR review artifact. With --json it emits
