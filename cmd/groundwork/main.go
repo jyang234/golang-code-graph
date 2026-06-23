@@ -28,6 +28,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/impact"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/review"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/reviewtriage"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/transcript"
 	"github.com/jyang234/golang-code-graph/internal/impeach"
 	"github.com/jyang234/golang-code-graph/ir"
@@ -95,6 +96,8 @@ func run(args []string) error {
 		return cmdFitness(args[1:])
 	case "review":
 		return cmdReview(args[1:])
+	case "review-triage":
+		return cmdReviewTriage(args[1:])
 	case "verify":
 		return cmdVerify(args[1:])
 	case "diff":
@@ -166,6 +169,7 @@ usage:
   groundwork chains <graph.json>... [--service <name>=<graph.json>]... [--policy <p.json>]...  cross-service effect chains (CX-5, observational)
   groundwork fitness <policy.json> <graph.json> [--expect <sha>] evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--expect <sha>] [--json]   computed MR review artifact (BLOCK exits non-zero)
+  groundwork review-triage <base.json> <branch.json> [--json]   PROTOTYPE: partition changed functions into vouched (full evidence) vs focus (blind-spot, look here)
   groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--json] pre-flight gate: new violations, scope creep, breaking contract
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]  prove an artifact is authentic (not tampered/stale)
@@ -639,6 +643,36 @@ func ruleCount(p *policy.Policy) int {
 		n++
 	}
 	return n
+}
+
+// cmdReviewTriage is the PROTOTYPE reviewer-triage surface: it partitions the MR's
+// changed functions into vouched (fully resolved — complete evidence shown) and focus
+// (touches a blind spot — look here). No policy, no verdict, no stamp gate: it is a
+// comprehension aid, not a gate, so it never exits non-zero on content.
+func cmdReviewTriage(args []string) error {
+	asJSON, rest := takeFlag(args, "--json", "-json")
+	if len(rest) != 2 {
+		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json]")
+	}
+	base, err := graph.LoadFile(rest[0])
+	if err != nil {
+		return err
+	}
+	branch, err := graph.LoadFile(rest[1])
+	if err != nil {
+		return err
+	}
+	rep := reviewtriage.Build(base, branch)
+	if asJSON {
+		b, err := canonjson.Marshal(rep)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(b)
+		return err
+	}
+	fmt.Print(rep.RenderMarkdown())
+	return nil
 }
 
 // cmdReview computes the base-vs-branch MR review artifact. With --json it emits
