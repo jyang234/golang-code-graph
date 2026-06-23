@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 )
 
 // TestNewBlindVsAccounted pins the core split: a changed function with a fully-resolved
@@ -26,7 +27,7 @@ func TestNewBlindVsAccounted(t *testing.T) {
 		BlindSpots: []graph.BlindSpot{{Kind: "reflect", Site: "svc.Blind", Detail: "reflective call"}},
 	}
 
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 	if len(rep.NewBlind) != 1 || rep.NewBlind[0].FQN != "svc.Blind" {
 		t.Errorf("svc.Blind should be NEW BLIND (base had no blind spot): %+v", rep.NewBlind)
 	}
@@ -74,7 +75,7 @@ func TestNewVsCarriedBlindness(t *testing.T) {
 		},
 	}
 
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 
 	// A only carries the pre-existing deep blindness ⇒ Carried.
 	if len(rep.Carried) != 1 || rep.Carried[0].FQN != "svc.A" {
@@ -112,7 +113,7 @@ func TestSeverityTrivialStaysAccounted(t *testing.T) {
 		BlindSpots:  []graph.BlindSpot{{Kind: "ConcurrentDispatch", Site: "svc.Benign", Detail: "cancel func", Severity: "trivial"}},
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /b", Fn: "svc.Benign"}},
 	}
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 	if len(rep.NewBlind) != 0 || len(rep.Carried) != 0 {
 		t.Fatalf("a trivial seam must not be blind: new=%+v carried=%+v", rep.NewBlind, rep.Carried)
 	}
@@ -139,7 +140,7 @@ func TestNewBlindRankedByConsequence(t *testing.T) {
 			{Kind: "reflect", Site: "svc.Low", Detail: "l"},
 		},
 	}
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 	if len(rep.NewBlind) != 2 {
 		t.Fatalf("want 2 new-blind changes, got %+v", rep.NewBlind)
 	}
@@ -162,7 +163,7 @@ func TestCallerBlindSpotDoesNotForceFocus(t *testing.T) {
 		BlindSpots:  []graph.BlindSpot{{Kind: "reflect", Site: "svc.RefCaller", Detail: "upstream"}},
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /x", Fn: "svc.RefCaller"}},
 	}
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 	found := false
 	for _, cf := range rep.Accounted {
 		if cf.FQN == "svc.Clean" {
@@ -187,7 +188,7 @@ func TestRenderMermaidZonesAndSafety(t *testing.T) {
 		},
 		BlindSpots: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "svc.Dyn", Detail: "non-const topic"}},
 	}
-	md := Build(base, branch).RenderMermaid(Options{})
+	md := Build(base, branch, nil).RenderMermaid(Options{})
 	for _, want := range []string{"flowchart LR", "classDef newblind", "classDef carried", "classDef accounted", ":::newblind", ":::accounted"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("mermaid missing %q:\n%s", want, md)
@@ -262,7 +263,7 @@ func TestRenderSummary(t *testing.T) {
 		},
 		BlindSpots: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "svc.Dyn", Detail: "non-const topic"}},
 	}
-	out := Build(base, branch).RenderSummary(Options{})
+	out := Build(base, branch, nil).RenderSummary(Options{})
 
 	// The new-blind review item is visible and appears BEFORE the accounted <details>.
 	iDyn := strings.Index(out, "svc.Dyn")
@@ -290,6 +291,38 @@ func TestRenderSummary(t *testing.T) {
 	}
 }
 
+// TestPerRouteWriteMovement pins the per-route refinement (reusing fitness.RouteWrites):
+// a route whose surface moves from a read to a write is reported as "GET /x now writes …",
+// displayed by route name, and only when a policy is supplied.
+func TestPerRouteWriteMovement(t *testing.T) {
+	base := &graph.Graph{
+		Nodes:       []graph.Node{{FQN: "svc.GetX", Sig: "o"}},
+		Edges:       []graph.Edge{{From: "svc.GetX", To: "boundary:db SELECT users", Boundary: "outbound-sync"}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /x", Fn: "svc.GetX"}},
+	}
+	branch := &graph.Graph{
+		Nodes:       []graph.Node{{FQN: "svc.GetX", Sig: "n"}},
+		Edges:       []graph.Edge{{From: "svc.GetX", To: "boundary:db INSERT read_audit", Boundary: "outbound-sync"}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /x", Fn: "svc.GetX"}},
+	}
+
+	rep := Build(base, branch, &policy.Policy{Service: "svc"})
+	if len(rep.RouteIO) != 1 {
+		t.Fatalf("want 1 route move, got %+v", rep.RouteIO)
+	}
+	if rm := rep.RouteIO[0]; rm.Route != "GET /x" || len(rm.Added) != 1 || rm.Added[0] != "db INSERT read_audit" {
+		t.Fatalf("RouteMove = %+v, want `GET /x` now writes `db INSERT read_audit`", rm)
+	}
+	if !strings.Contains(rep.RenderSummary(Options{}), "`GET /x` now writes `db INSERT read_audit`") {
+		t.Errorf("summary must show the per-route write movement:\n%s", rep.RenderSummary(Options{}))
+	}
+
+	// Without a policy the per-route section is skipped (the rest still works).
+	if rep2 := Build(base, branch, nil); len(rep2.RouteIO) != 0 {
+		t.Errorf("nil policy must skip per-route I/O, got %+v", rep2.RouteIO)
+	}
+}
+
 // TestVerifiedDeltaEntrypoints pins the entrypoint half of the verified delta: a new route
 // in the branch is reported as exposed.
 func TestVerifiedDeltaEntrypoints(t *testing.T) {
@@ -298,7 +331,7 @@ func TestVerifiedDeltaEntrypoints(t *testing.T) {
 		Nodes:       []graph.Node{{FQN: "svc.H", Sig: "n"}},
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "POST /admin/ledger", Fn: "svc.H"}},
 	}
-	rep := Build(base, branch)
+	rep := Build(base, branch, nil)
 	if len(rep.EntrypointsAdded) != 1 || rep.EntrypointsAdded[0] != "POST /admin/ledger" {
 		t.Fatalf("EntrypointsAdded = %v, want [POST /admin/ledger]", rep.EntrypointsAdded)
 	}
@@ -350,7 +383,7 @@ func TestRendersAreDeterministic(t *testing.T) {
 		Edges:      []graph.Edge{{From: "x/p.C", To: "x/p.deep"}, {From: "x/q.B", To: "boundary:db INSERT t", Boundary: "outbound-sync"}},
 		BlindSpots: []graph.BlindSpot{{Kind: "reflect", Site: "x/p.deep"}},
 	}
-	if a, b := Build(base, branch).RenderMarkdown(Options{}), Build(base, branch).RenderMarkdown(Options{}); a != b {
+	if a, b := Build(base, branch, nil).RenderMarkdown(Options{}), Build(base, branch, nil).RenderMarkdown(Options{}); a != b {
 		t.Errorf("Build+RenderMarkdown non-deterministic across runs:\n%s\n---\n%s", a, b)
 	}
 }
@@ -371,7 +404,7 @@ func TestMmLabelEscapesAmpersand(t *testing.T) {
 // so explicitly rather than emitting a blank page (silence is never a silent pass).
 func TestBuildNoStructuralChange(t *testing.T) {
 	g := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.A", Sig: "s"}}}
-	rep := Build(g, g)
+	rep := Build(g, g, nil)
 	if len(rep.NewBlind)+len(rep.Carried)+len(rep.Accounted) != 0 {
 		t.Fatalf("identical graphs must yield no changed functions, got %+v / %+v / %+v", rep.NewBlind, rep.Carried, rep.Accounted)
 	}

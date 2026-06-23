@@ -170,7 +170,7 @@ usage:
   groundwork chains <graph.json>... [--service <name>=<graph.json>]... [--policy <p.json>]...  cross-service effect chains (CX-5, observational)
   groundwork fitness <policy.json> <graph.json> [--expect <sha>] evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--expect <sha>] [--json]   computed MR review artifact (BLOCK exits non-zero)
-  groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage (new-blind / carried / accounted); --summary is an MR-comment digest
+  groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--policy <p.json>] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage; --summary is an MR-comment digest; --policy adds per-route write movement
   groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--json] pre-flight gate: new violations, scope creep, breaking contract
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]  prove an artifact is authentic (not tampered/stale)
@@ -656,8 +656,9 @@ func cmdReviewTriage(args []string) error {
 	asSummary, rest := takeFlag(rest, "--summary", "-summary")
 	full, rest := takeFlag(rest, "--full", "-full")
 	maxArg, _, rest := takeValueFlag(rest, "--max-nodes", "-max-nodes")
+	policyArg, hasPolicy, rest := takeValueFlag(rest, "--policy", "-policy")
 	if len(rest) != 2 {
-		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid | --summary] [--full] [--max-nodes N]")
+		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid | --summary] [--policy <policy.json>] [--full] [--max-nodes N]")
 	}
 	if b2i(asJSON)+b2i(asMermaid)+b2i(asSummary) > 1 {
 		return fmt.Errorf("review-triage: choose at most one of --json, --mermaid, --summary")
@@ -672,6 +673,16 @@ func cmdReviewTriage(args []string) error {
 		}
 		opts.MaxNodes = n
 	}
+	// An optional policy enables the per-route write-movement section (it is what
+	// fitness.RouteWrites needs to enumerate routes/roots); without it the rest still works.
+	var p *policy.Policy
+	if hasPolicy {
+		loaded, err := policy.Load(policyArg)
+		if err != nil {
+			return err
+		}
+		p = loaded
+	}
 	base, err := graph.LoadFile(rest[0])
 	if err != nil {
 		return err
@@ -680,7 +691,7 @@ func cmdReviewTriage(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep := reviewtriage.Build(base, branch)
+	rep := reviewtriage.Build(base, branch, p)
 	switch {
 	case asJSON:
 		b, err := canonjson.Marshal(rep)

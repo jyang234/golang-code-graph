@@ -48,6 +48,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/fitness"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/impact"
+	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 	"github.com/jyang234/golang-code-graph/internal/sqlverb"
 )
@@ -119,6 +120,21 @@ type Report struct {
 	EffectsAdded     []string `json:"effects_added,omitempty"`
 	EffectsRemoved   []string `json:"effects_removed,omitempty"`
 	EntrypointsAdded []string `json:"entrypoints_added,omitempty"`
+
+	// RouteIO is the per-route refinement of the write surface ("GET /x now writes Y"),
+	// present only when Build was given a policy. Reuses fitness.RouteWrites.
+	RouteIO []RouteMove `json:"route_io,omitempty"`
+}
+
+// RouteMove is one route (non-root entrypoint) whose verified WRITE surface changed
+// base→branch — the per-route refinement of the service-level effect delta. Reuses
+// fitness.RouteWrites for the attribution. Blind marks a count that stood on a blind
+// frontier: the movement may be the model's knowledge shifting, not the code's behavior.
+type RouteMove struct {
+	Route   string   `json:"route"`
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+	Blind   bool     `json:"blind,omitempty"`
 }
 
 // TODO(prototype): deferred code-review findings — address when this graduates past the
@@ -134,8 +150,10 @@ type Report struct {
 // Build computes the triage over the BRANCH graph (the post-merge reality the reviewer
 // is judging). For each changed function it compares the branch forward blind-spot set
 // against the BASE one to tell new blindness from carried. The blind zones are
-// consequence-ranked (#4).
-func Build(base, branch *graph.Graph) Report {
+// consequence-ranked (#4). A non-nil policy enables the per-route write-movement section
+// (it is the input fitness.RouteWrites needs to enumerate routes and roots); pass nil to
+// skip it (the service-level effect delta is still computed).
+func Build(base, branch *graph.Graph, p *policy.Policy) Report {
 	branchIx, baseIx := graph.NewIndex(branch), graph.NewIndex(base)
 	baseNode := nodeSet(base)
 	tier := tierLookup(branch)
@@ -185,6 +203,11 @@ func Build(base, branch *graph.Graph) Report {
 	effAdded, effRemoved := stringSetDelta(boundaryEffectSet(base), boundaryEffectSet(branch))
 	epsAdded, _ := stringSetDelta(entrypointSet(base), entrypointSet(branch))
 
+	var routeIO []RouteMove
+	if p != nil {
+		routeIO = routeIODelta(p, baseIx, branchIx)
+	}
+
 	return Report{
 		BaseNodes:        len(base.Nodes),
 		BranchNodes:      len(branch.Nodes),
@@ -194,7 +217,91 @@ func Build(base, branch *graph.Graph) Report {
 		EffectsAdded:     effAdded,
 		EffectsRemoved:   effRemoved,
 		EntrypointsAdded: epsAdded,
+		RouteIO:          routeIO,
 	}
+}
+
+// routeIODelta is the verified per-route write movement: for each route (non-root
+// entrypoint), the write labels the branch reaches that the base did not, and vice versa.
+// It REUSES fitness.RouteWrites — the one source for "what a route writes", shared with the
+// review artifact's per-route section — so the two surfaces cannot disagree; only the
+// set-diff is local. A side counted over a blind frontier marks the row, since a delta
+// against a blind side may be the graph's knowledge shifting, not the code's behavior.
+func routeIODelta(p *policy.Policy, baseIx, branchIx *graph.Index) []RouteMove {
+	baseRW := fitness.RouteWrites(p, baseIx)
+	branchRW := fitness.RouteWrites(p, branchIx)
+	names := routeNames(baseIx, branchIx)
+	display := func(fqn string) string {
+		if n := names[fqn]; n != "" {
+			return n
+		}
+		return fitness.ShortName(fqn)
+	}
+
+	var out []RouteMove
+	for route, br := range branchRW {
+		b, existed := baseRW[route]
+		var added, removed []string
+		blind := br.Blind
+		if existed {
+			added, removed = writeDiff(b.Writes, br.Writes)
+			blind = blind || b.Blind
+		} else {
+			added = sortedCopy(br.Writes)
+		}
+		if len(added) == 0 && len(removed) == 0 {
+			continue
+		}
+		out = append(out, RouteMove{Route: display(route), Added: added, Removed: removed, Blind: blind})
+	}
+	// Routes removed on the branch that carried writes — the lost-route case.
+	for route, b := range baseRW {
+		if _, ok := branchRW[route]; !ok && len(b.Writes) > 0 {
+			out = append(out, RouteMove{Route: display(route), Removed: sortedCopy(b.Writes), Blind: b.Blind})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Route < out[j].Route })
+	return out
+}
+
+// routeNames maps an entrypoint handler FQN to its human route name ("GET /x"), preferring
+// the branch's name; falls back per-FQN to nothing (the caller uses ShortName then).
+func routeNames(ixs ...*graph.Index) map[string]string {
+	m := map[string]string{}
+	for _, ix := range ixs {
+		for _, ep := range ix.Entrypoints() {
+			if ep.Fn != "" && ep.Name != "" {
+				if _, ok := m[ep.Fn]; !ok {
+					m[ep.Fn] = ep.Name
+				}
+			}
+		}
+	}
+	return m
+}
+
+// writeDiff returns the sorted write labels added (in branch, not base) and removed.
+func writeDiff(baseW, branchW []string) (added, removed []string) {
+	bs, brs := setutil.StringSet(baseW), setutil.StringSet(branchW)
+	for w := range brs {
+		if !bs[w] {
+			added = append(added, w)
+		}
+	}
+	for w := range bs {
+		if !brs[w] {
+			removed = append(removed, w)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func sortedCopy(s []string) []string {
+	out := append([]string(nil), s...)
+	sort.Strings(out)
+	return out
 }
 
 // boundaryEffectSet is the set of human-readable boundary-effect labels the graph emits
@@ -594,6 +701,33 @@ func (r Report) RenderSummary(o Options) string {
 		b.WriteString("_(verified over statically-resolved edges; the ⚠️ items below are where this is incomplete)_\n")
 	} else if n == 0 {
 		b.WriteString("\n_No change to the verified external surface (no new routes or effects) and no new blind spots — an internal-only change._\n")
+	}
+
+	// Per-route write movement (only when a policy was supplied): the specific "GET /x now
+	// writes Y" refinement of the service-level delta above.
+	if len(r.RouteIO) > 0 {
+		b.WriteString("\n**Per-route write movement (verified):**\n")
+		shown, overflow := r.RouteIO, 0
+		if !o.Full && len(r.RouteIO) > o.budget() {
+			shown, overflow = r.RouteIO[:o.budget()], len(r.RouteIO)-o.budget()
+		}
+		for _, rm := range shown {
+			var moves []string
+			if len(rm.Added) > 0 {
+				moves = append(moves, "now writes "+backtickList(rm.Added, lim))
+			}
+			if len(rm.Removed) > 0 {
+				moves = append(moves, "no longer writes "+backtickList(rm.Removed, lim))
+			}
+			tag := ""
+			if rm.Blind {
+				tag = " _(frontier blind — may be the model shifting, not the code)_"
+			}
+			fmt.Fprintf(&b, "- `%s` %s%s\n", rm.Route, strings.Join(moves, "; "), tag)
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&b, "- …and %d more route(s)\n", overflow)
+		}
 	}
 
 	// New blindness: visible — this IS the review list. Consequence-ordered; capped with a
