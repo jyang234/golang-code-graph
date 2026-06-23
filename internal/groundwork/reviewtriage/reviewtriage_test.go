@@ -280,6 +280,31 @@ func TestRenderSummary(t *testing.T) {
 	if !strings.Contains(out, "not approval") {
 		t.Errorf("the accounted summary must state it is not approval:\n%s", out)
 	}
+	// The verified "what this MR does" delta: the base has no edges, so the branch ADDS both
+	// boundary effects (and the <dynamic> one is backtick-wrapped here too).
+	if !strings.Contains(out, "What this MR does (verified)") {
+		t.Errorf("summary must include the verified what-it-does section:\n%s", out)
+	}
+	if !strings.Contains(out, "adds 2 external effect(s)") || !strings.Contains(out, "`db SELECT users`") {
+		t.Errorf("verified delta must report the added effects:\n%s", out)
+	}
+}
+
+// TestVerifiedDeltaEntrypoints pins the entrypoint half of the verified delta: a new route
+// in the branch is reported as exposed.
+func TestVerifiedDeltaEntrypoints(t *testing.T) {
+	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.H", Sig: "o"}}}
+	branch := &graph.Graph{
+		Nodes:       []graph.Node{{FQN: "svc.H", Sig: "n"}},
+		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "POST /admin/ledger", Fn: "svc.H"}},
+	}
+	rep := Build(base, branch)
+	if len(rep.EntrypointsAdded) != 1 || rep.EntrypointsAdded[0] != "POST /admin/ledger" {
+		t.Fatalf("EntrypointsAdded = %v, want [POST /admin/ledger]", rep.EntrypointsAdded)
+	}
+	if !strings.Contains(rep.RenderSummary(Options{}), "exposes 1 new entrypoint(s): `POST /admin/ledger`") {
+		t.Errorf("summary must report the new route:\n%s", rep.RenderSummary(Options{}))
+	}
 }
 
 // TestRendersAreDeterministic pins CLAUDE.md's prime directive for the new ordering and
@@ -307,6 +332,9 @@ func TestRendersAreDeterministic(t *testing.T) {
 		}
 		if a, b := rep.RenderMarkdown(o), rep.RenderMarkdown(o); a != b {
 			t.Errorf("RenderMarkdown non-deterministic at %+v", o)
+		}
+		if a, b := rep.RenderSummary(o), rep.RenderSummary(o); a != b {
+			t.Errorf("RenderSummary non-deterministic at %+v", o)
 		}
 	}
 

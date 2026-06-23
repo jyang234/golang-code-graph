@@ -103,13 +103,22 @@ type ChangedFn struct {
 }
 
 // Report is the three-zone triage of an MR's changed functions, ordered by descending
-// attention: new blindness, then carried blindness, then the fully-accounted rest.
+// attention: new blindness, then carried blindness, then the fully-accounted rest. It also
+// carries the verified "what this MR does" delta — the sound boundary-effect and entrypoint
+// movement (a floor: the blind zones are where it is incomplete).
 type Report struct {
 	BaseNodes   int         `json:"base_nodes"`
 	BranchNodes int         `json:"branch_nodes"`
 	NewBlind    []ChangedFn `json:"new_blind,omitempty"`
 	Carried     []ChangedFn `json:"carried,omitempty"`
 	Accounted   []ChangedFn `json:"accounted,omitempty"`
+
+	// The verified external-surface delta — what the MR does that the tool can vouch for,
+	// derived from the boundary-edge and entrypoint sets (sound over statically-resolved
+	// edges). Contract-level: an effect already present on another path is not "added".
+	EffectsAdded     []string `json:"effects_added,omitempty"`
+	EffectsRemoved   []string `json:"effects_removed,omitempty"`
+	EntrypointsAdded []string `json:"entrypoints_added,omitempty"`
 }
 
 // TODO(prototype): deferred code-review findings — address when this graduates past the
@@ -170,13 +179,64 @@ func Build(base, branch *graph.Graph) Report {
 	}
 	sortByConsequence(newBlind)
 	sortByConsequence(carried)
+
+	// The verified "what this MR does" delta: boundary effects and entrypoints the branch
+	// has that the base did not (and vice versa). Sound over statically-resolved edges.
+	effAdded, effRemoved := stringSetDelta(boundaryEffectSet(base), boundaryEffectSet(branch))
+	epsAdded, _ := stringSetDelta(entrypointSet(base), entrypointSet(branch))
+
 	return Report{
-		BaseNodes:   len(base.Nodes),
-		BranchNodes: len(branch.Nodes),
-		NewBlind:    newBlind,
-		Carried:     carried,
-		Accounted:   accounted,
+		BaseNodes:        len(base.Nodes),
+		BranchNodes:      len(branch.Nodes),
+		NewBlind:         newBlind,
+		Carried:          carried,
+		Accounted:        accounted,
+		EffectsAdded:     effAdded,
+		EffectsRemoved:   effRemoved,
+		EntrypointsAdded: epsAdded,
 	}
+}
+
+// boundaryEffectSet is the set of human-readable boundary-effect labels the graph emits
+// (the "boundary:" prefix trimmed, matching trimmedEffects), deduped — the contract-level
+// I/O surface used for the verified delta.
+func boundaryEffectSet(g *graph.Graph) map[string]bool {
+	m := map[string]bool{}
+	for _, e := range g.Edges {
+		if e.IsBoundary() {
+			m[strings.TrimPrefix(e.To, "boundary:")] = true
+		}
+	}
+	return m
+}
+
+// entrypointSet is the set of named entrypoints (routes/consumers) the graph exposes.
+func entrypointSet(g *graph.Graph) map[string]bool {
+	m := map[string]bool{}
+	for _, ep := range g.Entrypoints {
+		if ep.Name != "" {
+			m[ep.Name] = true
+		}
+	}
+	return m
+}
+
+// stringSetDelta returns the sorted additions (in branch, not base) and removals (in base,
+// not branch) — intrinsic order, no map iteration reaches the output (determinism).
+func stringSetDelta(base, branch map[string]bool) (added, removed []string) {
+	for k := range branch {
+		if !base[k] {
+			added = append(added, k)
+		}
+	}
+	for k := range base {
+		if !branch[k] {
+			removed = append(removed, k)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
 }
 
 // splitNewCarried partitions the branch's serious forward blind spots into those NOT in
@@ -513,6 +573,29 @@ func (r Report) RenderSummary(o Options) string {
 	}
 	fmt.Fprintf(&b, "**%d changed function(s)** — %s · 🟡 %d carried · ✅ %d accounted.\n", n+c+a, newPhrase, c, a)
 
+	// What this MR does (verified): the sound boundary-effect / entrypoint delta — the
+	// orientation a reviewer wants before the review list. A FLOOR: the ⚠️ items are where
+	// it is incomplete.
+	lim := 0
+	if !o.Full {
+		lim = o.budget()
+	}
+	if len(r.EntrypointsAdded)+len(r.EffectsAdded)+len(r.EffectsRemoved) > 0 {
+		b.WriteString("\n**What this MR does (verified):**\n")
+		if len(r.EntrypointsAdded) > 0 {
+			fmt.Fprintf(&b, "- exposes %d new entrypoint(s): %s\n", len(r.EntrypointsAdded), backtickList(r.EntrypointsAdded, lim))
+		}
+		if len(r.EffectsAdded) > 0 {
+			fmt.Fprintf(&b, "- adds %d external effect(s): %s\n", len(r.EffectsAdded), backtickList(r.EffectsAdded, lim))
+		}
+		if len(r.EffectsRemoved) > 0 {
+			fmt.Fprintf(&b, "- removes %d external effect(s): %s\n", len(r.EffectsRemoved), backtickList(r.EffectsRemoved, lim))
+		}
+		b.WriteString("_(verified over statically-resolved edges; the ⚠️ items below are where this is incomplete)_\n")
+	} else if n == 0 {
+		b.WriteString("\n_No change to the verified external surface (no new routes or effects) and no new blind spots — an internal-only change._\n")
+	}
+
 	// New blindness: visible — this IS the review list. Consequence-ordered; capped with a
 	// disclosed overflow so the comment stays paste-able (the full list is in the report).
 	if n > 0 {
@@ -578,27 +661,37 @@ func summaryLine(cf ChangedFn, kinds []string) string {
 		sb.WriteString(" ✍")
 	}
 	if len(kinds) > 0 {
-		q := make([]string, len(kinds))
-		for i, k := range kinds {
-			q[i] = "`" + k + "`"
-		}
-		sb.WriteString(" — " + strings.Join(q, ", "))
+		sb.WriteString(" — " + backtickList(kinds, 0))
 	}
 	sb.WriteString(effSuffix(cf.Effects))
 	return sb.String()
 }
 
-// effSuffix renders an effect set as a compact, backtick-quoted "→ a, b" suffix (backticks
-// so a <dynamic> label is literal, not stray HTML), or "" when there are none.
+// effSuffix renders an effect set as a compact "→ a, b" suffix, or "" when there are none.
 func effSuffix(effects []string) string {
 	if len(effects) == 0 {
 		return ""
 	}
-	q := make([]string, len(effects))
-	for i, e := range effects {
-		q[i] = "`" + e + "`"
+	return " → " + backtickList(effects, 0)
+}
+
+// backtickList joins items as `a`, `b`, … each in a backtick code span (so a <dynamic>
+// label or other special char renders literally, not as stray Markdown/HTML). When max > 0
+// and the list is longer, it shows max items then "…+N more" so a digest stays compact.
+func backtickList(items []string, max int) string {
+	shown, overflow := items, 0
+	if max > 0 && len(items) > max {
+		shown, overflow = items[:max], len(items)-max
 	}
-	return " → " + strings.Join(q, ", ")
+	q := make([]string, len(shown))
+	for i, s := range shown {
+		q[i] = "`" + s + "`"
+	}
+	out := strings.Join(q, ", ")
+	if overflow > 0 {
+		out += fmt.Sprintf(", …+%d more", overflow)
+	}
+	return out
 }
 
 // RenderMermaid draws the three-zone triage as a flowchart. On a large diff it collapses
