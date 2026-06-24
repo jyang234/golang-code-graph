@@ -13,7 +13,9 @@ surfaces `fitness`, `review`, `verify`, `diff`, `verify-artifact`,
 `policy-check`; the lenses `reach`, `triage`, `ground`, `exceptions`,
 `transcript`; the adoption shell `init` (+ SARIF, setup action); and the `mcp`
 server through all three tiers (stdio, `--service` fleet serving, `--http`
-team transport). The zero-touch CI trust anchor (Phase 4) is intentionally
+team transport). A reviewer-triage **prototype** (`review-triage`) is built and
+unit-locked but field-unproven — graded ⚠️ on value in the scorecard, documented in
+the usage guide. The zero-touch CI trust anchor (Phase 4) is intentionally
 deferred; until it exists groundwork is a sound *local/advisory* tool, not yet
 an adversary-resistant gate (see the trust boundary in the usage guide).
 

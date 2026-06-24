@@ -404,6 +404,7 @@ groundwork chains <graph>… [--service <name>=<graph>]… [--policy <p>]…   c
 groundwork transcript <calls.jsonl> [--json]            summarize an mcp --log transcript (the E4 reader)
 groundwork fitness <policy> <graph> [--expect <sha>] [--sarif]   evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--expect <sha>] [--json]     computed MR review artifact
+groundwork review-triage <base> <branch> [--summary|--mermaid|--json] [--policy <p>] [--full] [--max-nodes N]   PROTOTYPE: reviewer triage — what the MR does (verified) and where to look
 groundwork verify <policy> <base> <branch> [--scope …] [--expect <sha>] [--corpus <dir> [--capture production|integration]] [--json]  fail-closed pre-flight gate (--corpus arms the impeachment gate)
 groundwork diff <base-contract> <branch-contract>       inter-service contract diff
 groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]   prove an artifact authentic
@@ -529,6 +530,56 @@ surfaced at the gate, exit 0:
   the `rule_liveness` audit — so the gate the agent actually converges against is
   never silent about a standing enforceability gap, not only the interactive
   `fitness` lens.
+
+### `review-triage` — reviewer triage (PROTOTYPE)
+
+> **`PROTOTYPE`** — built and unit-locked, not yet field-validated against a real
+> diff; the render formats may change. It never gates and emits no verdict — it is a
+> comprehension aid, not a check.
+
+The comprehension companion to `review`. Same base/branch graphs, but instead of a
+merge verdict it answers a human reviewer's two questions: *what does this MR do that
+the tool can vouch for, and where should I spend my scrutiny?* It needs no policy (a
+policy only enables the per-route section, below). It sorts the changed functions into
+three zones — by the inverse of the tool's own confidence **and** by what the diff
+newly moved:
+
+- **⚠️ New blind** — the change introduces or newly reaches a blind spot (dynamic
+  dispatch, reflection, non-constant I/O). The tool could not see here before and the
+  change now routes into it; this is exactly where a hallucinated understanding hides,
+  so it is flagged loudest.
+- **🟡 Carried blind** — resolved at its own level, but its surface passes through a
+  blind spot that **already existed**. Disclosed, not escalated as this MR's fault.
+- **✅ Accounted** — the forward cone is fully resolved, so the tool shows the complete
+  evidence (entrypoint cover, exact effect surface). This is **not approval**: it
+  accepts nothing at face value; the reviewer still verifies the effects are right.
+
+```console
+$ groundwork review-triage base.json branch.json --summary
+### 🔍 groundwork review triage
+**4 changed function(s)** — ⚠️ 2 newly unverifiable · 🟡 1 carried · ✅ 1 accounted.
+
+**What this MR does (verified):**
+- adds 1 external effect(s): `db INSERT read_audit`
+…
+```
+
+Four renders over one computation:
+
+- *(default)* — the full per-function markdown report.
+- **`--summary`** — a compact MR-comment digest (GitHub `<details>` collapse the
+  low-attention zones); leads with what the MR does (verified) then what to review.
+- **`--mermaid`** — the three zones as a colored flowchart.
+- **`--json`** — the structured report.
+
+On a large diff the **accounted** zone rolls up by package and a blind zone caps with
+a disclosed `+N more`; the collapse only ever sheds the low-attention end — never the
+new-blind zone or the boundary-effect surface (`--full` / `--max-nodes N` tune it).
+
+With **`--policy <p>`** the digest adds a **per-route write movement** line — "`GET
+/x` now writes `db INSERT read_audit`" — reusing `review`'s `route_io_deltas` (the one
+per-route delta), so this surface and the review artifact never disagree about what a
+route writes.
 
 ### `verify` — the fail-closed pre-flight gate
 
