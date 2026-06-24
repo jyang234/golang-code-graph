@@ -556,21 +556,34 @@ newly moved:
 
 ```console
 $ groundwork review-triage base.json branch.json --summary
-### 🔍 groundwork review triage
-**4 changed function(s)** — ⚠️ 2 newly unverifiable · 🟡 1 carried · ✅ 1 accounted.
+### 🔍 Review triage — where to spend your attention
 
-**What this MR does (verified):**
-- adds 1 external effect(s): `db INSERT read_audit`
+**75 function(s) changed.** Much of this diff is telemetry/cache handoffs the analyzer
+can't see into (expected). Underneath that, **3 spot(s) need judgment:**
+
+> ⚠️ 1 · A `db` effect now reads as **removed** — it likely isn't.
+> `db postgres` disappears because a new instrumentation wrapper (`otelsql`) hides the
+> call from static analysis, not a dropped dependency.
+> Check: the `db` call still happens the way it did on the base.
 …
+**Routine — skim** (112 telemetry/cache handoff(s)): `statsy`×38 · `obs`×34 …
 ```
 
 Four renders over one computation:
 
 - *(default)* — the full per-function markdown report.
-- **`--summary`** — a compact MR-comment digest (GitHub `<details>` collapse the
-  low-attention zones); leads with what the MR does (verified) then what to review.
+- **`--summary`** — the **reviewer-legible** MR-comment digest, written for a reviewer
+  who has never touched the tool. It leads with a plain-language framing line and the few
+  spots that need a human judgment call — **masking first** (a removed effect that is
+  really an instrumentation wrapper hiding the call, the highest-value catch) — then the
+  runtime-dispatch and unresolved seams. Routine telemetry/cache handoffs aggregate into
+  one skimmable line; everything else (full by-tier list, carried, accounted, effect
+  surface) folds into GitHub `<details>` — **nothing is truncated**. An UNKNOWN package is
+  always surfaced, never folded into the routine line (fail-loud). The verified
+  "what this MR does" delta is kept as the floor the ⚠️ items sit above.
 - **`--mermaid`** — the three zones as a colored flowchart.
-- **`--json`** — the structured report.
+- **`--json`** — the structured report (unchanged: the summary is a pure presentation
+  transform over the same computed report, so machine consumers are unaffected).
 
 On a large diff the **accounted** zone rolls up by package and a blind zone caps with
 a disclosed `+N more`; the collapse only ever sheds the low-attention end — never the

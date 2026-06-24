@@ -265,14 +265,19 @@ func TestRenderSummary(t *testing.T) {
 	}
 	out := Build(base, branch, nil).RenderSummary(Options{})
 
-	// The new-blind review item is visible and appears BEFORE the accounted <details>.
+	// The new-blind change is promoted to a visible callout BEFORE the accounted <details>.
 	iDyn := strings.Index(out, "svc.Dyn")
 	iAcc := strings.Index(out, "Fully accounted")
 	if iDyn < 0 || iAcc < 0 || iDyn > iAcc {
 		t.Errorf("new-blind item must be visible and precede the accounted <details>:\n%s", out)
 	}
-	if !strings.Contains(out, "<details>") || !strings.Contains(out, "Review these") {
-		t.Errorf("summary must lead with the review list and fold lower zones into <details>:\n%s", out)
+	// The lead is plain-language ("N spots need judgment"), the lower zones fold into
+	// <details>, and the runtime-dispatch seam is promoted to a ⚠️ callout.
+	if !strings.Contains(out, "<details>") || !strings.Contains(out, "spot(s) need judgment") {
+		t.Errorf("summary must lead with the judgment-call count and fold lower zones into <details>:\n%s", out)
+	}
+	if !strings.Contains(out, "choose their target at runtime") {
+		t.Errorf("a runtime-dispatch seam must be promoted to a plain-language callout:\n%s", out)
 	}
 	// The <dynamic> effect must be inside a backtick span (literal), never raw HTML.
 	if !strings.Contains(out, "`bus PUBLISH <dynamic>`") {
@@ -288,6 +293,86 @@ func TestRenderSummary(t *testing.T) {
 	}
 	if !strings.Contains(out, "adds 2 external effect(s)") || !strings.Contains(out, "`db SELECT users`") {
 		t.Errorf("verified delta must report the added effects:\n%s", out)
+	}
+}
+
+// TestSummaryMaskingCallout pins the highest-value catch: when a verified effect
+// DISAPPEARS (effects_removed) and a new ExternalBoundaryCall seam targets a known
+// instrumentation wrapper of the same domain, the summary says the effect reads as
+// "removed" but likely isn't — it moved behind the wrapper. The reviewer would otherwise
+// have to hand-join the blind-spot list against the removed-effect list to see this.
+func TestSummaryMaskingCallout(t *testing.T) {
+	base := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.OpenPostgres", Sig: "old"}},
+		Edges: []graph.Edge{{From: "svc.OpenPostgres", To: "boundary:db postgres", Boundary: "outbound-sync"}},
+	}
+	branch := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.OpenPostgres", Sig: "new"}},
+		// The DB edge is gone (wrapped); a new external-boundary seam hands off to otelsql.
+		BlindSpots: []graph.BlindSpot{{
+			Kind: "ExternalBoundaryCall", Site: "svc.OpenPostgres",
+			Detail: "otelsql.Open", Package: "github.com/XSAM/otelsql", Severity: "effect-bearing",
+		}},
+	}
+	rep := Build(base, branch, nil)
+	if len(rep.EffectsRemoved) != 1 || rep.EffectsRemoved[0] != "db postgres" {
+		t.Fatalf("EffectsRemoved = %v, want [db postgres]", rep.EffectsRemoved)
+	}
+	out := rep.RenderSummary(Options{})
+	if !strings.Contains(out, "reads as **removed**") || !strings.Contains(out, "otelsql") || !strings.Contains(out, "`db postgres`") {
+		t.Errorf("masking callout (removed effect × instrumentation wrapper) not surfaced:\n%s", out)
+	}
+	// It is named a heuristic, never a proof.
+	if !strings.Contains(out, "likely isn't") || !strings.Contains(out, "heuristic") {
+		t.Errorf("masking must be worded as a heuristic, not a proof:\n%s", out)
+	}
+}
+
+// TestSummaryRoutineAggregationFailLoud pins two rules at once: a known telemetry/cache
+// handoff (statsy) is AGGREGATED into the routine line, while an UNKNOWN package is
+// SURFACED as a callout, never folded into routine (the FR's fail-loud rule — hiding is
+// the dangerous direction).
+func TestSummaryRoutineAggregationFailLoud(t *testing.T) {
+	base := &graph.Graph{Nodes: []graph.Node{{FQN: "svc.SendMetric", Sig: "o"}, {FQN: "svc.CallMystery", Sig: "o"}}}
+	branch := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.SendMetric", Sig: "n"}, {FQN: "svc.CallMystery", Sig: "n"}},
+		BlindSpots: []graph.BlindSpot{
+			{Kind: "ExternalBoundaryCall", Site: "svc.SendMetric", Package: "github.com/acme/statsy", Severity: "effect-bearing"},
+			{Kind: "ExternalBoundaryCall", Site: "svc.CallMystery", Package: "github.com/acme/mystery", Severity: "effect-bearing"},
+		},
+	}
+	out := Build(base, branch, nil).RenderSummary(Options{})
+	if !strings.Contains(out, "Routine — skim") || !strings.Contains(out, "`statsy`×1") {
+		t.Errorf("a known telemetry handoff must aggregate into the routine line:\n%s", out)
+	}
+	if !strings.Contains(out, "hand off to a third-party package") || !strings.Contains(out, "CallMystery") {
+		t.Errorf("an unknown package must be SURFACED as a callout (fail-loud), not hidden:\n%s", out)
+	}
+	// The unknown package must not be quietly swept into the routine roll-up.
+	if strings.Contains(out, "`mystery`×") {
+		t.Errorf("an unknown package must never appear in the routine aggregate:\n%s", out)
+	}
+}
+
+// TestSummaryFoldsNotTruncates pins the fold-don't-truncate rule: when a callout caps its
+// visible function list, every capped name still appears in the by-consequence <details>,
+// so nothing is dropped from the record.
+func TestSummaryFoldsNotTruncates(t *testing.T) {
+	rep := Report{
+		BaseNodes: 3, BranchNodes: 4,
+		NewBlind: []ChangedFn{
+			{FQN: "p.F0", NewSeams: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "p.F0"}}},
+			{FQN: "p.F1", NewSeams: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "p.F1"}}},
+			{FQN: "p.F2", NewSeams: []graph.BlindSpot{{Kind: "NonConstantBoundaryArg", Site: "p.F2"}}},
+		},
+	}
+	out := rep.RenderSummary(Options{MaxNodes: 2})
+	if !strings.Contains(out, "…+1 more") {
+		t.Errorf("the callout function list must cap with a disclosed overflow:\n%s", out)
+	}
+	iDetails := strings.Index(out, "newly-blind function(s), by consequence")
+	if iDetails < 0 || strings.Index(out, "F2") < iDetails {
+		t.Errorf("the capped function must still be listed in the by-consequence <details>:\n%s", out)
 	}
 }
 
