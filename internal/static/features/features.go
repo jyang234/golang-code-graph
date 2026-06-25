@@ -13,6 +13,7 @@ package features
 
 import (
 	"go/types"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -241,6 +242,26 @@ func PkgPath(fn *ssa.Function) string {
 		return ""
 	}
 	return fn.Pkg.Pkg.Path()
+}
+
+// RelFile renders an absolute source filename as a deterministic, byte-identical-
+// across-checkouts path: relative to baseDir (slash-separated) when the file lives
+// inside it — the only form independent of where the repo is checked out — else the
+// portable "<pkgPath>/<base>" form for a file above or outside the service dir. It is
+// the ONE place the "make this position service-relative" predicate lives, shared by
+// obligations' site strings and the graph's node File field, so the two can never drift
+// on path normalization (CLAUDE.md one source of truth); the parity is pinned by
+// TestRelFile. pkgPath is the caller's package-path-of-fn — obligations supplies its
+// Object()-fallback variant (so a synthetic still names a package), the graph supplies
+// PkgPath directly (its callers only reach the fallback for source-backed funcs). An
+// empty baseDir is not a supported mode (every caller passes the absolute service dir):
+// filepath.Rel then errors and the portable form is used, never a bare, collision-prone
+// base name.
+func RelFile(filename, baseDir, pkgPath string) string {
+	if rel, err := filepath.Rel(baseDir, filename); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(rel)
+	}
+	return pkgPath + "/" + filepath.Base(filename)
 }
 
 // NamedTypeIs reports whether named is the DEFINED type pkgPath.name — the nil-safe

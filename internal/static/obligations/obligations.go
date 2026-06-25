@@ -37,7 +37,6 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -812,14 +811,10 @@ func site(fn *ssa.Function, pos token.Pos, baseDir string, ordinal int) string {
 	if !p.IsValid() {
 		return fmt.Sprintf("%s:synthetic#%d", pkgPathOf(fn), ordinal)
 	}
-	line := ":" + strconv.Itoa(p.Line)
-	if baseDir != "" {
-		if rel, err := filepath.Rel(baseDir, p.Filename); err == nil && !strings.HasPrefix(rel, "..") {
-			return filepath.ToSlash(rel) + line
-		}
-		return pkgPathOf(fn) + "/" + filepath.Base(p.Filename) + line
-	}
-	return filepath.Base(p.Filename) + line
+	// The service-relative path predicate is shared with the graph's node File field
+	// (features.RelFile, the one source of truth); pkgPathOf carries the synthetic
+	// Object() fallback the graph's PkgPath omits.
+	return features.RelFile(p.Filename, baseDir, pkgPathOf(fn)) + ":" + strconv.Itoa(p.Line)
 }
 
 // exitPos is the best position for an exit instruction: its own, else the

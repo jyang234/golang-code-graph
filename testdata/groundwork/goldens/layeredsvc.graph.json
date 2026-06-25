@@ -9,84 +9,123 @@
       "sig": "func (*app.Service).GetProfile(ctx context.Context, id string) (store.User, error)",
       "tier": 2,
       "package": "example.com/layeredsvc/internal/app",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/app/app.go",
+      "line": 22,
+      "end_line": 28
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/app.Service).UpdateProfile",
       "sig": "func (*app.Service).UpdateProfile(ctx context.Context, id string, name string) error",
       "tier": 2,
       "package": "example.com/layeredsvc/internal/app",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/app/app.go",
+      "line": 31,
+      "end_line": 36
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/handler.Server).GetUser",
       "sig": "func (*handler.Server).GetUser(w http.ResponseWriter, r *http.Request)",
       "tier": 1,
-      "package": "example.com/layeredsvc/internal/handler"
+      "package": "example.com/layeredsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 25,
+      "end_line": 32
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/handler.Server).UpdateUser",
       "sig": "func (*handler.Server).UpdateUser(w http.ResponseWriter, r *http.Request)",
       "tier": 1,
-      "package": "example.com/layeredsvc/internal/handler"
+      "package": "example.com/layeredsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 35,
+      "end_line": 46
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/store.Store).InsertAudit",
       "sig": "func (*store.Store).InsertAudit(ctx context.Context, id string) error",
       "tier": 1,
       "package": "example.com/layeredsvc/internal/store",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 42,
+      "end_line": 46
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/store.Store).SelectUser",
       "sig": "func (*store.Store).SelectUser(ctx context.Context, id string, out *store.User) error",
       "tier": 2,
       "package": "example.com/layeredsvc/internal/store",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 28,
+      "end_line": 32
     },
     {
       "fqn": "(*example.com/layeredsvc/internal/store.Store).UpdateUser",
       "sig": "func (*store.Store).UpdateUser(ctx context.Context, id string, name string) error",
       "tier": 1,
       "package": "example.com/layeredsvc/internal/store",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/store/store.go",
+      "line": 35,
+      "end_line": 39
     },
     {
       "fqn": "example.com/layeredsvc.main",
       "sig": "func main.main()",
       "tier": 1,
-      "package": "example.com/layeredsvc"
+      "package": "example.com/layeredsvc",
+      "file": "main.go",
+      "line": 17,
+      "end_line": 19
     },
     {
       "fqn": "example.com/layeredsvc.run",
       "sig": "func main.run() error",
       "tier": 3,
       "package": "example.com/layeredsvc",
-      "fallible": true
+      "fallible": true,
+      "file": "main.go",
+      "line": 23,
+      "end_line": 35
     },
     {
       "fqn": "example.com/layeredsvc/internal/app.New",
       "sig": "func app.New(st *store.Store) *app.Service",
       "tier": 3,
-      "package": "example.com/layeredsvc/internal/app"
+      "package": "example.com/layeredsvc/internal/app",
+      "file": "internal/app/app.go",
+      "line": 19,
+      "end_line": 19
     },
     {
       "fqn": "example.com/layeredsvc/internal/handler.New",
       "sig": "func handler.New(svc *app.Service) *handler.Server",
       "tier": 3,
-      "package": "example.com/layeredsvc/internal/handler"
+      "package": "example.com/layeredsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 22,
+      "end_line": 22
     },
     {
       "fqn": "example.com/layeredsvc/internal/handler.writeJSON",
       "sig": "func handler.writeJSON(_ context.Context, w http.ResponseWriter, v any)",
       "tier": 3,
-      "package": "example.com/layeredsvc/internal/handler"
+      "package": "example.com/layeredsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 48,
+      "end_line": 51
     },
     {
       "fqn": "example.com/layeredsvc/internal/store.New",
       "sig": "func store.New(db *sql.DB) *store.Store",
       "tier": 3,
-      "package": "example.com/layeredsvc/internal/store"
+      "package": "example.com/layeredsvc/internal/store",
+      "file": "internal/store/store.go",
+      "line": 25,
+      "end_line": 25
     }
   ],
   "edges": [

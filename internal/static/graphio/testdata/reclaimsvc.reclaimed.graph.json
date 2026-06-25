@@ -8,49 +8,73 @@
       "fqn": "(*example.com/reclaimsvc.store).Delete",
       "sig": "func (*main.store).Delete(ctx context.Context)",
       "tier": 1,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 32,
+      "end_line": 35
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin",
       "sig": "func (*main.wrapper).Admin(w http.ResponseWriter, r *http.Request)",
       "tier": 1,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 66,
+      "end_line": 76
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin$1",
       "sig": "func(w http.ResponseWriter, r *http.Request)",
       "tier": 3,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 67,
+      "end_line": 69
     },
     {
       "fqn": "(*example.com/reclaimsvc.wrapper).Admin$2",
       "sig": "func()",
       "tier": 3,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 74,
+      "end_line": 74
     },
     {
       "fqn": "example.com/reclaimsvc.authMW",
       "sig": "func main.authMW(next http.Handler) http.Handler",
       "tier": 3,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 43,
+      "end_line": 51
     },
     {
       "fqn": "example.com/reclaimsvc.authMW$1",
       "sig": "func(w http.ResponseWriter, r *http.Request)",
       "tier": 3,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 44,
+      "end_line": 50
     },
     {
       "fqn": "example.com/reclaimsvc.main",
       "sig": "func main.main()",
       "tier": 1,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 78,
+      "end_line": 83
     },
     {
       "fqn": "example.com/reclaimsvc.runLater",
       "sig": "func main.runLater(f func())",
       "tier": 3,
-      "package": "example.com/reclaimsvc"
+      "package": "example.com/reclaimsvc",
+      "file": "main.go",
+      "line": 63,
+      "end_line": 63
     }
   ],
   "edges": [

@@ -127,6 +127,44 @@ func TestNodePackageIsTypedImportPath(t *testing.T) {
 	}
 }
 
+// TestNodePositionLocatesDeclaration proves the disclosure-only File/Line/EndLine
+// fields locate each node at its `func` declaration: a receiver-method node resolves
+// to its defining file (RELATIVE to the service dir, so the golden is byte-identical
+// across checkouts) and the span runs from the keyword line through the closing brace.
+// This is the signal a caller intersects against a git diff to recover the
+// author-edited FQN set `review-triage --scope-fqns` consumes.
+func TestNodePositionLocatesDeclaration(t *testing.T) {
+	g, err := graphio.Build(analyzeFixture(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFQN := map[string]graphio.Node{}
+	for _, n := range g.Nodes {
+		byFQN[n.FQN] = n
+	}
+	// handler.App.Create is declared at internal/handler/application.go:30 and its
+	// body closes at line 43 (the func keyword through the closing brace).
+	create := byFQN["(*example.com/loansvc/internal/handler.App).Create"]
+	if create.File != "internal/handler/application.go" {
+		t.Errorf("Create File = %q, want the relative-to-service-dir path", create.File)
+	}
+	if create.Line != 30 || create.EndLine != 43 {
+		t.Errorf("Create span = %d..%d, want 30..43", create.Line, create.EndLine)
+	}
+	// Every source-backed node carries a usable span: a relative (never absolute,
+	// never "..") file, a positive start line, and an end at or past the start. (All
+	// loansvc graph nodes are syntax-backed; a synthetic wrapper with no AST omits all
+	// three together, which omitempty handles — there are none in this fixture.)
+	for _, n := range g.Nodes {
+		if n.File == "" || n.Line <= 0 || n.EndLine < n.Line {
+			t.Errorf("node %q has an unusable span: file=%q line=%d end=%d", n.FQN, n.File, n.Line, n.EndLine)
+		}
+		if strings.HasPrefix(n.File, "..") || strings.HasPrefix(n.File, "/") {
+			t.Errorf("node %q File = %q is not relative to the service dir", n.FQN, n.File)
+		}
+	}
+}
+
 // TestNodeTierFromOutgoingEdges proves a non-root function is tiered by what it
 // does, not by what it is: a function that publishes surfaces as tier 1 and a
 // pure-compute constructor stays tier 3. Before node-tier-from-edges, every
