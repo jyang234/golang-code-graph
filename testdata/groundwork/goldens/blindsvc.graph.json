@@ -9,70 +9,103 @@
       "sig": "func (*bus.Bus).Publish(ctx context.Context, event string, payload []byte) error",
       "tier": 1,
       "package": "example.com/blindsvc/internal/bus",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/bus/bus.go",
+      "line": 16,
+      "end_line": 21
     },
     {
       "fqn": "(*example.com/blindsvc/internal/handler.Server).Create",
       "sig": "func (*handler.Server).Create(w http.ResponseWriter, r *http.Request)",
       "tier": 1,
-      "package": "example.com/blindsvc/internal/handler"
+      "package": "example.com/blindsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 35,
+      "end_line": 41
     },
     {
       "fqn": "(*example.com/blindsvc/internal/handler.Server).Publish",
       "sig": "func (*handler.Server).Publish(w http.ResponseWriter, r *http.Request)",
       "tier": 1,
-      "package": "example.com/blindsvc/internal/handler"
+      "package": "example.com/blindsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 23,
+      "end_line": 30
     },
     {
       "fqn": "(*example.com/blindsvc/internal/notify.Notifier).Created",
       "sig": "func (*notify.Notifier).Created(ctx context.Context, user any) error",
       "tier": 1,
       "package": "example.com/blindsvc/internal/notify",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/notify/notify.go",
+      "line": 23,
+      "end_line": 25
     },
     {
       "fqn": "(*example.com/blindsvc/internal/notify.Notifier).Emit",
       "sig": "func (*notify.Notifier).Emit(ctx context.Context, event string, user any) error",
       "tier": 1,
       "package": "example.com/blindsvc/internal/notify",
-      "fallible": true
+      "fallible": true,
+      "file": "internal/notify/notify.go",
+      "line": 29,
+      "end_line": 31
     },
     {
       "fqn": "example.com/blindsvc.main",
       "sig": "func main.main()",
       "tier": 1,
-      "package": "example.com/blindsvc"
+      "package": "example.com/blindsvc",
+      "file": "main.go",
+      "line": 17,
+      "end_line": 19
     },
     {
       "fqn": "example.com/blindsvc.run",
       "sig": "func main.run() error",
       "tier": 3,
       "package": "example.com/blindsvc",
-      "fallible": true
+      "fallible": true,
+      "file": "main.go",
+      "line": 21,
+      "end_line": 36
     },
     {
       "fqn": "example.com/blindsvc/internal/bus.New",
       "sig": "func bus.New() *bus.Bus",
       "tier": 3,
-      "package": "example.com/blindsvc/internal/bus"
+      "package": "example.com/blindsvc/internal/bus",
+      "file": "internal/bus/bus.go",
+      "line": 13,
+      "end_line": 13
     },
     {
       "fqn": "example.com/blindsvc/internal/encode.Marshal",
       "sig": "func encode.Marshal(v any) []byte",
       "tier": 3,
-      "package": "example.com/blindsvc/internal/encode"
+      "package": "example.com/blindsvc/internal/encode",
+      "file": "internal/encode/encode.go",
+      "line": 10,
+      "end_line": 16
     },
     {
       "fqn": "example.com/blindsvc/internal/handler.New",
       "sig": "func handler.New(n *notify.Notifier) *handler.Server",
       "tier": 3,
-      "package": "example.com/blindsvc/internal/handler"
+      "package": "example.com/blindsvc/internal/handler",
+      "file": "internal/handler/handler.go",
+      "line": 19,
+      "end_line": 19
     },
     {
       "fqn": "example.com/blindsvc/internal/notify.New",
       "sig": "func notify.New(b *bus.Bus) *notify.Notifier",
       "tier": 3,
-      "package": "example.com/blindsvc/internal/notify"
+      "package": "example.com/blindsvc/internal/notify",
+      "file": "internal/notify/notify.go",
+      "line": 20,
+      "end_line": 20
     }
   ],
   "edges": [

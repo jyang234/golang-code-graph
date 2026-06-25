@@ -250,6 +250,17 @@ type Node struct {
 	// count, layer assignment, or reachability computation reads it.
 	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
+	// File / Line / EndLine locate the node's declaration in source: File is the
+	// producer's defining file relative to the service dir, Line/EndLine the 1-based
+	// span of the `func` declaration (empty/zero for a synthetic node, and for a graph
+	// built before the fields existed). Decoded on this side of the trust boundary like
+	// every other field — DisallowUnknownFields would reject them otherwise. They let a
+	// caller intersect a git diff against each node's span to recover the author-edited
+	// FQN set `review-triage --scope-fqns` consumes. Disclosure-only: no verdict, count,
+	// layer assignment, or reachability computation reads them.
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	EndLine int    `json:"end_line,omitempty"`
 }
 
 // Edge is a call from a first-party function (From, always a Node) to another

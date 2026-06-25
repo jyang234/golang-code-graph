@@ -258,6 +258,62 @@ type Node struct {
 	// wrapper with nil fn.Pkg); omitempty spares exactly those.
 	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
+	// File / Line / EndLine locate the node's declaration in source: File is the
+	// defining file made RELATIVE to the service dir (so it is byte-identical across
+	// checkouts, the determinism discipline obligations.site already uses), falling
+	// back to the portable "<import-path>/<base>" form for a file outside the dir;
+	// Line and EndLine are the 1-based span of the `func` declaration (keyword through
+	// closing brace) from the AST node, never invented. They let a caller intersect a
+	// git diff's changed line ranges with each node's span to recover the author-edited
+	// FQN set `review-triage --scope-fqns` consumes — the one signal not derivable from
+	// the graph's FQN/package/sig/tier alone — and unlock other position-aware views
+	// (jump-to-source, blast-radius by file). Pure function of the SSA function and the
+	// FileSet, and disclosure-only: same trust class as Package — no verdict, count,
+	// edge, tier, or reachability computation reads them, so they cannot move a pole.
+	// All three are empty/zero together, and omitempty away, for a synthetic node with
+	// no syntax (a compiler-generated wrapper or bound method) or an invalid position —
+	// disclosure that fails quiet, never a fabricated line.
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	EndLine int    `json:"end_line,omitempty"`
+}
+
+// nodePosition returns fn's defining file and 1-based declaration span for the
+// disclosure-only File/Line/EndLine node fields. The span comes from the AST node
+// (fn.Syntax(): the *ast.FuncDecl or *ast.FuncLit) — the `func` keyword through the
+// closing brace — so a caller intersecting a diff sees the function BODY, not its name
+// wherever else it is mentioned (a call site in an edited caller, an FQN string in a
+// committed golden), which is exactly the distinction a grep or hunk-header extractor
+// gets wrong. The path is made relative to baseDir (the absolute service dir) so it is
+// byte-identical across checkouts, falling back — like obligations.site — to the
+// portable "<import-path>/<base>" form for a file outside the dir; baseDir is always set
+// by Build, but an empty one still yields a deterministic base-name form. A synthetic
+// function (nil Syntax) or an invalid start position yields ("", 0, 0): all three fields
+// omitempty away rather than carrying a fabricated line. Pure function of the SSA
+// function and the FileSet.
+func nodePosition(fn *ssa.Function, baseDir string) (file string, start, end int) {
+	syn := fn.Syntax()
+	if syn == nil {
+		return "", 0, 0
+	}
+	fset := fn.Prog.Fset
+	sp := fset.Position(syn.Pos())
+	if !sp.IsValid() {
+		return "", 0, 0
+	}
+	file = filepath.Base(sp.Filename)
+	if baseDir != "" {
+		if rel, err := filepath.Rel(baseDir, sp.Filename); err == nil && !strings.HasPrefix(rel, "..") {
+			file = filepath.ToSlash(rel)
+		} else {
+			file = features.PkgPath(fn) + "/" + filepath.Base(sp.Filename)
+		}
+	}
+	end = sp.Line
+	if ep := fset.Position(syn.End()); ep.IsValid() {
+		end = ep.Line
+	}
+	return file, sp.Line, end
 }
 
 // Edge is a call from a first-party function to another first-party function or
@@ -572,14 +628,15 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 		})
 		g.CompositionRoots = compositionRoots(res)
 	}
-	base := ""
-	if entry == "" {
-		abs, err := filepath.Abs(res.Dir)
-		if err != nil {
-			return nil, err
-		}
-		base = abs
+	// The service dir, absolute — the anchor that makes both the obligations site
+	// strings (entry=="" only) and the per-node File paths (every build) relative,
+	// hence byte-identical across checkouts. Computed unconditionally: an entry-scoped
+	// build never reaches the obligations section, but its nodes still carry positions.
+	abs, err := filepath.Abs(res.Dir)
+	if err != nil {
+		return nil, err
 	}
+	base := abs
 
 	// Lazily-shared summary engine (CX-2/CX-3): obligations and derived
 	// effect sites consult the same instance, and rule-free, effect-free
@@ -628,12 +685,16 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 				labelSites[edges[0].To][e.Site] = true
 			}
 		}
+		file, line, endLine := nodePosition(fn, base)
 		g.Nodes = append(g.Nodes, Node{
 			FQN:      fn.RelString(nil),
 			Sig:      signatures.Of(fn),
 			Tier:     nodeTier(ext, fn, rootFns[fn], nodeEdges),
 			Package:  features.PkgPath(fn),
 			Fallible: fallible(fn),
+			File:     file,
+			Line:     line,
+			EndLine:  endLine,
 		})
 		g.Edges = append(g.Edges, nodeEdges...)
 	}

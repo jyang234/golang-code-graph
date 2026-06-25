@@ -83,7 +83,8 @@ graph JSON between them:
 
 - **flowmap is the producer.** `flowmap graph <service>` builds the call graph
   (`go/packages → go/ssa → go/callgraph`) and emits it as canonical JSON — nodes
-  (`fqn`, `sig`, `tier`, `package`, `fallible`), edges (caller→callee, with `boundary` and
+  (`fqn`, `sig`, `tier`, `package`, `fallible`, and the `file`/`line`/`end_line`
+  declaration span), edges (caller→callee, with `boundary` and
   `concurrent` flags), a blind-spot manifest, and the level-2 disclosure
   sections computed from each function's CFG and the discovered roots:
   `obligations` (path-obligation verdicts), `effect_order` (partial-effect
@@ -620,8 +621,11 @@ The effect surface also narrows to "what your change reaches." **Fail-loud:** a 
 matches *zero* branch functions (an FQN-format slip) does not silently empty the review
 list — it surfaces a loud caution and falls back to the unscoped report. The FQNs are
 the SSA form the graph uses (`example.com/svc/pkg.Func`,
-`(*example.com/svc/pkg.T).Method`); produce them from flowmap, which has the source
-positions to map a `git diff` range to enclosing-function FQNs. The scope fields ride in
+`(*example.com/svc/pkg.T).Method`); produce them by intersecting a `git diff`'s changed
+line ranges with the per-node `file`/`line`/`end_line` span every `flowmap graph` node
+now carries (see the node schema below) — a span that covers the function *body*, so a
+call site in an edited caller or an FQN string in a committed golden does not
+false-positive the way a grep or hunk-header extractor would. The scope fields ride in
 `--json` (`scoped`, `authored_scope`, `scope_note`, per-function `authored`) only when a
 set is supplied, so an unscoped report's JSON is byte-identical to before.
 
@@ -1180,7 +1184,7 @@ it. Top-level sections:
 
 | Section | What it is | Notes |
 |---|---|---|
-| `nodes[]` | `{fqn, sig, tier, package?, fallible}` per first-party function | sorted by fqn; `package` is the node's defining import path (the typed package fact, not an FQN parse), disclosure-only |
+| `nodes[]` | `{fqn, sig, tier, package?, fallible, file?, line?, end_line?}` per first-party function | sorted by fqn; `package` is the node's defining import path (the typed package fact, not an FQN parse); `file`/`line`/`end_line` are the declaration span (file relative to the service dir, the `func` keyword through the closing brace) — intersect a `git diff` against it to recover the author-edited FQN set `review-triage --scope-fqns` consumes. All disclosure-only; empty/omitted for a synthetic node |
 | `edges[]` | `{from, to, tier, boundary?, concurrent?, via?}`; `to` is an FQN or a `boundary:` label | `<dynamic>` in a label = unresolvable target, disclosed; `via` names the reclaimer (`flowmap --reclaim`) that recovered the edge at a dispatch seam — a verdict over it self-discloses as reclaim-informed |
 | `blind_spots[]` | `{kind, site, detail, severity?, package?}` — where the graph's knowledge stops | the soundness frontier; `package` rides `ExternalBoundaryCall` only; `severity` (`effect-bearing`\|`trivial`) rides every `ExternalBoundaryCall` and tags the benign stdlib subset of the `func()` channel (`context.CancelFunc` → `trivial`) — the signal/noise tier, disclosure-only. A `func()` seam's `detail` names the callee's defined type (e.g. `context.CancelFunc`, `…/api.MiddlewareFunc`) so a census can group by it |
 | `obligations[]` | `{rule, kind, fn, site, status, detail}` per anchored site | statuses are an open vocabulary: **fail closed on ones you don't recognize** |
@@ -1290,7 +1294,9 @@ encodes a deliberate honesty or determinism decision, not just a name.
   every edge one possible call. Computed from source, with no tests run and no
   instrumentation. The substrate everything else composes from.
 - **node** — one first-party function in the graph, carrying `fqn`, `sig`,
-  `tier`, `package` (its defining import path), and `fallible`.
+  `tier`, `package` (its defining import path), `fallible`, and the
+  `file`/`line`/`end_line` declaration span (file relative to the service dir;
+  the `func` keyword through the closing brace).
 - **edge** — one possible caller→callee call, optionally flagged `boundary`
   (touches the outside world), `concurrent` (crosses a goroutine spawn), or
   `via` (recovered by a reclaimer).
