@@ -404,7 +404,7 @@ groundwork chains <graph>… [--service <name>=<graph>]… [--policy <p>]…   c
 groundwork transcript <calls.jsonl> [--json]            summarize an mcp --log transcript (the E4 reader)
 groundwork fitness <policy> <graph> [--expect <sha>] [--sarif]   evaluate invariants against one graph
 groundwork review <policy> <base> <branch> [--expect <sha>] [--json]     computed MR review artifact
-groundwork review-triage <base> <branch> [--summary|--mermaid|--json] [--policy <p>] [--full] [--max-nodes N]   PROTOTYPE: reviewer triage — what the MR does (verified) and where to look
+groundwork review-triage <base> <branch> [--summary|--mermaid|--json] [--policy <p>] [--scope-fqns <file|->] [--full] [--max-nodes N]   PROTOTYPE: reviewer triage — what the MR does (verified) and where to look; --scope-fqns marks the author-edited functions
 groundwork verify <policy> <base> <branch> [--scope …] [--expect <sha>] [--corpus <dir> [--capture production|integration]] [--json]  fail-closed pre-flight gate (--corpus arms the impeachment gate)
 groundwork diff <base-contract> <branch-contract>       inter-service contract diff
 groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]   prove an artifact authentic
@@ -556,30 +556,74 @@ newly moved:
 
 ```console
 $ groundwork review-triage base.json branch.json --summary
-### 🔍 groundwork review triage
-**4 changed function(s)** — ⚠️ 2 newly unverifiable · 🟡 1 carried · ✅ 1 accounted.
+### 🔍 Review triage — where to spend your attention
 
-**What this MR does (verified):**
-- adds 1 external effect(s): `db INSERT read_audit`
+**75 function(s) changed.** Much of this diff is telemetry/cache handoffs the analyzer
+can't see into (expected). Underneath that, **3 spot(s) need judgment:**
+
+> ⚠️ 1 · A `db` effect now reads as **removed** — it likely isn't.
+> `db postgres` disappears because a new instrumentation wrapper (`otelsql`) hides the
+> call from static analysis, not a dropped dependency.
+> Check: the `db` call still happens the way it did on the base.
 …
+**Routine — skim** (112 telemetry/cache handoff(s)): `statsy`×38 · `obs`×34 …
 ```
 
 Four renders over one computation:
 
 - *(default)* — the full per-function markdown report.
-- **`--summary`** — a compact MR-comment digest (GitHub `<details>` collapse the
-  low-attention zones); leads with what the MR does (verified) then what to review.
+- **`--summary`** — the **reviewer-legible** MR-comment digest, written for a reviewer
+  who has never touched the tool. It leads with a plain-language framing line and the few
+  spots that need a human judgment call — **masking first** (a removed effect that is
+  really an instrumentation wrapper hiding the call, the highest-value catch), then
+  runtime-dispatch, unresolved callees, third-party handoffs, an instrumentation wrapper
+  with no matching removed effect (surfaced per-domain, fail-loud), and an
+  over-approximated dispatch — each promoted to a plain-language callout. Routine
+  telemetry/cache handoffs aggregate into one skimmable line; everything else (full
+  by-tier list, carried, accounted, effect surface) folds into GitHub `<details>` —
+  **nothing is truncated**. An UNKNOWN package is always surfaced, never folded into the
+  routine line (fail-loud). The verified "what this MR does" delta is kept as the floor
+  the ⚠️ items sit above.
 - **`--mermaid`** — the three zones as a colored flowchart.
-- **`--json`** — the structured report.
+- **`--json`** — the structured report (unchanged: the summary is a pure presentation
+  transform over the same computed report, so machine consumers are unaffected).
 
-On a large diff the **accounted** zone rolls up by package and a blind zone caps with
-a disclosed `+N more`; the collapse only ever sheds the low-attention end — never the
-new-blind zone or the boundary-effect surface (`--full` / `--max-nodes N` tune it).
+On a large diff the **accounted** zone rolls up by package (preserving every package and
+the effects it touches). In the `--mermaid` and default markdown renders a blind zone
+caps with a disclosed `+N more`; the collapse only ever sheds the low-attention end —
+never the new-blind zone or the boundary-effect surface. In `--summary` the lead callouts
+cap their function lists with a disclosed `…+N more`, but the folded `<details>` keep the
+**complete** lists, so nothing is dropped from the comment (`--full` / `--max-nodes N`
+tune the caps).
 
 With **`--policy <p>`** the digest adds a **per-route write movement** line — "`GET
 /x` now writes `db INSERT read_audit`" — reusing `review`'s `route_io_deltas` (the one
 per-route delta), so this surface and the review artifact never disagree about what a
 route writes.
+
+**`--scope-fqns <file|->`** supplies the one signal the call graph cannot derive on its
+own: which functions the author **textually edited** (a newline-separated FQN set, read
+from a file or stdin; `#` comments and blanks ignored). A function that only changed
+*structurally* — it gained an out-edge because a callee moved — is not the same as one
+the author edited, and on an AI-scale diff the gap between the two is most of the noise.
+With a matching set, `--summary` partitions the new-blind zone:
+
+- **In scope (lead, marked ✎)** — blindness in code you edited. Plus, by the seam-level
+  soundness rule, a caller marked **↳** that is routed into an authored *callee*: an
+  author can blind a callee with a body-only edit that does not move the call graph, so
+  that blindness surfaces only through a caller — folding it would hide author-introduced
+  blindness (fail-closed).
+- **Dragged in by a changed callee** — folded into its own `<details>`, disclosed but
+  demoted; nothing is dropped.
+
+The effect surface also narrows to "what your change reaches." **Fail-loud:** a set that
+matches *zero* branch functions (an FQN-format slip) does not silently empty the review
+list — it surfaces a loud caution and falls back to the unscoped report. The FQNs are
+the SSA form the graph uses (`example.com/svc/pkg.Func`,
+`(*example.com/svc/pkg.T).Method`); produce them from flowmap, which has the source
+positions to map a `git diff` range to enclosing-function FQNs. The scope fields ride in
+`--json` (`scoped`, `authored_scope`, `scope_note`, per-function `authored`) only when a
+set is supplied, so an unscoped report's JSON is byte-identical to before.
 
 ### `verify` — the fail-closed pre-flight gate
 

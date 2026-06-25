@@ -103,6 +103,13 @@ type ChangedFn struct {
 
 	NewOverApprox     bool `json:"new_over_approx,omitempty"`     // a forward HighFanOut over-approximation introduced by this MR
 	CarriedOverApprox bool `json:"carried_over_approx,omitempty"` // a forward HighFanOut that pre-existed
+
+	// Authored is true when this function's FQN was in the --scope-fqns set: the author
+	// textually edited it (as opposed to the function merely changing STRUCTURALLY because
+	// a callee moved). Only set when a scope set was supplied AND matched the graph;
+	// omitempty so an unscoped report's JSON is byte-identical to before the field existed.
+	// Disclosure + ranking input only — never a verdict.
+	Authored bool `json:"authored,omitempty"`
 }
 
 // Report is the three-zone triage of an MR's changed functions, ordered by descending
@@ -129,6 +136,22 @@ type Report struct {
 	// RouteIO is the per-route refinement of the write surface ("GET /x now writes Y"),
 	// present only when Build was given a policy. Reuses fitness.RouteWrites.
 	RouteIO []RouteMove `json:"route_io,omitempty"`
+
+	// Scope fields — present only when BuildScoped was given a changed-FQN set (the
+	// --scope-fqns input) that matched the graph. They carry the one signal the graph
+	// cannot derive on its own: which functions the author TEXTUALLY edited, versus which
+	// only changed structurally because a callee moved. All omitempty, so an unscoped
+	// report serializes exactly as before.
+	//
+	// Scoped marks that scoping is ACTIVE (a set was supplied and matched ≥1 function), so
+	// a render partitions author-edited blindness from callee-dragged-in blindness.
+	// AuthoredScope echoes the matched author-edited functions present in the branch graph
+	// (sorted) — the membership set a render tests seam SITES against. ScopeNote is a
+	// fail-loud caution: a non-empty note means scoping fell back or matched nothing (an
+	// FQN-format mismatch is surfaced, never silently swallowed).
+	Scoped        bool     `json:"scoped,omitempty"`
+	AuthoredScope []string `json:"authored_scope,omitempty"`
+	ScopeNote     string   `json:"scope_note,omitempty"`
 }
 
 // RouteMove is one route (non-root entrypoint) whose verified WRITE surface changed
@@ -158,10 +181,40 @@ type RouteMove struct {
 // consequence-ranked (#4). A non-nil policy enables the per-route write-movement section
 // (it is the input fitness.RouteWrites needs to enumerate routes and roots); pass nil to
 // skip it (the service-level effect delta is still computed).
+//
+// Build is the unscoped form; BuildScoped layers on the author-changed-FQN signal.
 func Build(base, branch *graph.Graph, p *policy.Policy) Report {
+	return BuildScoped(base, branch, p, nil)
+}
+
+// BuildScoped is Build plus the one signal the graph cannot derive on its own: the set of
+// FQNs the author TEXTUALLY edited (the --scope-fqns input). A function's structural change
+// (it gained an out-edge because a callee moved) is not the same as the author editing it,
+// and on an AI-scale diff the gap between the two is most of the noise. With a matching
+// scope set the report marks each changed function Authored and a render partitions
+// author-edited blindness from callee-dragged-in blindness.
+//
+// Fail-loud (CLAUDE.md tenet 2): a scope set that matches ZERO branch functions is almost
+// certainly an FQN-format mismatch. Rather than silently empty the review list, BuildScoped
+// records a ScopeNote caution and leaves scoping INACTIVE (the report is identical to the
+// unscoped one but for the note). A nil/empty scope set is simply unscoped, no note.
+func BuildScoped(base, branch *graph.Graph, p *policy.Policy, scope []string) Report {
 	branchIx, baseIx := graph.NewIndex(branch), graph.NewIndex(base)
 	baseNode := nodeSet(base)
 	tier := tierLookup(branch)
+
+	// Resolve the scope set against the branch graph. authored holds only FQNs that name a
+	// real branch function (the membership set seam SITES are later tested against); a
+	// supplied-but-unmatched set is the fail-loud case.
+	authored, scopeNote := resolveScope(scope, nodeSet(branch))
+	scoped := len(authored) > 0
+	// Echo the matched authored set only when scoping is active, so an unscoped report's
+	// AuthoredScope is nil (absent from JSON), not an empty slice.
+	var authoredEcho []string
+	if scoped {
+		authoredEcho = setutil.SortedKeys(authored)
+	}
+
 	var newBlind, carried, accounted []ChangedFn
 	for _, fqn := range changedFns(base, branch) {
 		card := impact.ForNodes(branchIx, []string{fqn})                             // evidence: reverse cover + forward effects
@@ -190,6 +243,7 @@ func Build(base, branch *graph.Graph, p *policy.Policy) Report {
 			BenignSeams:       benignNotes(benign),
 			NewOverApprox:     branchOver && !baseOver,
 			CarriedOverApprox: branchOver && baseOver,
+			Authored:          authored[fqn], // false (omitempty) when unscoped
 		}
 		switch {
 		case len(cf.NewSeams) > 0 || cf.NewOverApprox:
@@ -224,7 +278,40 @@ func Build(base, branch *graph.Graph, p *policy.Policy) Report {
 		EntrypointsAdded:   epsAdded,
 		EntrypointsRemoved: epsRemoved,
 		RouteIO:            routeIO,
+		Scoped:             scoped,
+		AuthoredScope:      authoredEcho,
+		ScopeNote:          scopeNote,
 	}
+}
+
+// resolveScope intersects the supplied author-edited FQN set with the branch's functions.
+// It returns the matched set (the membership map a render tests function FQNs and seam
+// sites against) and a fail-loud note. The three cases:
+//   - nil/empty scope ⇒ unscoped: empty set, no note.
+//   - supplied but ZERO matches ⇒ likely an FQN-format mismatch: empty set (scoping stays
+//     inactive — the unscoped report is shown intact) AND a loud note, never a silent
+//     empty review list.
+//   - ≥1 match ⇒ the matched set (a partial match is fine: an authored FQN absent from the
+//     graph is a deleted or body-only function the triage has nothing to say about).
+//
+// Determinism: the result is a set; callers echo it via setutil.SortedKeys.
+func resolveScope(scope []string, branchNodes map[string]bool) (authored map[string]bool, note string) {
+	if len(scope) == 0 {
+		return nil, ""
+	}
+	authored = map[string]bool{}
+	for _, fqn := range scope {
+		if branchNodes[fqn] {
+			authored[fqn] = true
+		}
+	}
+	if len(authored) == 0 {
+		return nil, fmt.Sprintf("scope: none of the %d supplied --scope-fqns matched any branch function (FQN-format mismatch?) — showing UNSCOPED, every change in attention scope", len(scope))
+	}
+	if len(authored) < len(scope) {
+		note = fmt.Sprintf("scope: %d of %d supplied --scope-fqns matched the branch graph (the rest name no current function — deleted or body-only)", len(authored), len(scope))
+	}
+	return authored, note
 }
 
 // routeIODelta is the verified per-route write movement: which routes gained or lost a
@@ -627,132 +714,6 @@ func writeEvidence(b *strings.Builder, cf ChangedFn, partial bool) {
 			fmt.Fprintf(b, "  - %s\n", e)
 		}
 	}
-}
-
-// RenderSummary is a COMPACT, MR-comment-friendly digest (GitHub-flavored Markdown): a
-// one-line verdict, then the newly-unverifiable changes to review FRONT AND CENTER, with
-// the lower-attention zones folded into <details> blocks GitHub renders collapsed. Built
-// to paste at the top of an MR — it leads with what to review and never reads "accounted"
-// as approval. FQNs, effect labels, and seam kinds are wrapped in backticks so a
-// <dynamic> label renders literally rather than as stray HTML.
-func (r Report) RenderSummary(o Options) string {
-	var b strings.Builder
-	n, c, a := len(r.NewBlind), len(r.Carried), len(r.Accounted)
-	b.WriteString("### 🔍 groundwork review triage\n\n")
-	if n+c+a == 0 {
-		b.WriteString("No structural change — the diff did not move the call graph. That is not \"safe\"; verify behavior the usual way.\n")
-		return b.String()
-	}
-
-	newPhrase := fmt.Sprintf("⚠️ **%d newly unverifiable**", n)
-	if n == 0 {
-		newPhrase = "⚠️ no new blind spots"
-	}
-	fmt.Fprintf(&b, "**%d changed function(s)** — %s · 🟡 %d carried · ✅ %d accounted.\n", n+c+a, newPhrase, c, a)
-
-	// What this MR does (verified): the sound boundary-effect / entrypoint delta — the
-	// orientation a reviewer wants before the review list. A FLOOR: the ⚠️ items are where
-	// it is incomplete.
-	lim := 0
-	if !o.Full {
-		lim = o.budget()
-	}
-	if len(r.EntrypointsAdded)+len(r.EntrypointsRemoved)+len(r.EffectsAdded)+len(r.EffectsRemoved) > 0 {
-		b.WriteString("\n**What this MR does (verified):**\n")
-		if len(r.EntrypointsAdded) > 0 {
-			fmt.Fprintf(&b, "- exposes %d new entrypoint(s): %s\n", len(r.EntrypointsAdded), backtickList(r.EntrypointsAdded, lim))
-		}
-		if len(r.EntrypointsRemoved) > 0 {
-			fmt.Fprintf(&b, "- removes %d entrypoint(s): %s\n", len(r.EntrypointsRemoved), backtickList(r.EntrypointsRemoved, lim))
-		}
-		if len(r.EffectsAdded) > 0 {
-			fmt.Fprintf(&b, "- adds %d external effect(s): %s\n", len(r.EffectsAdded), backtickList(r.EffectsAdded, lim))
-		}
-		if len(r.EffectsRemoved) > 0 {
-			fmt.Fprintf(&b, "- removes %d external effect(s): %s\n", len(r.EffectsRemoved), backtickList(r.EffectsRemoved, lim))
-		}
-		b.WriteString("_(verified over statically-resolved edges; the ⚠️ items below are where this is incomplete)_\n")
-	} else if n == 0 {
-		b.WriteString("\n_No change to the verified external surface (no new routes or effects) and no new blind spots — an internal-only change._\n")
-	}
-
-	// Per-route write movement (only when a policy was supplied): the specific "GET /x now
-	// writes Y" refinement of the service-level delta above.
-	if len(r.RouteIO) > 0 {
-		b.WriteString("\n**Per-route write movement (verified):**\n")
-		shown, overflow := r.RouteIO, 0
-		if !o.Full && len(r.RouteIO) > o.budget() {
-			shown, overflow = r.RouteIO[:o.budget()], len(r.RouteIO)-o.budget()
-		}
-		for _, rm := range shown {
-			var moves []string
-			if len(rm.Added) > 0 {
-				moves = append(moves, "now writes "+backtickList(rm.Added, lim))
-			}
-			if len(rm.Removed) > 0 {
-				moves = append(moves, "no longer writes "+backtickList(rm.Removed, lim))
-			}
-			tag := ""
-			if rm.Blind {
-				tag = " _(frontier blind — may be the model shifting, not the code)_"
-			}
-			fmt.Fprintf(&b, "- `%s` %s%s\n", rm.Route, strings.Join(moves, "; "), tag)
-		}
-		if overflow > 0 {
-			fmt.Fprintf(&b, "- …and %d more route(s)\n", overflow)
-		}
-	}
-
-	// New blindness: visible — this IS the review list. Consequence-ordered; capped with a
-	// disclosed overflow so the comment stays paste-able (the full list is in the report).
-	if n > 0 {
-		b.WriteString("\n**Review these — the tool cannot verify them:**\n")
-		shown, overflow := r.NewBlind, 0
-		if !o.Full && n > o.budget() {
-			shown, overflow = r.NewBlind[:o.budget()], n-o.budget()
-		}
-		for _, cf := range shown {
-			fmt.Fprintf(&b, "- %s\n", summaryLine(cf, distinctKinds(cf.NewSeams)))
-		}
-		if overflow > 0 {
-			fmt.Fprintf(&b, "- …and %d more — run `groundwork review-triage` for the full list\n", overflow)
-		}
-	}
-
-	// Carried: collapsed — disclosed, but not this diff's fault.
-	if c > 0 {
-		fmt.Fprintf(&b, "\n<details><summary>🟡 Carried blindness — %d (pre-existing on the path, not introduced here)</summary>\n\n", c)
-		shown, overflow := r.Carried, 0
-		if !o.Full && c > o.budget() {
-			shown, overflow = r.Carried[:o.budget()], c-o.budget()
-		}
-		for _, cf := range shown {
-			fmt.Fprintf(&b, "- %s\n", summaryLine(cf, distinctKinds(cf.CarriedSeams)))
-		}
-		if overflow > 0 {
-			fmt.Fprintf(&b, "- …and %d more\n", overflow)
-		}
-		b.WriteString("\n</details>\n")
-	}
-
-	// Accounted: collapsed — rolled up by package when large (same collapse rule as the
-	// other renders), so even a huge clean diff stays a few lines here.
-	if a > 0 {
-		fmt.Fprintf(&b, "\n<details><summary>✅ Fully accounted — %d (complete evidence; structural completeness, not approval)</summary>\n\n", a)
-		if o.collapseAccounted(a) {
-			for _, rl := range rollupAccounted(r.Accounted) {
-				fmt.Fprintf(&b, "- `%s` — %d change(s)%s\n", shortPkg(rl.Pkg), rl.Count, effSuffix(rl.Effects))
-			}
-		} else {
-			for _, cf := range r.Accounted {
-				fmt.Fprintf(&b, "- %s\n", summaryLine(cf, nil))
-			}
-		}
-		b.WriteString("\n</details>\n")
-	}
-
-	b.WriteString("\n_⚠️ = the tool cannot fully verify — review there. \"Accounted\" means the tool can show the complete structure, not that it is correct; you still verify. `groundwork review-triage --full` for per-function evidence._\n")
-	return b.String()
 }
 
 // summaryLine is one compact change row: `ShortName` [tier] ✍, the seam kinds (when in a

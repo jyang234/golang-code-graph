@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -170,7 +171,7 @@ usage:
   groundwork chains <graph.json>... [--service <name>=<graph.json>]... [--policy <p.json>]...  cross-service effect chains (CX-5, observational)
   groundwork fitness <policy.json> <graph.json> [--expect <sha>] evaluate the policy's invariants (non-zero exit on violation)
   groundwork review <policy> <base.json> <branch.json> [--expect <sha>] [--json]   computed MR review artifact (BLOCK exits non-zero)
-  groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--policy <p.json>] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage; --summary is an MR-comment digest; --policy adds per-route write movement
+  groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--policy <p.json>] [--scope-fqns <file|->] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage; --summary is an MR-comment digest; --policy adds per-route write movement; --scope-fqns marks the author-edited functions
   groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--json] pre-flight gate: new violations, scope creep, breaking contract
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]  prove an artifact is authentic (not tampered/stale)
@@ -648,8 +649,10 @@ func ruleCount(p *policy.Policy) int {
 
 // cmdReviewTriage is the PROTOTYPE reviewer-triage surface: it partitions the MR's
 // changed functions into vouched (fully resolved — complete evidence shown) and focus
-// (touches a blind spot — look here). No policy, no verdict, no stamp gate: it is a
-// comprehension aid, not a gate, so it never exits non-zero on content.
+// (touches a blind spot — look here). An optional --policy adds per-route write movement;
+// an optional --scope-fqns set (file or stdin) marks which functions the author edited so
+// --summary can separate authored blindness from callee-dragged-in. No verdict, no stamp
+// gate: it is a comprehension aid, not a gate, so it never exits non-zero on content.
 func cmdReviewTriage(args []string) error {
 	asJSON, rest := takeFlag(args, "--json", "-json")
 	asMermaid, rest := takeFlag(rest, "--mermaid", "-mermaid")
@@ -657,8 +660,9 @@ func cmdReviewTriage(args []string) error {
 	full, rest := takeFlag(rest, "--full", "-full")
 	maxArg, _, rest := takeValueFlag(rest, "--max-nodes", "-max-nodes")
 	policyArg, hasPolicy, rest := takeValueFlag(rest, "--policy", "-policy")
+	scopeArg, hasScope, rest := takeValueFlag(rest, "--scope-fqns", "-scope-fqns")
 	if len(rest) != 2 {
-		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid | --summary] [--policy <policy.json>] [--full] [--max-nodes N]")
+		return fmt.Errorf("usage: groundwork review-triage <base-graph.json> <branch-graph.json> [--json | --mermaid | --summary] [--policy <policy.json>] [--scope-fqns <file|->] [--full] [--max-nodes N]")
 	}
 	if b2i(asJSON)+b2i(asMermaid)+b2i(asSummary) > 1 {
 		return fmt.Errorf("review-triage: choose at most one of --json, --mermaid, --summary")
@@ -683,6 +687,18 @@ func cmdReviewTriage(args []string) error {
 		}
 		p = loaded
 	}
+	// --scope-fqns carries the one signal the graph cannot derive: which functions the
+	// author textually edited (versus those that merely changed structure because a callee
+	// moved). It reads a newline-separated FQN set from a file or stdin ("-"); the producer
+	// is the caller (flowmap has the positions to map a git diff to SSA FQNs).
+	var scope []string
+	if hasScope {
+		s, err := loadScopeFQNs(scopeArg)
+		if err != nil {
+			return err
+		}
+		scope = s
+	}
 	base, err := graph.LoadFile(rest[0])
 	if err != nil {
 		return err
@@ -691,7 +707,7 @@ func cmdReviewTriage(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep := reviewtriage.Build(base, branch, p)
+	rep := reviewtriage.BuildScoped(base, branch, p, scope)
 	switch {
 	case asJSON:
 		b, err := canonjson.Marshal(rep)
@@ -716,6 +732,32 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// loadScopeFQNs reads a newline-separated FQN set for review-triage --scope-fqns from a file
+// or, when path is "-", from stdin. Blank lines and '#' comments are ignored and surrounding
+// whitespace trimmed, so a list piped from a shell pipeline (git + flowmap) drops in without
+// massaging. The order is irrelevant — BuildScoped resolves it into a set.
+func loadScopeFQNs(path string) ([]string, error) {
+	var raw []byte
+	var err error
+	if path == "-" {
+		raw, err = io.ReadAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("--scope-fqns: %w", err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out, nil
 }
 
 // cmdReview computes the base-vs-branch MR review artifact. With --json it emits
