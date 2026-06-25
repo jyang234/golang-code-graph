@@ -575,19 +575,26 @@ Four renders over one computation:
 - **`--summary`** — the **reviewer-legible** MR-comment digest, written for a reviewer
   who has never touched the tool. It leads with a plain-language framing line and the few
   spots that need a human judgment call — **masking first** (a removed effect that is
-  really an instrumentation wrapper hiding the call, the highest-value catch) — then the
-  runtime-dispatch and unresolved seams. Routine telemetry/cache handoffs aggregate into
-  one skimmable line; everything else (full by-tier list, carried, accounted, effect
-  surface) folds into GitHub `<details>` — **nothing is truncated**. An UNKNOWN package is
-  always surfaced, never folded into the routine line (fail-loud). The verified
-  "what this MR does" delta is kept as the floor the ⚠️ items sit above.
+  really an instrumentation wrapper hiding the call, the highest-value catch), then
+  runtime-dispatch, unresolved callees, third-party handoffs, an instrumentation wrapper
+  with no matching removed effect (surfaced per-domain, fail-loud), and an
+  over-approximated dispatch — each promoted to a plain-language callout. Routine
+  telemetry/cache handoffs aggregate into one skimmable line; everything else (full
+  by-tier list, carried, accounted, effect surface) folds into GitHub `<details>` —
+  **nothing is truncated**. An UNKNOWN package is always surfaced, never folded into the
+  routine line (fail-loud). The verified "what this MR does" delta is kept as the floor
+  the ⚠️ items sit above.
 - **`--mermaid`** — the three zones as a colored flowchart.
 - **`--json`** — the structured report (unchanged: the summary is a pure presentation
   transform over the same computed report, so machine consumers are unaffected).
 
-On a large diff the **accounted** zone rolls up by package and a blind zone caps with
-a disclosed `+N more`; the collapse only ever sheds the low-attention end — never the
-new-blind zone or the boundary-effect surface (`--full` / `--max-nodes N` tune it).
+On a large diff the **accounted** zone rolls up by package (preserving every package and
+the effects it touches). In the `--mermaid` and default markdown renders a blind zone
+caps with a disclosed `+N more`; the collapse only ever sheds the low-attention end —
+never the new-blind zone or the boundary-effect surface. In `--summary` the lead callouts
+cap their function lists with a disclosed `…+N more`, but the folded `<details>` keep the
+**complete** lists, so nothing is dropped from the comment (`--full` / `--max-nodes N`
+tune the caps).
 
 With **`--policy <p>`** the digest adds a **per-route write movement** line — "`GET
 /x` now writes `db INSERT read_audit`" — reusing `review`'s `route_io_deltas` (the one
