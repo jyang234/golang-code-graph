@@ -483,43 +483,86 @@ func TestProposeClosingUnionsConcurrentOpaqueWrites(t *testing.T) {
 	}
 }
 
-// Issue 2: when groundwork sees an UN-reclaimed oapi strict-server seam
-// (UnresolvedCall blind spots at ServerInterfaceWrapper route entries), init's
-// guide must recommend `flowmap graph --reclaim` — the existing reclaimer that
-// un-blinds route-anchored invariants. A graph already carrying reclaim provenance
-// must stay quiet.
+// Issue 2: when the producer's frontier classifies a strict-server dispatch seam as
+// reclaimable (a bin-B starved-entrypoint / severed-closure marker), init's guide must
+// recommend `flowmap graph --reclaim`. The signal is the producer's STRUCTURAL classification
+// (a bin-B frontier marker), not a generated type name. A graph already reclaimed has
+// re-classified the seam away (no B marker), so the recommendation is self-quieting.
 func TestProposeRecommendsReclaimForStrictServerSeam(t *testing.T) {
-	const (
-		wrapper = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetEventType"
-		closure = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetEventType$1"
-	)
+	const wrapper = "(*example.com/svc/internal/api.ServerInterfaceWrapper).GetEventType"
 	g := &graph.Graph{
-		Nodes: []graph.Node{
-			{FQN: wrapper, Sig: "func()", Tier: 1},
-			{FQN: closure, Sig: "func()", Tier: 1},
-		},
-		Edges: []graph.Edge{
-			{From: closure, To: "boundary:db SELECT event_types", Tier: 1, Boundary: "outbound-sync"},
-		},
-		// The wrapper IS the registered HTTP route handler, and it is an UnresolvedCall
-		// blind spot — the structural signal (UnresolvedCall ∩ HTTP route entry) the
-		// hint keys on, not the generated type name.
+		Nodes:       []graph.Node{{FQN: wrapper, Sig: "func()", Tier: 1}},
 		Entrypoints: []graph.Entrypoint{{Kind: "http", Name: "GET /event-types/{id}", Fn: wrapper}},
-		BlindSpots: []graph.BlindSpot{
-			{Kind: "UnresolvedCall", Site: wrapper, Detail: "func-value call resolved to no callees"},
+		// The producer bins the route's severed dispatch seam B (reclaimable by the
+		// strict-server reclaimer).
+		Frontier: &graph.FrontierSection{
+			Markers: []graph.FrontierMarker{
+				{Kind: "starved-entrypoint", Bin: "B", Site: wrapper, ReclaimerHint: "connect the route to its closure across the dispatch seam"},
+			},
 		},
 	}
 	_, guide := Propose(graph.NewIndex(g), "svc")
 	if !strings.Contains(guide, "flowmap graph --reclaim") || !strings.Contains(guide, "strict-server") {
-		t.Errorf("init must recommend --reclaim on an un-reclaimed strict-server seam; guide:\n%s", guide)
+		t.Errorf("init must recommend --reclaim on a reclaimable strict-server seam; guide:\n%s", guide)
 	}
 
-	// A graph already reclaimed (carries the wrapper→closure edge tagged
-	// via=strict-server) must NOT repeat the recommendation.
-	g.Edges = append(g.Edges, graph.Edge{From: wrapper, To: closure, Tier: 2, Via: "strict-server"})
+	// A graph already reclaimed: the strict-server seam reconnected, so the producer's
+	// frontier no longer carries the B marker. The recommendation must stay quiet.
+	g.Frontier = &graph.FrontierSection{}
 	_, guide = Propose(graph.NewIndex(g), "svc")
-	if strings.Contains(guide, "Un-reclaimed dispatch seam") {
-		t.Errorf("a reclaimed graph must not be told to reclaim again; guide:\n%s", guide)
+	if strings.Contains(guide, "Reclaimable dispatch seams") {
+		t.Errorf("a reclaimed graph (no B marker) must not be told to reclaim again; guide:\n%s", guide)
+	}
+}
+
+// The generalized proposer recommends `--reclaim-middleware` for a bin-B middleware
+// UnresolvedCall seam (the factored shape, where the seam sits on a helper, not the route —
+// which the old route-coincidence signal missed entirely), and stays silent for a
+// genuinely-dynamic (bin A) middleware seam, which no flag would un-blind.
+func TestProposeRecommendsReclaimMiddleware(t *testing.T) {
+	const apply = "(*example.com/svc.EmptyWrapper).apply"
+	g := &graph.Graph{
+		Nodes: []graph.Node{{FQN: apply, Sig: "func()", Tier: 1}},
+		Frontier: &graph.FrontierSection{
+			Markers: []graph.FrontierMarker{
+				{Kind: "UnresolvedCall", Bin: "B", Site: apply, ReclaimerHint: "middleware-application loop over a statically-known set"},
+			},
+		},
+	}
+	_, guide := Propose(graph.NewIndex(g), "svc")
+	if !strings.Contains(guide, "flowmap graph --reclaim-middleware") {
+		t.Errorf("init must recommend --reclaim-middleware on a reclaimable middleware seam; guide:\n%s", guide)
+	}
+
+	// A dynamic middleware loop is bin A — not reclaimable. No flag recommendation.
+	g.Frontier = &graph.FrontierSection{
+		Markers: []graph.FrontierMarker{{Kind: "UnresolvedCall", Bin: "A", Site: apply}},
+	}
+	_, guide = Propose(graph.NewIndex(g), "svc")
+	if strings.Contains(guide, "Reclaimable dispatch seams") {
+		t.Errorf("a genuinely-dynamic (bin A) middleware seam must not be recommended a flag; guide:\n%s", guide)
+	}
+}
+
+// Both reclaimers in one service: the proposer composes ONE section naming both flags with
+// their per-reclaimer seam counts — the generalization win (no second hardcoded section).
+func TestProposeRecommendsBothReclaimers(t *testing.T) {
+	g := &graph.Graph{
+		Nodes: []graph.Node{{FQN: "svc.Route", Sig: "func()", Tier: 1}, {FQN: "svc.apply", Sig: "func()", Tier: 1}},
+		Frontier: &graph.FrontierSection{
+			Markers: []graph.FrontierMarker{
+				{Kind: "starved-entrypoint", Bin: "B", Site: "svc.Route"},
+				{Kind: "UnresolvedCall", Bin: "B", Site: "svc.apply"},
+			},
+		},
+	}
+	_, guide := Propose(graph.NewIndex(g), "svc")
+	if !strings.Contains(guide, "--reclaim`") || !strings.Contains(guide, "--reclaim-middleware`") {
+		t.Errorf("init must name BOTH flags when both seam classes are present; guide:\n%s", guide)
+	}
+	// One combined section, not two.
+	if n := strings.Count(guide, "Reclaimable dispatch seams"); n != 1 {
+		t.Errorf("both reclaimers should compose ONE section, got %d; guide:\n%s", n, guide)
 	}
 }
 

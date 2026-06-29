@@ -324,15 +324,19 @@ func Classify(in *Input) *Result {
 			continue
 		}
 		bin, _ := blindSpotBin(bs.Kind)
+		hint := ""
 		// A standalone UnresolvedCall the middleware-chain reclaimer proves EMPTY is
 		// reconnectable by --reclaim-middleware (which clears it), so it is B, not the
 		// irreducible A blindSpotBin defaults to — the same prediction the strict-server
 		// seam gets via Reclaimable. The non-empty/dynamic middleware seam is NOT in this set
-		// (it stays A: its per-middleware next.ServeHTTP hop is a genuine residual).
+		// (it stays A: its per-middleware next.ServeHTTP hop is a genuine residual). The hint
+		// describes the seam (not the flag — siblings name the reconnection, and the flag
+		// recommendation rides groundwork init); empty for the A residual.
 		if bs.Kind == string(blindspots.UnresolvedCall) && mwReclaimable[bs.Site] {
 			bin = BinB
+			hint = "middleware-application loop over a statically-known set — reconnectable across the mw(h) seam"
 		}
-		add(Marker{Kind: bs.Kind, Bin: bin, Site: bs.Site})
+		add(Marker{Kind: bs.Kind, Bin: bin, Site: bs.Site, ReclaimerHint: hint})
 	}
 
 	sort.Slice(markers, func(i, j int) bool {

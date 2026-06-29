@@ -2,6 +2,7 @@ package fitness
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -49,45 +50,74 @@ func Propose(ix *graph.Index, service string) (*policy.Policy, string) {
 	return p, g.String()
 }
 
-// proposeReclaimHint surfaces flowmap's existing strict-server reclaimer from the
-// verdict path (issue 2). groundwork consumes a pre-built graph and cannot run the
-// SSA-based reclaimer itself, so when it sees an UN-reclaimed dispatch seam at an
-// HTTP route entry — an UnresolvedCall blind spot whose site IS a registered HTTP
-// handler (the framework wired the per-route handler through an interface field the
-// call-graph algorithm cannot resolve) — it recommends rebuilding the graph with
-// `flowmap graph --reclaim`. The signal is STRUCTURAL (UnresolvedCall ∩ HTTP route
-// handler), not a generated type name, so it covers the oapi-codegen strict-server
-// shape and any framework with the same blind-at-the-route-entry topology. That
-// seam blinds the dominant Go HTTP entry pattern: every route-anchored invariant is
-// frontier-caveated at the endpoint entry, so a must_not_reach reads "no path found,
-// but the frontier is blind" instead of a real proof. The reclaimer recovers the
-// wrapper→handler edge soundly (R2: it only adds edges real execution can take).
-// Skipped when the graph already carries reclaim provenance, so it stays quiet.
+// reclaimRec maps a class of reclaimable (frontier bin B) marker to the opt-in flowmap flag
+// that recovers it. proposeReclaimHint is DATA-DRIVEN over this table — one loop over the
+// frontier's B markers, not a hardcoded branch per reclaimer — so a new dispatch-seam
+// reclaimer that bins B is one row here, never a new proposer (the altitude the producer's
+// per-marker classification earns). Only EDGE reclaimers belong: the SQL label fold (bin B2,
+// `--reclaim-sql`) is consumer-side and guided separately (proposeReadOnly / the io_budget
+// path). Kinds are the frontier wire vocabulary (frontier.Marker.Kind); UnresolvedCall has an
+// exported constant, the structural seam kinds are stable string literals there.
+var reclaimRecs = []struct {
+	kinds []string // frontier marker Kinds (bin B) this reclaimer reconnects
+	flag  string   // the opt-in flowmap flag to rebuild with
+	what  string   // what the flag recovers, one line
+}{
+	{
+		kinds: []string{"severed-closure", "starved-entrypoint"},
+		flag:  "--reclaim",
+		what:  "recovers the strict-server wrapper→handler dispatch edge (the oapi-codegen strict-server shape, and any framework wiring the per-route handler through an interface field)",
+	},
+	{
+		kinds: []string{string(blindspots.UnresolvedCall)},
+		flag:  "--reclaim-middleware",
+		what:  "resolves the middleware-application loop (`for _, mw := range … { h = mw(h) }`) when its set is statically known (the oapi-codegen/chi route shape)",
+	},
+}
+
+// proposeReclaimHint surfaces flowmap's opt-in dispatch-seam reclaimers from the verdict
+// path. groundwork consumes a pre-built graph and cannot run the SSA reclaimers itself, so it
+// reads the producer's FRONTIER classification: a marker the classifier bins B is reclaimable
+// by a known reclaimer (the strict-server seam, the middleware loop), so for every bin-B
+// marker class still present it names the flag to rebuild with. PRESENCE is the quiet signal —
+// a graph already built with the flag re-classifies that seam away (the strict-server seam
+// reconnects, the empty middleware loop clears), so the marker is gone and the recommendation
+// is self-quieting, no per-reclaimer `via` check needed. The signal is the producer's
+// STRUCTURAL classification, not a generated type name, and a genuinely-dynamic seam (bin A)
+// is never listed — it would send the user to a flag that cannot help.
 func proposeReclaimHint(ix *graph.Index, g *guide) {
-	for _, e := range ix.Edges() {
-		// A non-boundary edge carrying a reclaimer's provenance: already reclaimed.
-		if e.Via != "" && !e.IsBoundary() {
-			return
-		}
-	}
-	httpRoute := map[string]bool{}
-	for _, ep := range ix.Entrypoints() {
-		if ep.Kind == "http" {
-			httpRoute[ep.Fn] = true
-		}
-	}
-	blind := 0
-	for _, b := range ix.BlindSpots() {
-		if b.Kind == string(blindspots.UnresolvedCall) && httpRoute[b.Site] {
-			blind++
-		}
-	}
-	if blind == 0 {
+	fr := ix.Frontier()
+	if fr == nil {
 		return
 	}
-	g.section("⚠️ Un-reclaimed dispatch seam — HTTP route entries are blind",
-		fmt.Sprintf("%d HTTP route entr(y/ies) are `UnresolvedCall` blind spots: the framework dispatches the per-route handler through an interface field wired at runtime (the oapi-codegen strict-server shape, and any framework like it), which the call-graph algorithm cannot resolve. Every route-anchored invariant is therefore frontier-caveated at the endpoint entry — a `must_not_reach` keyed on a route reports \"no path found, but the frontier is blind\" rather than a proof.\n\n"+
-			"**Fix — rebuild the graph with `flowmap graph --reclaim`, then re-run init/fitness on it.** The strict-server reclaimer recovers the wrapper→handler edge: it is deterministic generated code with a fixed shape, so the edge is statically recoverable even though it is interface-dispatched, and adding it is SOUND (R2 — it only ever adds edges real execution can take, never a false proof of absence). This un-blinds the dominant Go HTTP entry pattern, making route-level invariants provable instead of frontier-caveated. The reclaimed graph carries `via: strict-server` provenance, disclosed on every verdict's substrate line, so a reclaim-informed verdict stays auditable.", blind))
+	counts := make([]int, len(reclaimRecs))
+	for _, m := range fr.Markers {
+		if m.Bin != "B" { // only reclaimable structure; A is irreducible, B2 is consumer-side
+			continue
+		}
+		for i, rec := range reclaimRecs {
+			if slices.Contains(rec.kinds, m.Kind) {
+				counts[i]++
+				break
+			}
+		}
+	}
+	var lines []string
+	total := 0
+	for i, rec := range reclaimRecs {
+		if counts[i] == 0 {
+			continue
+		}
+		total += counts[i]
+		lines = append(lines, fmt.Sprintf("  - `flowmap graph %s` (%d seam(s)) — %s", rec.flag, counts[i], rec.what))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	g.section("⚠️ Reclaimable dispatch seams — route entries are blind",
+		fmt.Sprintf("%d frontier seam(s) are classified reclaimable (bin B): the call-graph algorithm cannot resolve a framework dispatch, so route-anchored invariants are frontier-caveated — a `must_not_reach` keyed on a route reports \"no path found, but the frontier is blind\" instead of a real proof.\n\n"+
+			"**Fix — rebuild the graph with the flag(s) below, then re-run init/fitness on it.** Each is an opt-in, SOUND reclaimer: it only ever ADDs edges real execution can take (R2 — never a false proof of absence) and tags them with `via` provenance, so the reclaim-informed verdict stays auditable on the substrate line. A genuinely dynamic seam (bin A) is deliberately not listed — no flag would un-blind it.\n\n%s",
+			total, strings.Join(lines, "\n")))
 }
 
 // proposeLayers ranks first-party packages by longest path from the
