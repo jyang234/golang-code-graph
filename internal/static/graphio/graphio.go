@@ -189,6 +189,14 @@ type Graph struct {
 	// Unexported, so it never serializes (no golden churn). Populated only on an unscoped
 	// build (the frontier rides those); a scoped ApplyReclaimers recomputes it.
 	reclaimEdges []reclaim.Edge
+
+	// middlewareReclaim is the dry run of reclaim.MiddlewareChain, computed ONCE at an
+	// unscoped build. Like reclaimEdges it is the single source the frontier dry run reads
+	// (a standalone middleware UnresolvedCall whose loop the reclaimer proves EMPTY is binned
+	// B — reclaimable by --reclaim-middleware — instead of A) and ApplyMiddlewareReclaimer
+	// folds, so prediction and apply cannot diverge. Unexported (never serializes); a scoped
+	// ApplyMiddlewareReclaimer recomputes it.
+	middlewareReclaim reclaim.MiddlewareResult
 }
 
 // nodeSet returns the set of node FQNs in g — the membership map both the reclaim
@@ -747,6 +755,7 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 	if entry == "" {
 		g.OmittedPackages = omittedPackages(res, g)
 		g.reclaimEdges = reclaimEdges(res, g.nodeSet())
+		g.middlewareReclaim = reclaim.MiddlewareChain(res)
 		g.Frontier = frontierSection(g)
 	}
 	return g, nil
@@ -842,6 +851,13 @@ func frontierInput(g *Graph) *frontier.Input {
 	for _, e := range g.reclaimEdges {
 		in.Reclaimable = append(in.Reclaimable, e.To)
 	}
+	// The middleware-reclaimable set is the SITE of every loop the middleware-chain reclaimer
+	// proves EMPTY (its ResolvedEmpty) — a standalone UnresolvedCall there is binned B
+	// (reclaimable by --reclaim-middleware) rather than A. Same single-source discipline:
+	// derived from the dry run ApplyMiddlewareReclaimer clears, so prediction == apply.
+	for _, s := range g.middlewareReclaim.ResolvedEmpty {
+		in.MiddlewareReclaimable = append(in.MiddlewareReclaimable, s.Site)
+	}
 	for _, n := range g.Nodes {
 		in.Nodes = append(in.Nodes, n.FQN)
 	}
@@ -934,7 +950,13 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 // call of another type) stays disclosed. Returns the counts of edges added and blind spots
 // cleared; re-sorts and re-classifies the frontier like ApplyReclaimers when anything changed.
 func ApplyMiddlewareReclaimer(g *Graph, res *analyze.Result) (added, cleared int) {
-	mw := reclaim.MiddlewareChain(res)
+	// Reuse the dry run Build already computed (the unscoped case, where a frontier rides);
+	// a scoped build never computed it, so recompute there. Either way the SAME helper
+	// produces it, so the folded edges and cleared seams match the frontier's prediction.
+	mw := g.middlewareReclaim
+	if g.Entrypoint != "" {
+		mw = reclaim.MiddlewareChain(res)
+	}
 	present := g.edgeKeySet()
 	nodes := g.nodeSet()
 	for _, e := range mw.Edges {

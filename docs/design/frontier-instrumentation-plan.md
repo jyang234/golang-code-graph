@@ -389,6 +389,18 @@ entrypoint-anchored absence proof whose cone crosses it abstains (CANT-PROVE). T
 > `must_pass_through` for an auth / read-only / correlation-id waypoint) on the
 > nil-in-prod middleware shape, where the read route becomes a determinate proof and
 > the write route a determinate violation with a witness. Fixture: `mwchainsvc`.
+>
+> **Frontier prediction (like the strict-server seam).** The classifier predicts
+> middleware-reclaimability the same way it predicts the strict-server seam via
+> `Reclaimable`: a dry run of the reclaimer (`graphio.Build` computes it once,
+> `frontierInput` passes the proven-empty loop sites as `MiddlewareReclaimable`) bins
+> a standalone middleware `UnresolvedCall` it would resolve as **B** (reclaimable by
+> `--reclaim-middleware`) instead of **A** (irreducible). The set is exactly the
+> reclaimer's `ResolvedEmpty`, so prediction and apply cannot diverge (§21.②); a
+> dynamic / escaping / sibling-return loop is absent from it and stays A. This also
+> corrects a prior misclassification: after `--reclaim` closes the strict-server
+> structural seam, strictsvc's residual nil-middleware loops are now disclosed as B
+> (reclaimable by the other flag), not the irreducible A they were binned before.
 
 ---
 

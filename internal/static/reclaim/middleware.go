@@ -123,10 +123,18 @@ func MiddlewareChain(res *analyze.Result) MiddlewareResult {
 // field. A reclaimer is single-pass and not safe for concurrent use; MiddlewareChain runs it
 // sequentially and deterministically.
 type mwReclaimer struct {
-	res        *analyze.Result
-	prog       *ssa.Program
-	fieldMemo  map[*types.Var]fieldSet
-	fieldAddrs map[*types.Var][]*ssa.FieldAddr
+	res         *analyze.Result
+	prog        *ssa.Program
+	fieldMemo   map[*types.Var]fieldSet
+	fieldAddrs  map[*types.Var][]*ssa.FieldAddr
+	callerSites map[*ssa.Function][]mwCallSite
+}
+
+// mwCallSite is one static call to a function: the FQN of the caller node and the call
+// instruction (for its arguments and result).
+type mwCallSite struct {
+	callerFQN string
+	call      *ssa.Call
 }
 
 // mwLoop is one recognized middleware-application loop in a function.

@@ -117,6 +117,33 @@ func TestUnresolvedCallFrontierDedup(t *testing.T) {
 	}
 }
 
+// TestMiddlewareReclaimableBinsB pins the §8 prediction: a standalone UnresolvedCall whose
+// site the middleware-chain reclaimer proves empty (in.MiddlewareReclaimable) is binned B
+// (reclaimable by --reclaim-middleware), while one absent from the set stays A (irreducible).
+// Same Input shape as the standalone-dedup case, so only the new bin override is exercised.
+func TestMiddlewareReclaimableBinsB(t *testing.T) {
+	in := frontier.Input{
+		Nodes: []string{"Apply", "DynApply"},
+		BlindSpots: []frontier.InBlindSpot{
+			{Kind: "UnresolvedCall", Site: "Apply"},    // a provably-empty middleware loop
+			{Kind: "UnresolvedCall", Site: "DynApply"}, // a dynamic one — not reclaimable
+		},
+		MiddlewareReclaimable: []string{"Apply"},
+	}
+	bins := map[string]frontier.Bin{}
+	for _, m := range frontier.Classify(&in).Markers {
+		if m.Kind == "UnresolvedCall" {
+			bins[m.Site] = frontier.Bin(m.Bin)
+		}
+	}
+	if bins["Apply"] != frontier.BinB {
+		t.Errorf("a middleware-reclaimable UnresolvedCall must bin B, got %q", bins["Apply"])
+	}
+	if bins["DynApply"] != frontier.BinA {
+		t.Errorf("a non-reclaimable UnresolvedCall must stay A, got %q", bins["DynApply"])
+	}
+}
+
 // A scoped (--entry) build carries NO frontier section: it is a whole-service
 // disclosure, and a scoped cone drops entrypoints and prunes effect paths, so its
 // starvation / attribution-loss signal would be a scoping artifact. Gating it on

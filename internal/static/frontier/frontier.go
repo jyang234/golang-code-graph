@@ -85,6 +85,16 @@ type Input struct {
 	// closure is reclaimable, so every severed closure is disclosed as A — fail closed:
 	// without proof a reclaimer can deliver, do not promise one.
 	Reclaimable []string
+
+	// MiddlewareReclaimable is the set of function FQNs whose standalone UnresolvedCall is a
+	// middleware-application loop the middleware-chain reclaimer proves EMPTY — i.e. one
+	// `flowmap graph --reclaim-middleware` would resolve and clear. A standalone UnresolvedCall
+	// at such a site is binned B (reclaimable) instead of A (irreducible), the same way the
+	// strict-server seam is predicted via Reclaimable, so the default frontier reports an oapi/
+	// chi route's blind middleware loop as reclaimable rather than irreducible. Empty (the
+	// standalone-test default) leaves every UnresolvedCall in A — fail closed. Like Reclaimable
+	// it is computed upstream as a dry run (graphio supplies it; the classifier stays SSA-free).
+	MiddlewareReclaimable []string
 }
 
 // InEdge is a call or boundary edge (To is a "boundary:..." label for an effect).
@@ -154,6 +164,10 @@ func Classify(in *Input) *Result {
 	reclaimable := make(map[string]bool, len(in.Reclaimable))
 	for _, fqn := range in.Reclaimable {
 		reclaimable[fqn] = true
+	}
+	mwReclaimable := make(map[string]bool, len(in.MiddlewareReclaimable))
+	for _, fqn := range in.MiddlewareReclaimable {
+		mwReclaimable[fqn] = true
 	}
 
 	seen := map[[3]string]bool{}
@@ -310,6 +324,14 @@ func Classify(in *Input) *Result {
 			continue
 		}
 		bin, _ := blindSpotBin(bs.Kind)
+		// A standalone UnresolvedCall the middleware-chain reclaimer proves EMPTY is
+		// reconnectable by --reclaim-middleware (which clears it), so it is B, not the
+		// irreducible A blindSpotBin defaults to — the same prediction the strict-server
+		// seam gets via Reclaimable. The non-empty/dynamic middleware seam is NOT in this set
+		// (it stays A: its per-middleware next.ServeHTTP hop is a genuine residual).
+		if bs.Kind == string(blindspots.UnresolvedCall) && mwReclaimable[bs.Site] {
+			bin = BinB
+		}
 		add(Marker{Kind: bs.Kind, Bin: bin, Site: bs.Site})
 	}
 

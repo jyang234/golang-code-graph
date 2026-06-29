@@ -9,6 +9,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/static/analyze"
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	"github.com/jyang234/golang-code-graph/internal/static/callgraph"
+	"github.com/jyang234/golang-code-graph/internal/static/frontier"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
 	"github.com/jyang234/golang-code-graph/internal/static/reclaim"
 )
@@ -134,6 +135,43 @@ func TestApplyMiddlewareReclaimerLeavesDynamicSeam(t *testing.T) {
 	for _, e := range g.Edges {
 		if e.Via == reclaim.ViaMiddlewareChain && strings.Contains(e.From, "DynWrapper") {
 			t.Errorf("the dynamic loop must recover no edge; got %s -> %s", e.From, e.To)
+		}
+	}
+}
+
+// The DEFAULT frontier (no flags) predicts middleware reclaimability: a provably-empty loop's
+// standalone UnresolvedCall is binned B (reclaimable by --reclaim-middleware), while a
+// dynamic / escaping / sibling-return loop stays A (irreducible). This is the guidance the
+// frontier exists to give, derived from the same dry run ApplyMiddlewareReclaimer folds.
+func TestFrontierPredictsMiddlewareReclaimable(t *testing.T) {
+	res := analyzeFixtureVTA(t, "mwchainsvc")
+	g, err := graphio.Build(res, "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	r := graphio.ClassifyFrontier(g)
+	bin := map[string]string{} // site-suffix -> bin, for the middleware UnresolvedCall markers
+	for _, m := range r.Markers {
+		if m.Kind != string(blindspots.UnresolvedCall) {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(m.Site, "EmptyWrapper).apply"):
+			bin["empty"] = string(m.Bin)
+		case strings.HasSuffix(m.Site, "DynWrapper).apply"):
+			bin["dyn"] = string(m.Bin)
+		case strings.HasSuffix(m.Site, "EscapeWrapper).apply"):
+			bin["escape"] = string(m.Bin)
+		case strings.HasSuffix(m.Site, "SibWrapper).apply"):
+			bin["sib"] = string(m.Bin)
+		}
+	}
+	if bin["empty"] != string(frontier.BinB) {
+		t.Errorf("the provably-empty middleware loop should predict B (reclaimable), got %q", bin["empty"])
+	}
+	for _, k := range []string{"dyn", "escape", "sib"} {
+		if bin[k] != string(frontier.BinA) {
+			t.Errorf("the %s middleware loop is not provably reclaimable; want A, got %q", k, bin[k])
 		}
 	}
 }

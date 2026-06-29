@@ -50,27 +50,21 @@ func (r *mwReclaimer) recoverTerminals(fqn string, f *ssa.Function, lp mwLoop, a
 func (r *mwReclaimer) recoverFactoredTerminals(f *ssa.Function, lp mwLoop, addEdge func(from, to string)) bool {
 	paramIdx, isParam := paramIndex(f, lp.initial)
 	allRecovered := true
-	for _, n := range r.res.Graph.Nodes {
-		caller := n.Func
-		if caller == nil {
-			continue
-		}
-		for _, cs := range callSitesTo(caller, f) {
-			result := ssa.Value(cs)
-			// Every use of f's returned handler must be a ServeHTTP dispatch we resolve;
-			// any other referrer means it escapes into an untraced hop.
-			for _, ref := range referrers(result) {
-				if !isServeHTTPReceiverOf(ref, result) {
-					allRecovered = false
-					continue
-				}
-				t := r.factoredTarget(lp, cs, paramIdx, isParam)
-				if t == nil {
-					allRecovered = false
-					continue
-				}
-				addEdge(n.FQN, t.RelString(nil))
+	for _, cs := range r.callersOf(f) {
+		result := ssa.Value(cs.call)
+		// Every use of f's returned handler must be a ServeHTTP dispatch we resolve;
+		// any other referrer means it escapes into an untraced hop.
+		for _, ref := range referrers(result) {
+			if !isServeHTTPReceiverOf(ref, result) {
+				allRecovered = false
+				continue
 			}
+			t := r.factoredTarget(lp, cs.call, paramIdx, isParam)
+			if t == nil {
+				allRecovered = false
+				continue
+			}
+			addEdge(cs.callerFQN, t.RelString(nil))
 		}
 	}
 	return allRecovered
@@ -214,18 +208,33 @@ func paramIndex(f *ssa.Function, v ssa.Value) (int, bool) {
 	return 0, false
 }
 
-// callSitesTo returns the static call instructions in caller that invoke callee.
-func callSitesTo(caller, callee *ssa.Function) []*ssa.Call {
-	var out []*ssa.Call
-	for _, b := range caller.Blocks {
-		for _, instr := range b.Instrs {
-			call, ok := instr.(*ssa.Call)
-			if ok && call.Common().StaticCallee() == callee {
-				out = append(out, call)
+// callersOf returns every static call site of f across the graph (the caller's FQN and the
+// call instruction). The index is built lazily on first use from ONE sweep of the graph
+// nodes' SSA and shared across the pass, so resolving many factored middleware loops costs a
+// single sweep rather than re-scanning every node per loop. Built in res.Graph.Nodes order
+// (sorted by FQN) then SSA block/instr order, so callersOf(f) is deterministic.
+func (r *mwReclaimer) callersOf(f *ssa.Function) []mwCallSite {
+	if r.callerSites == nil {
+		r.callerSites = map[*ssa.Function][]mwCallSite{}
+		for _, n := range r.res.Graph.Nodes {
+			caller := n.Func
+			if caller == nil {
+				continue
+			}
+			for _, b := range caller.Blocks {
+				for _, instr := range b.Instrs {
+					call, ok := instr.(*ssa.Call)
+					if !ok {
+						continue
+					}
+					if callee := call.Common().StaticCallee(); callee != nil {
+						r.callerSites[callee] = append(r.callerSites[callee], mwCallSite{callerFQN: n.FQN, call: call})
+					}
+				}
 			}
 		}
 	}
-	return out
+	return r.callerSites[f]
 }
 
 // callArg returns the call argument at the given parameter index, accounting for whether

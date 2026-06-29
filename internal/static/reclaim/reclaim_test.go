@@ -123,11 +123,14 @@ func TestStrictServerR2DoesNotConnectUnservedClosures(t *testing.T) {
 	}
 }
 
-// Integration: folding the reclaimed edges into the graph closes the seam — every
-// route reaches its effects, so the frontier reports zero attribution loss and no
-// B (severed-closure / starved-entrypoint) markers, leaving only the genuinely
-// irreducible A/B2 frontier. This is the win the strictsvc characterization test
-// (boundary package, no reclaim) is written to flip to.
+// Integration: folding the reclaimed edges into the graph closes the strict-server
+// STRUCTURAL seam — every route reaches its effects, so the frontier reports zero
+// attribution loss and no severed-closure / starved-entrypoint markers. The residual
+// middleware-application UnresolvedCall seams that StrictServer leaves (it does not touch
+// the `mw(h)` loop — TestStrictServerReconnectedButDisclosed) are now disclosed as B, not A:
+// they are middleware-reclaimable (by --reclaim-middleware, which proves the nil-in-prod set
+// empty), so the frontier names them reclaimable rather than irreducible. This is the win the
+// strictsvc characterization test (boundary package, no reclaim) is written to flip to.
 func TestApplyReclaimersClosesSeam(t *testing.T) {
 	res := analyzeFixture(t, "strictsvc")
 	g, err := graphio.Build(res, "")
@@ -152,20 +155,21 @@ func TestApplyReclaimersClosesSeam(t *testing.T) {
 	if r.StarvedEntrypoints != 0 || r.AttributionLoss != 0 {
 		t.Errorf("seam not closed: %d/%d starved (%.2f), want 0", r.StarvedEntrypoints, r.Entrypoints, r.AttributionLoss)
 	}
-	if r.Counts[frontier.BinB] != 0 {
-		t.Errorf("reclaim must clear the B frontier; got B=%d markers=%+v", r.Counts[frontier.BinB], r.Markers)
+	// The strict-server STRUCTURAL seam is fully closed: no severed-closure / starved-
+	// entrypoint marker survives, and every B marker that remains is a middleware
+	// UnresolvedCall seam (reclaimable by --reclaim-middleware, not irreducible).
+	for _, m := range r.Markers {
+		if m.Kind == "severed-closure" || m.Kind == "starved-entrypoint" {
+			t.Errorf("reclaimed graph must carry no strict-server seam marker, got %+v", m)
+		}
+		if m.Bin == frontier.BinB && m.Kind != string(blindspots.UnresolvedCall) {
+			t.Errorf("after strict-server reclaim the only B markers should be middleware UnresolvedCall seams, got %+v", m)
+		}
 	}
 	// The reclaimed routes now reach their effects, so they are neither severed nor
 	// unconfirmed.
 	if len(r.UnconfirmedRoutes) != 0 {
 		t.Errorf("reclaim must leave no unconfirmed routes, got %v", r.UnconfirmedRoutes)
-	}
-	if g.Frontier != nil {
-		for _, m := range g.Frontier.Markers {
-			if m.Kind == "severed-closure" || m.Kind == "starved-entrypoint" {
-				t.Errorf("reclaimed graph must carry no seam marker, got %+v", m)
-			}
-		}
 	}
 }
 
