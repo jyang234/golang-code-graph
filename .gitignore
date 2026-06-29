@@ -5,6 +5,7 @@
 /testdata/fixtures/topicfoldsvc/topicfoldsvc
 /testdata/fixtures/schemadriftsvc/schemadriftsvc
 /testdata/fixtures/taintsvc/taintsvc
+/testdata/fixtures/mwchainsvc/mwchainsvc
 # test & build detritus
 *.test
 *.out

@@ -25,6 +25,7 @@ use (
 	./testdata/fixtures/unionsvc
 	./testdata/fixtures/escapemodessvc
 	./testdata/fixtures/ifaceunionsvc
+	./testdata/fixtures/mwchainsvc
 	./testdata/groundwork/blindsvc
 	./testdata/groundwork/layeredsvc
 	./testdata/groundwork/obligsvc

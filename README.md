@@ -93,6 +93,7 @@ prevention is cheaper than deterministic rejection.
 $ flowmap graph svc/ > graph.json          # call graph + boundary effects + obligations
 $ flowmap graph svc/ --algo vta            # refine interface-dense dispatch (default rta)
 $ flowmap graph svc/ --reclaim             # also recover edges lost at framework dispatch seams (opt-in, sound)
+$ flowmap graph svc/ --reclaim-middleware  # resolve the oapi-codegen/chi middleware-application loop (opt-in, sound)
 $ flowmap graph svc/ --mermaid             # human-readable Mermaid flowchart (a view, never gated); --show-plumbing keeps tier-3 nodes
 $ flowmap graph svc/ --mermaid --root "POST /loans"        # scope the flowchart to one handler's reach (keeps blind-spot + frontier markers)
 $ flowmap graph svc/ --mermaid --max-nodes 300             # above the cap, render an index of entry points to --root at, not a hairball (0 = uncapped)
@@ -144,7 +145,7 @@ threaded through every output.
 ## Layout
 
 ```
-cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--algo] [--reclaim] [--stamp] | frontier | schema-drift | taint | diff | coverage | behavior ingest | version
+cmd/flowmap/     CLI: boundary [--check] | graph [--entry] [--algo] [--reclaim] [--reclaim-middleware] [--stamp] | frontier | schema-drift | taint | diff | coverage | behavior ingest | version
 cmd/groundwork/  CLI: reach | triage | ground | chains | fitness | review | verify | diff | verify-artifact
                       | exceptions | transcript | init | policy-check | mcp | version
 harness/ capture/ flow/ ir/   PUBLIC: in-process flow-test capture + the canonical IR

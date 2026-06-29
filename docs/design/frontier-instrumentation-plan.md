@@ -332,6 +332,40 @@ forward-starvation (no-callee into the per-handler closure). VTA does not fix
 starvation — we measured `strictsvc` *under VTA* and the cones are still empty. So
 the reclaimer is genuinely new work, complementary to the shipped `--algo` lever.
 
+**Second reclaimer (SHIPPED, opt-in) — the middleware-chain seam.** The strict-server
+reclaimer reconnects the per-handler `$1` closure, but the `MiddlewareFunc`
+*application loop* it leaves disclosed (`for _, mw := range siw.HandlerMiddlewares {
+h = mw(h) }`) is itself a func-value call the builder resolves to no callee — an
+`UnresolvedCall` on the forward path of **every** oapi-codegen / chi route, so any
+entrypoint-anchored absence proof whose cone crosses it abstains (CANT-PROVE). The
+`MiddlewareChain` reclaimer (`reclaim.MiddlewareChain`, folded by
+`graphio.ApplyMiddlewareReclaimer`, exposed as `flowmap graph --reclaim-middleware`
+/ `flowmap frontier --reclaim-middleware`) recovers it, soundly:
+
+> **middleware-chain reclaimer** — recognizes the loop by its SSA signature (a
+> func-value call `mw(h)` whose callee is a slice element and whose handler argument
+> is a phi fed back by the call's own result — the `h = mw(h)` recurrence). It
+> resolves the slice's element set to a COMPLETE set of concrete functions (a const
+> slice/array literal, an `append` chain of known funcs, or provably empty), walking
+> `ssautil.AllFunctions` for every store to a field-backed slice (collect functions
+> completely — under-collection would be a false PROVEN). For a provable set it adds
+> `loopFn → Mi` for each middleware Mi (resolving the call) and the terminal handler
+> edge — `caller → business` for the FACTORED shape (`apply(h).ServeHTTP(...)` at the
+> caller), `loopFn → business` for the INLINE shape — each a may-edge real execution
+> can take (R2). A slice built from an unknown source (a parameter, an opaque global)
+> leaves the seam `UnresolvedCall` — abstaining is correct.
+>
+> **Blind-spot clearing** is the one disclosure this reclaimer retracts, and ONLY
+> when the set is provably EMPTY and every terminal was recovered: an empty loop is
+> dead, so once the pass-through handler edge is recovered its frontier is fully
+> resolved. A NON-empty set is never cleared — each middleware body re-dispatches
+> through its own `next.ServeHTTP`, a residual hop this pass does not chase, so it
+> stays disclosed (the strict-server reclaimer's reconnect-but-disclose discipline).
+> This unlocks the entrypoint-anchored rule class (`must_not_reach` /
+> `must_pass_through` for an auth / read-only / correlation-id waypoint) on the
+> nil-in-prod middleware shape, where the read route becomes a determinate proof and
+> the write route a determinate violation with a witness. Fixture: `mwchainsvc`.
+
 ---
 
 ## 6. Traces — the fenced lane (deferred, for completeness)

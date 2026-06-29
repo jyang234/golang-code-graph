@@ -131,6 +131,7 @@ func cmdGraph(args []string) error {
 	stamp := fs.String("stamp", "", "identity stamp (e.g. the commit SHA) recorded in the graph; consumers can verify with --expect")
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch — fewer spurious callees), "cha" (rootless fallback)`)
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers (opt-in; adds provenance-tagged edges that close the strict-server seam)")
+	reclaimMiddlewareFlag := fs.Bool("reclaim-middleware", false, "apply the middleware-chain reclaimer (opt-in; resolves the oapi-codegen/chi middleware-application loop to its concrete funcs, tagging them via=middleware-chain, and clears the UnresolvedCall seam when the middleware set is provably empty)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer (opt-in; recovers verbs from constant-fragment SQL builders, tagging them via=sql-constfold)")
 	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer (opt-in; recovers PUBLISH/CONSUME targets from constant-set topics, tagging them via=topic-constfold)")
 	rebindFlag := fs.Bool("rebind", false, "EXPERIMENTAL: de-union shared higher-order runners — rebind each command to its OWN confined closure (adds via=rebind edges) and REMOVE the runner→closure union edges. The only pass that removes edges; opt-in, not for default gating")
@@ -165,6 +166,9 @@ func cmdGraph(args []string) error {
 	warnSkippedAnnotations(os.Stderr, g)
 	if *reclaimFlag {
 		graphio.ApplyReclaimers(g, res)
+	}
+	if *reclaimMiddlewareFlag {
+		graphio.ApplyMiddlewareReclaimer(g, res)
 	}
 	if *rebindFlag {
 		graphio.ApplyRebind(g, res)
@@ -316,6 +320,7 @@ func cmdFrontier(args []string) error {
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta" (refines interface-dense dispatch), "cha"`)
 	asJSON := fs.Bool("json", false, "emit the full marker inventory as canonical JSON")
 	reclaimFlag := fs.Bool("reclaim", false, "apply sound dispatch-seam reclaimers before classifying (shows the frontier with the seam closed)")
+	reclaimMiddlewareFlag := fs.Bool("reclaim-middleware", false, "apply the middleware-chain reclaimer before classifying (resolves the oapi-codegen/chi middleware-application loop and clears the seam when the middleware set is provably empty)")
 	reclaimSQLFlag := fs.Bool("reclaim-sql", false, "apply the SQL const-accumulation label reclaimer before classifying (recovers verbs from constant-fragment SQL builders, shrinking the B2 opaque-SQL frontier)")
 	reclaimTopicFlag := fs.Bool("reclaim-topic", false, "apply the bus const-topic label reclaimer before classifying (recovers PUBLISH/CONSUME targets from constant-set topics, shrinking the dynamic-bus frontier)")
 	if err := fs.Parse(args); err != nil {
@@ -341,6 +346,9 @@ func cmdFrontier(args []string) error {
 	warnSkippedAnnotations(os.Stderr, g)
 	if *reclaimFlag {
 		graphio.ApplyReclaimers(g, res)
+	}
+	if *reclaimMiddlewareFlag {
+		graphio.ApplyMiddlewareReclaimer(g, res)
 	}
 	// The committed section keeps the unconfirmed routes as an aggregate count; the
 	// on-demand view shows them per-route, so classify for the full result here.
@@ -1312,8 +1320,8 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/SQL/bus labels)
-  frontier [--algo A] [--reclaim] [--reclaim-sql] [--reclaim-topic] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
+  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-middleware] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/middleware/SQL/bus labels)
+  frontier [--algo A] [--reclaim] [--reclaim-middleware] [--reclaim-sql] [--reclaim-topic] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   schema-drift [--graph G] [--migrations D] [--library-owned a,b] [--reclaim-sql] [--gate] [--json] [dir]  cross-check code DB writes against the migration-defined schema (omit --graph to build fresh from dir; dir's .flowmap.yaml supplies static.schemaCheck; --gate: non-zero exit on drift)
   taint [--gate] [--json] [dir]  forward value-flow: do declared sensitive sources reach declared sinks? FLOW/NO-FLOW/ABSTAIN (dir's .flowmap.yaml supplies taint.{sourceFuncs,sourceFields,sinks}; --gate: non-zero exit on FLOW)
   diff <a.json> <b.json>     print the structural change set between two golden traces

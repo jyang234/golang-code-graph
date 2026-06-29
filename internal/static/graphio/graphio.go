@@ -922,6 +922,73 @@ func ApplyReclaimers(g *Graph, res *analyze.Result) int {
 	return added
 }
 
+// ApplyMiddlewareReclaimer runs the middleware-chain reclaimer (reclaim.MiddlewareChain)
+// over res and folds the result into g: it ADDs the recovered edges (tagged
+// via=middleware-chain) that resolve the oapi-codegen / chi middleware-application loop,
+// and DROPs the UnresolvedCall blind spots at loops whose middleware set is provably empty
+// (so the loop body is dead and hides nothing). It is OPT-IN (`flowmap graph
+// --reclaim-middleware`): Build never calls it, so the default graph — every committed
+// golden — is unchanged. Each added edge is one real execution can take (R2) and carries
+// its reclaimer in Via. A blind spot is dropped only when its (Site, type) matches a
+// fully-resolved empty seam, so a non-empty middleware loop (or a same-function func-value
+// call of another type) stays disclosed. Returns the counts of edges added and blind spots
+// cleared; re-sorts and re-classifies the frontier like ApplyReclaimers when anything changed.
+func ApplyMiddlewareReclaimer(g *Graph, res *analyze.Result) (added, cleared int) {
+	mw := reclaim.MiddlewareChain(res)
+	present := g.edgeKeySet()
+	nodes := g.nodeSet()
+	for _, e := range mw.Edges {
+		if g.foldEdge(e.From, e.To, e.Via, present, nodes) {
+			added++
+		}
+	}
+	if len(mw.ResolvedEmpty) > 0 {
+		cleared = dropResolvedSeams(g, mw.ResolvedEmpty)
+	}
+	if added > 0 || cleared > 0 {
+		sortGraph(g)
+		// Re-classify only for an unscoped graph — the frontier section is a whole-service
+		// disclosure (see Build), so a scoped reclaim re-sorts its edges but carries no frontier.
+		if g.Entrypoint == "" {
+			g.Frontier = frontierSection(g)
+		}
+	}
+	return added, cleared
+}
+
+// dropResolvedSeams removes from g.BlindSpots every UnresolvedCall whose (Site, defined type
+// named in Detail) matches a fully-resolved empty middleware seam, returning how many were
+// dropped. The match is on BOTH the site (the loop function's FQN) AND the element type
+// (the type the reclaimer resolved), so an UnresolvedCall at the same site for a different
+// func type — or a middleware loop whose set was NOT proven empty — survives untouched. The
+// seam is the one disclosure the reclaimer is allowed to retract, and only because an empty
+// set means the loop hides nothing and the pass-through handler edge was recovered.
+func dropResolvedSeams(g *Graph, seams []reclaim.MiddlewareSeam) int {
+	cleared := 0
+	kept := g.BlindSpots[:0]
+	for _, b := range g.BlindSpots {
+		if b.Kind == blindspots.UnresolvedCall && matchesResolvedSeam(b, seams) {
+			cleared++
+			continue
+		}
+		kept = append(kept, b)
+	}
+	g.BlindSpots = kept
+	return cleared
+}
+
+// matchesResolvedSeam reports whether the blind spot b is the UnresolvedCall a resolved
+// empty seam retracts: same site, and the seam's element type named in b's Detail (the same
+// type string blindspots.funcValueTypeName writes into the disclosure).
+func matchesResolvedSeam(b blindspots.BlindSpot, seams []reclaim.MiddlewareSeam) bool {
+	for _, s := range seams {
+		if b.Site == s.Site && strings.Contains(b.Detail, s.TypeName) {
+			return true
+		}
+	}
+	return false
+}
+
 // ApplyRebind runs the EXPERIMENTAL de-union pass (rebind package) over res and folds
 // the result into g: it ADDs each command's precise enclosing-fn→closure edge (tagged
 // via=rebind) and REMOVEs the shared runner→closure union edges. It is the ONLY graph
