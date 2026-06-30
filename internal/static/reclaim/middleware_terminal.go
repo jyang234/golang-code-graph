@@ -88,9 +88,12 @@ func (r *mwReclaimer) recoverFactoredTerminals(f *ssa.Function, lp mwLoop, addEd
 // the http layer's `h.ServeHTTP(...)`. It matches a func-value call (not an interface or
 // static call, not a builtin) whose CALLEE value reaches the loop phi. The loop's own
 // `mw(h …)` call is excluded both explicitly (it is lp.call) and intrinsically (its callee is
-// a slice element, not the phi). When the middleware set is empty the loop body is dead and
-// `h` is exactly f's initial handler, so this call invokes that handler directly — the same
-// can-reach edge the http inline shape recovers.
+// a slice element, not the phi). recoverTerminals runs for EVERY loop, empty or not, so this
+// fires on both: the recovered f→initial edge is a sound MAY edge in either case — when the set
+// is empty the loop body is dead and `h` is exactly f's initial handler (invoked directly);
+// when non-empty `h` is the wrapped handler but the initial handler is still reached through
+// the chain, so f can-reach it. Only the empty case gates seam clearing — that gate lives in
+// reclaimFunc (`len(set) == 0`), not here.
 func dispatchesThreadedHandler(f *ssa.Function, lp mwLoop) bool {
 	for _, b := range f.Blocks {
 		for _, instr := range b.Instrs {
@@ -99,10 +102,7 @@ func dispatchesThreadedHandler(f *ssa.Function, lp mwLoop) bool {
 				continue
 			}
 			c := call.Common()
-			if c.IsInvoke() || c.StaticCallee() != nil {
-				continue
-			}
-			if _, isBuiltin := c.Value.(*ssa.Builtin); isBuiltin {
+			if !isFuncValueCall(c) {
 				continue
 			}
 			if valueReaches(c.Value, lp.phi, map[ssa.Value]bool{}) {
@@ -159,10 +159,7 @@ func (r *mwReclaimer) hasUnresolvedFuncCallOfType(f *ssa.Function, loops []mwLoo
 				continue
 			}
 			c := call.Common()
-			if c.IsInvoke() || c.StaticCallee() != nil {
-				continue
-			}
-			if _, isBuiltin := c.Value.(*ssa.Builtin); isBuiltin {
+			if !isFuncValueCall(c) {
 				continue
 			}
 			// One source of truth: the same blindspots.FuncValueTypeName the seam TypeName and

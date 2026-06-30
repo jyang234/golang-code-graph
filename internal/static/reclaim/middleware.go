@@ -218,8 +218,8 @@ func findMiddlewareLoops(f *ssa.Function) []mwLoop {
 				continue
 			}
 			c := call.Common()
-			if c.IsInvoke() || c.StaticCallee() != nil {
-				continue // a resolved or interface call, not a func-value seam
+			if !isFuncValueCall(c) {
+				continue // a resolved/interface call or builtin, not a func-value seam
 			}
 			slice, ok := sliceElementCallee(c.Value)
 			if !ok {
@@ -239,6 +239,20 @@ func findMiddlewareLoops(f *ssa.Function) []mwLoop {
 		}
 	}
 	return out
+}
+
+// isFuncValueCall reports whether c is a call THROUGH a func value — neither an interface
+// method invoke nor a statically-resolved callee, and not a builtin. This is the seam shape
+// the middleware reclaimer recognizes (`mw := slice[i]; mw(h …)`), the strict-server terminal
+// dispatchesThreadedHandler matches, and the residual the hasUnresolvedFuncCallOfType guard
+// keys on. One source of truth (CLAUDE.md) for the predicate so the loop recognizer, the
+// terminal detector, and the residual-type guard cannot drift apart.
+func isFuncValueCall(c *ssa.CallCommon) bool {
+	if c.IsInvoke() || c.StaticCallee() != nil {
+		return false
+	}
+	_, isBuiltin := c.Value.(*ssa.Builtin)
+	return !isBuiltin
 }
 
 // sliceElementCallee reports whether callee is a value loaded from a slice element
@@ -321,22 +335,21 @@ func selfThreadingInitial(phi *ssa.Phi, call *ssa.Call) (ssa.Value, bool) {
 	return initial, true
 }
 
-// stripConv strips the identity func-value conversions go/ssa inserts between a named func
+// stripConv strips the identity ChangeType conversions go/ssa inserts between a named func
 // type and its underlying signature (the strict-server layer's StrictHTTPHandlerFunc ↔ the
 // per-operation closure type). ChangeType is a no-op at runtime (same representation, same
-// callee); Convert between func types is likewise representation-preserving. Stripping them
-// lets the middleware-loop recurrence be matched in both the http (no conversion) and
-// strict-server (conversion on both sides) shapes. It does NOT strip MakeInterface or
-// MakeClosure — those change what is being called, not merely its static type.
+// callee), so stripping it lets the middleware-loop recurrence be matched in both the http (no
+// conversion) and strict-server (conversion on both sides) shapes. go/ssa emits ChangeType —
+// never *ssa.Convert — for a func→func conversion (Convert is reserved for conversions where a
+// basic type is involved, which a func value never reaches), so Convert cannot appear on a
+// handler value and is intentionally not handled here. MakeInterface and MakeClosure are not
+// stripped either — those change what is being called, not merely its static type.
 func stripConv(v ssa.Value) ssa.Value {
 	for {
-		switch x := v.(type) {
-		case *ssa.ChangeType:
-			v = x.X
-		case *ssa.Convert:
-			v = x.X
-		default:
+		ct, ok := v.(*ssa.ChangeType)
+		if !ok {
 			return v
 		}
+		v = ct.X
 	}
 }
