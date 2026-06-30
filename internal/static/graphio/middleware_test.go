@@ -88,9 +88,10 @@ func TestApplyMiddlewareReclaimerClosesEmptySeam(t *testing.T) {
 	if added == 0 {
 		t.Fatal("ApplyMiddlewareReclaimer folded no edges")
 	}
-	// Exactly the empty seam is cleared — the dynamic loop (an unprovable set) is left blind.
-	if cleared != 1 {
-		t.Fatalf("want exactly 1 cleared seam (the empty loop), got %d", cleared)
+	// Exactly the two provably-empty loops clear (the factored EmptyWrapper.apply and the
+	// inline InlineWrapper.Route); the dynamic / escaping / sibling loops are left blind.
+	if cleared != 2 {
+		t.Fatalf("want exactly 2 cleared seams (the empty factored + inline loops), got %d", cleared)
 	}
 
 	taggedFound := false

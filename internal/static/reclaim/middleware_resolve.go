@@ -30,7 +30,7 @@ func (r *mwReclaimer) resolveSet(slice ssa.Value) ([]*ssa.Function, bool) {
 	}
 	// Local construction (not field-backed): trace the slice value directly. nil fieldVar
 	// means "no same-field base to fold away" — a same-field append base cannot occur here.
-	return sliceElems(slice, nil)
+	return r.sliceElems(slice, nil)
 }
 
 // sliceFieldVar reports whether slice is loaded from a struct field
@@ -114,7 +114,7 @@ func (r *mwReclaimer) resolveField(fv *types.Var) fieldSet {
 					ok = false
 					continue
 				}
-				elems, eok := sliceElems(x.Val, fv)
+				elems, eok := r.sliceElems(x.Val, fv)
 				if !eok {
 					ok = false
 					continue
@@ -255,19 +255,119 @@ func isReadOnlyBuiltin(name string) bool {
 // to nothing (the field's other stores already account for it; fv is nil for a local slice,
 // where no such base occurs). Any other shape (a func value from a parameter, an opaque call
 // result, a load of a different field) is unprovable.
-func sliceElems(v ssa.Value, fv *types.Var) ([]*ssa.Function, bool) {
+func (r *mwReclaimer) sliceElems(v ssa.Value, fv *types.Var) ([]*ssa.Function, bool) {
 	switch x := v.(type) {
 	case *ssa.Const:
 		// The only constant slice value is nil — an empty set.
 		return nil, x.IsNil()
 	case *ssa.Slice:
-		return sliceElems(x.X, fv)
+		return r.sliceElems(x.X, fv)
 	case *ssa.Alloc:
 		return arrayAllocElems(x)
 	case *ssa.Call:
-		return appendElems(x, fv)
+		return r.appendElems(x, fv)
+	}
+	// A copy from ANOTHER struct field (`w.field = options.Middlewares`, the oapi-codegen
+	// `HandlerWithOptions` bootstrap): the copied field's complete element set IS this store's
+	// contribution, resolved transitively by the same program-wide store walk. A copy from the
+	// SAME field (an identity store) folds to nothing — the field's other stores account for it.
+	if g, ok := fieldCopyVar(v); ok {
+		if g == fv {
+			return nil, true
+		}
+		fs := r.fieldStoreSet(g)
+		return fs.funcs, fs.ok
 	}
 	return nil, false
+}
+
+// fieldCopyVar returns the struct field a slice value is a copy of — a load of a field of a
+// pointer/alloc (`*ssa.UnOp(MUL)` of `*ssa.FieldAddr`) or an extraction from a struct value
+// (`*ssa.Field`) — and whether v is such a field access.
+func fieldCopyVar(v ssa.Value) (*types.Var, bool) {
+	switch x := v.(type) {
+	case *ssa.UnOp:
+		if x.Op == token.MUL {
+			if fa, ok := x.X.(*ssa.FieldAddr); ok {
+				if g := fieldVarOf(fa); g != nil {
+					return g, true
+				}
+			}
+		}
+	case *ssa.Field:
+		if st, ok := x.X.Type().Underlying().(*types.Struct); ok && x.Field >= 0 && x.Field < st.NumFields() {
+			return st.Field(x.Field), true
+		}
+	}
+	return nil, false
+}
+
+// fieldStoreSet resolves field G's complete element set from its STORES alone, program-wide —
+// the transitive emptiness/element proof a field-copy store recurses into. Unlike resolveField
+// it does NOT apply the loaded-value read-only guard: a field copied OUT (its load stored into
+// another field, e.g. `w.HandlerMiddlewares = options.Middlewares`) cannot make G non-empty,
+// because a field never SET to a non-empty value is nil at runtime and a nil slice cannot be
+// element-mutated, so no alias of it can introduce an element. The ADDRESS-escape guard stays:
+// if &G.field is used as anything but a load or a traced store, a store could happen past the
+// walk, so abstain. Memoised and cycle-guarded (a field-copy cycle abstains — never a false
+// PROVEN).
+func (r *mwReclaimer) fieldStoreSet(fv *types.Var) fieldSet {
+	if fv == nil {
+		return fieldSet{ok: false}
+	}
+	if memo, hit := r.storeMemo[fv]; hit {
+		return memo
+	}
+	if r.resolving[fv] {
+		return fieldSet{ok: false}
+	}
+	r.resolving[fv] = true
+
+	var funcs []*ssa.Function
+	seen := map[*ssa.Function]bool{}
+	ok := true
+	for _, fa := range r.fieldAddrsOf(fv) {
+		if !ok {
+			break
+		}
+		for _, ref := range referrers(fa) {
+			switch x := ref.(type) {
+			case *ssa.UnOp:
+				if x.Op != token.MUL {
+					ok = false // taking the field's address some other way
+				}
+				// a load (copy-out / read) cannot make an unset field non-empty: allowed.
+			case *ssa.Store:
+				if x.Addr != ssa.Value(fa) {
+					ok = false
+					continue
+				}
+				elems, eok := r.sliceElems(x.Val, fv)
+				if !eok {
+					ok = false
+					continue
+				}
+				for _, fn := range elems {
+					if fn != nil && !seen[fn] {
+						seen[fn] = true
+						funcs = append(funcs, fn)
+					}
+				}
+			default:
+				ok = false // the field's address escapes — a store could happen past the walk
+			}
+		}
+	}
+	res := fieldSet{funcs: funcs, ok: ok}
+	if !ok {
+		res.funcs = nil
+	}
+	sort.Slice(res.funcs, func(i, j int) bool {
+		return res.funcs[i].RelString(nil) < res.funcs[j].RelString(nil)
+	})
+	delete(r.resolving, fv)
+	r.storeMemo[fv] = res
+	return res
 }
 
 // arrayAllocElems resolves the elements of a local array allocation backing a slice literal
@@ -316,7 +416,7 @@ func arrayAllocElems(alloc *ssa.Alloc) ([]*ssa.Function, bool) {
 // base must resolve (a same-field load folds to nothing; nil/empty or another provable slice
 // is traced); the appended varargs slice is traced for its elements. A non-append call, or an
 // unprovable base/element, abstains.
-func appendElems(call *ssa.Call, fv *types.Var) ([]*ssa.Function, bool) {
+func (r *mwReclaimer) appendElems(call *ssa.Call, fv *types.Var) ([]*ssa.Function, bool) {
 	c := call.Common()
 	bi, ok := c.Value.(*ssa.Builtin)
 	if !ok || bi.Name() != "append" || len(c.Args) != 2 {
@@ -327,14 +427,14 @@ func appendElems(call *ssa.Call, fv *types.Var) ([]*ssa.Function, bool) {
 	if fv != nil && isFieldLoad(c.Args[0], fv) {
 		// the field's prior contents — accounted for by the field's other stores
 	} else {
-		base, ok := sliceElems(c.Args[0], fv)
+		base, ok := r.sliceElems(c.Args[0], fv)
 		if !ok {
 			return nil, false
 		}
 		funcs = append(funcs, base...)
 	}
 	// appended elements (the spread varargs slice)
-	extra, ok := sliceElems(c.Args[1], fv)
+	extra, ok := r.sliceElems(c.Args[1], fv)
 	if !ok {
 		return nil, false
 	}

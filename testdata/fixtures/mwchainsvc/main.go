@@ -34,6 +34,8 @@
 //     path it cannot bind.
 //   - EscAppendMW / EscAppendWrapper — an append RESULT on the field is written in place, so it
 //     may alias the field's backing array; the reclaimer abstains (the append-result guard).
+//   - InlineMW / InlineWrapper — the INLINE empty shape (loop + handler + ServeHTTP in one
+//     method), exercising the inline terminal-recovery branch + clearing.
 package main
 
 import "net/http"
@@ -193,6 +195,27 @@ func (siw *EscapeWrapper) Route(w http.ResponseWriter, r *http.Request) {
 	siw.apply(http.HandlerFunc(businessPostItems)).ServeHTTP(w, r)
 }
 
+// ---- InlineMW / InlineWrapper: the INLINE empty shape (loop + ServeHTTP in one method) ----
+
+type InlineMW func(http.Handler) http.Handler
+
+// InlineWrapper's HandlerMiddlewares is never populated and InlineMW has no concrete value,
+// so the loop is a zero-resolution UnresolvedCall under VTA. The loop, the handler, and the
+// ServeHTTP dispatch are all in ONE method (the hand-written inline stack, and the
+// oapi-codegen shape minus the options bootstrap), exercising the INLINE terminal-recovery
+// branch + clearing that the factored wrappers do not.
+type InlineWrapper struct {
+	HandlerMiddlewares []InlineMW
+}
+
+func (siw *InlineWrapper) Route(w http.ResponseWriter, r *http.Request) {
+	var h http.Handler = http.HandlerFunc(businessGetItems)
+	for _, mw := range siw.HandlerMiddlewares {
+		h = mw(h)
+	}
+	h.ServeHTTP(w, r)
+}
+
 // ---- SibMW / SibWrapper: a factored applier with a SIBLING return (an alternate terminal) ----
 
 type SibMW func(http.Handler) http.Handler
@@ -260,6 +283,7 @@ func main() {
 	sib := &SibWrapper{}
 	escApp := &EscAppendWrapper{}
 	escApp.build()
+	inline := &InlineWrapper{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /items", empty.GetItems)
@@ -270,6 +294,7 @@ func main() {
 	mux.HandleFunc("GET /esc", esc.Route)
 	mux.HandleFunc("GET /sib", sib.Route)
 	mux.HandleFunc("GET /escapp", escApp.Route)
+	mux.HandleFunc("GET /inline", inline.Route)
 
 	srv := &http.Server{Addr: ":0", Handler: mux}
 	_ = srv.ListenAndServe()

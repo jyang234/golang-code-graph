@@ -47,6 +47,54 @@ no committed lock would be ⚠️, not ✅.
 | Middleware-chain reclaimer (`flowmap graph --reclaim-middleware`) | ✅ | Resolves the `for _, mw := range HandlerMiddlewares { h = mw(h) }` loop to its concrete funcs when the set is statically provable (const literal / append chain / empty), tags edges `via=middleware-chain`, and clears the `UnresolvedCall` seam only when the set is provably empty AND the threaded handler is the sole terminal; soundness guards (field-slice escape, append-result aliasing, sibling-return, anchored type-match) and all five poles tested (`internal/static/reclaim/middleware_test.go`, `graphio/middleware_test.go`, `graphio/middleware_internal_test.go`, fixture `mwchainsvc`) | Opt-in by design (default graph and goldens unchanged); a dynamic/escaping middleware source stays disclosed; the non-empty chain reconnects edges but its per-middleware `next.ServeHTTP` hop stays an honest residual seam |
 | Capture-fidelity provenance (producer-set + reconciled) | ✅ | The grade is producer-set (the harness marks captures `integration`, a deploy sets `production` via a resource attribute), self-described by the committed corpus, and reconciled in `impeach.Audit`: a caller-asserted grade that contradicts the capture fails CLOSED to unestablished; only `production`/`integration` may be asserted (`capture.AssertableGrade`, one source for the verify CLI and MCP); §12.6 tests | **No cryptographic attestation yet** — a mislabeled producer is trusted (a signing authority is the named next step); `synthetic`/absent never promote, by design |
 
+### Coverage boundary — the middleware-chain reclaimer
+
+The `--reclaim-middleware` pass recovers the oapi-codegen/chi middleware-application
+seam (`for _, mw := range siw.HandlerMiddlewares { h = mw(h) }; h.ServeHTTP(w, r)`).
+Because a recovered edge under an *absence* proof is a false PROVEN — the worst
+outcome (CLAUDE.md tenet 4) — the boundary between what it proves and what it
+refuses is itself a soundness claim, stated here in full so "statically
+determinable" is never oversold.
+
+**Proves** (resolves the `mw(h)` call to concrete callees, or clears the
+`UnresolvedCall` disclosure), each shape regression-locked in
+`internal/static/reclaim/middleware_test.go` against fixture `mwchainsvc`:
+
+| Middleware-set shape | Outcome | Fixture wrapper |
+|---|---|---|
+| Const slice literal (`[]MiddlewareFunc{a, b}`) | Edges to `a`, `b`, tagged `via=middleware-chain` | `KnownWrapper` |
+| `append` chain (`append(append(nil, a), b)`) | Edges to every appended func | `AppendWrapper` |
+| Param-field copy / transitive-empty bootstrap (`HandlerMiddlewares: options.Middlewares`, nil-in-prod, through *N* hops) | Cleared — the field is provably empty across the whole closed program | `strictsvc` (real two-hop `HandlerFromMux` → `HandlerWithOptions`) |
+| Provably-empty loop (no store, or only empty stores) | Cleared — seam resolves to the threaded handler alone | `EmptyWrapper`, `InlineWrapper` |
+| Reverse-index loop (`for i := len(m)-1; i >= 0; i--`, the `ApplyChiMiddlewareFirstToLast` variant) | Same as forward — keyed on the `mw(h)` phi, not the induction form | (verified ad hoc; not fixture-locked) |
+
+**Abstains** (site stays `UnresolvedCall`, no edge added, no disclosure cleared —
+fail-closed), each pole tested:
+
+| Middleware-set shape | Why it abstains | Fixture wrapper |
+|---|---|---|
+| Opaque/dynamic source (slice from a global, a parameter, an unanalyzable call) | The set is not statically provable; an over-recovered edge would be a false PROVEN | `DynWrapper` |
+| Builder-returned slice (constructed behind a call this pass can't see through) | Same — the contents are not enumerable from the store walk | (subsumed by `DynWrapper`) |
+| Field that escapes to a mutating write (`IndexAddr` store, range-with-write, address taken to a non-same-field sink) | The empty/known proof no longer holds once the field can be mutated out of view | `EscapeWrapper` |
+| Sibling-return ambiguity (a factored terminal where some return path does *not* yield the threaded handler) | Clearing requires *every* return to thread the handler; one that doesn't breaks the proof | `SibWrapper` |
+
+**The load-bearing soundness caveat — closed-program (service) assumption.**
+Every "Proves" outcome above rests on the reclaimer seeing *every* store to
+`HandlerMiddlewares`. That holds for an analyzed **service**: the program is
+closed, so the `ssautil.AllFunctions` walk enumerates all bootstrap sites and a
+field that is never stored-to (or only stored empty) is genuinely empty at every
+call. It does **not** hold in **library mode**, where an external caller outside
+the analyzed unit could populate the field after analysis. In that mode the
+clear/resolve is *not* sound and the site should stay disclosed; the pass is
+opt-in and service-scoped precisely so this assumption is explicit rather than
+silent. Promotion to default-on, or to library targets, is gated on making that
+assumption checkable — not yet done.
+
+**Honest residual even when it proves.** For a *non-empty* chain the pass
+reconnects the `mw(h)` edges, but each middleware's own `next.ServeHTTP(w, r)`
+hop remains an `UnresolvedCall` — an honest residual seam, not a recovered one.
+The reclaimer narrows the blind spot; it does not claim to eliminate it.
+
 ## groundwork (the judge)
 
 | Capability | Grade | Evidence | Known limits |

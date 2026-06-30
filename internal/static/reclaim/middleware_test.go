@@ -120,20 +120,40 @@ func TestMiddlewareChainDynamicStaysBlind(t *testing.T) {
 	}
 }
 
-// The INLINE oapi-codegen strict-server shape (strictsvc: the loop, the per-handler closure,
-// and ServeHTTP all in one wrapper method, HandlerMiddlewares nil in prod): the reclaimer
-// recovers the inline terminal wrapper→$1 (the same edge the strict-server reclaimer
-// recovers — they agree at the seam) and, the set being empty, resolves the seam for every
-// route.
-func TestMiddlewareChainInlineStrictServer(t *testing.T) {
+// The INLINE empty shape (mwchainsvc.InlineWrapper: the loop, the handler, and ServeHTTP all
+// in one method, HandlerMiddlewares never populated and no field store): the reclaimer
+// recovers the inline terminal (Route→businessGetItems through the ServeHTTP on the threaded
+// handler) and, the set being provably empty, resolves the seam.
+func TestMiddlewareChainInlineEmptyClears(t *testing.T) {
+	edges, seams := mwEdges(t, "mwchainsvc")
+
+	if !hasEdgeSuffix(edges, "InlineWrapper).Route", "mwchainsvc.businessGetItems") {
+		t.Errorf("inline empty: want recovered Route→businessGetItems terminal; got %v", edges)
+	}
+	if !hasSeam(seams, "InlineWrapper).Route") {
+		t.Errorf("inline empty: a provably-empty inline loop should be a resolved seam; got %v", seams)
+	}
+}
+
+// The oapi-codegen BOOTSTRAP shape: strictsvc faithfully mirrors real oapi-codegen chi-server
+// — `HandlerWithOptions(si, ChiServerOptions{...})` wires `HandlerMiddlewares:
+// options.Middlewares`, a copy from a field of the options PARAMETER, often through a
+// convenience-constructor hop (`HandlerFromMux` → `HandlerWithOptions`). The element set is
+// proven empty TRANSITIVELY: the copied field ChiServerOptions.Middlewares is never set to a
+// non-empty value anywhere in the program (the field-store walk is program-wide and complete),
+// so the loop is provably dead. The reclaimer therefore recovers the inline terminal wrapper→$1
+// for every route AND clears the seam — closing the gap on the dominant real shape. (A struct
+// field can only become non-empty via a FieldAddr store, which the walk enumerates; whole-struct
+// copies of an always-empty field stay empty — the soundness this rests on.)
+func TestMiddlewareChainOapiBootstrapClears(t *testing.T) {
 	edges, seams := mwEdges(t, "strictsvc")
 
 	for _, op := range []string{"CreateEventTypeTemplate", "SyncEventTypes", "GetHealth"} {
 		if !hasEdgeSuffix(edges, "ServerInterfaceWrapper)."+op, "ServerInterfaceWrapper)."+op+"$1") {
-			t.Errorf("inline %s: want recovered wrapper→$1 terminal; got %v", op, edges)
+			t.Errorf("oapi bootstrap %s: want recovered wrapper→$1 terminal; got %v", op, edges)
 		}
 		if !hasSeam(seams, "ServerInterfaceWrapper)."+op) {
-			t.Errorf("inline %s: empty middleware loop should be a resolved seam; got %v", op, seams)
+			t.Errorf("oapi bootstrap %s: the transitively-empty middleware loop should be a resolved seam; got %v", op, seams)
 		}
 	}
 }
