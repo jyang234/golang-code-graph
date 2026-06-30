@@ -87,6 +87,14 @@ type ChiServerOptions struct {
 	Middlewares []MiddlewareFunc
 }
 
+// HandlerFromMux is the convenience constructor real oapi-codegen emits and services
+// actually call: it builds ChiServerOptions (Middlewares unset = nil-in-prod) and forwards
+// to HandlerWithOptions, so the middleware set reaches the field through TWO hops
+// (HandlerFromMux → HandlerWithOptions → `HandlerMiddlewares: options.Middlewares`).
+func HandlerFromMux(si ServerInterface, r chi.Router) http.Handler {
+	return HandlerWithOptions(si, ChiServerOptions{BaseRouter: r})
+}
+
 // HandlerWithOptions registers the wrapper methods on a chi router, the same
 // r.Post/r.Get-inside-r.Group shape oapi-codegen emits (and the shape flowmap's root
 // discovery keys on). It wires the wrapper's HandlerMiddlewares FROM the options'

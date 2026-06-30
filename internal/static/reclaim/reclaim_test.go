@@ -127,12 +127,11 @@ func TestStrictServerR2DoesNotConnectUnservedClosures(t *testing.T) {
 // STRUCTURAL seam — every route reaches its effects, so the frontier reports zero
 // attribution loss and no severed-closure / starved-entrypoint markers. The residual
 // middleware-application UnresolvedCall seams that StrictServer leaves (it does not touch the
-// `mw(h)` loop — TestStrictServerReconnectedButDisclosed) stay disclosed as A: on the faithful
-// oapi-codegen shape the middleware set enters through the `HandlerMiddlewares:
-// options.Middlewares` param-field copy, which the middleware reclaimer does not yet trace
-// (TestMiddlewareChainOapiBootstrapAbstains), so it is NOT predicted reclaimable. (A factored
-// or inline NO-store loop IS — see mwchainsvc's Empty/Inline wrappers — but the bootstrap shape
-// is the known gap.)
+// `mw(h)` loop — TestStrictServerReconnectedButDisclosed) are disclosed as B, not A: on the
+// faithful oapi-codegen shape the middleware set enters through the `HandlerMiddlewares:
+// options.Middlewares` param-field copy, which the reclaimer proves empty transitively
+// (TestMiddlewareChainOapiBootstrapClears), so the frontier names them reclaimable by
+// --reclaim-middleware rather than irreducible.
 func TestApplyReclaimersClosesSeam(t *testing.T) {
 	res := analyzeFixture(t, "strictsvc")
 	g, err := graphio.Build(res, "")
@@ -158,15 +157,14 @@ func TestApplyReclaimersClosesSeam(t *testing.T) {
 		t.Errorf("seam not closed: %d/%d starved (%.2f), want 0", r.StarvedEntrypoints, r.Entrypoints, r.AttributionLoss)
 	}
 	// The strict-server STRUCTURAL seam is fully closed: no severed-closure / starved-
-	// entrypoint marker survives. The residual middleware UnresolvedCall seams stay A — the
-	// param-field bootstrap is not yet middleware-reclaimable (the known gap), so the frontier
-	// must NOT mis-predict them B.
+	// entrypoint marker survives, and every B marker that remains is a middleware UnresolvedCall
+	// seam (reclaimable by --reclaim-middleware via the transitive empty-set proof, not irreducible).
 	for _, m := range r.Markers {
 		if m.Kind == "severed-closure" || m.Kind == "starved-entrypoint" {
 			t.Errorf("reclaimed graph must carry no strict-server seam marker, got %+v", m)
 		}
-		if m.Kind == string(blindspots.UnresolvedCall) && m.Bin == frontier.BinB {
-			t.Errorf("the oapi param-field bootstrap is not yet reclaimable; its seam must stay A, got %+v", m)
+		if m.Bin == frontier.BinB && m.Kind != string(blindspots.UnresolvedCall) {
+			t.Errorf("after strict-server reclaim the only B markers should be middleware UnresolvedCall seams, got %+v", m)
 		}
 	}
 	// The reclaimed routes now reach their effects, so they are neither severed nor

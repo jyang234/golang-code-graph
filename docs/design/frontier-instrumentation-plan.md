@@ -361,9 +361,22 @@ entrypoint-anchored absence proof whose cone crosses it abstains (CANT-PROVE). T
 > func-value call `mw(h)` whose callee is a slice element and whose handler argument
 > is a phi fed back by the call's own result — the `h = mw(h)` recurrence). It
 > resolves the slice's element set to a COMPLETE set of concrete functions (a const
-> slice/array literal, an `append` chain of known funcs, or provably empty), walking
-> `ssautil.AllFunctions` for every store to a field-backed slice (collect functions
-> completely — under-collection would be a false PROVEN). For a provable set it adds
+> slice/array literal, an `append` chain of known funcs, a copy from another struct
+> field, or provably empty), walking `ssautil.AllFunctions` for every store to a
+> field-backed slice (collect functions completely — under-collection would be a false
+> PROVEN). The **oapi-codegen bootstrap** — `HandlerWithOptions` wiring
+> `HandlerMiddlewares: options.Middlewares` (a copy from a field of the options
+> parameter, often through a `HandlerFromMux` → `HandlerWithOptions` hop) — is resolved
+> TRANSITIVELY: the copied field's set is the same program-wide store walk applied to
+> `ChiServerOptions.Middlewares`, so an always-nil field proves the loop dead WITHOUT
+> tracing callers (a struct field only becomes non-empty via a `FieldAddr` store the
+> walk enumerates; whole-struct copies of an always-empty field stay empty). This is the
+> dominant real shape — verified on actual oapi-codegen v2.7.1 output, where a
+> route-anchored `must_not_reach` goes from CANT-PROVE to a determinate proof. It is
+> sound under the closed-program (service) model the no-store proof already assumes:
+> the unit sees every field store, so a library analyzed in isolation — where an
+> external consumer could populate the field — is the same pre-existing optimism, not
+> new. For a provable set it adds
 > `loopFn → Mi` for each middleware Mi (resolving the call) and the terminal handler
 > edge — `caller → business` for the FACTORED shape (`apply(h).ServeHTTP(...)` at the
 > caller), `loopFn → business` for the INLINE shape — each a may-edge real execution

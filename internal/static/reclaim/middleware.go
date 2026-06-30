@@ -53,10 +53,12 @@ type MiddlewareResult struct {
 //
 //  1. F→Mi for every middleware function Mi in S — the loop invokes each (resolving the
 //     `mw(h)` call site to its concrete callees). Emitted only when S's element set is
-//     PROVABLY COMPLETE (a const slice/array literal, an append chain of known funcs, or
-//     provably empty); a slice built from an unknown source (a parameter, an opaque load)
-//     leaves the seam UnresolvedCall — abstaining is correct, a guessed edge would be a
-//     false PROVEN (tenet 4).
+//     PROVABLY COMPLETE (a const slice/array literal, an append chain of known funcs, a copy
+//     from another struct field resolved transitively — the oapi-codegen
+//     `HandlerMiddlewares: options.Middlewares` bootstrap — or provably empty); a slice built
+//     from a genuinely unknown source (an opaque global, a non-constant builder) leaves the
+//     seam UnresolvedCall — abstaining is correct, a guessed edge would be a false PROVEN
+//     (tenet 4).
 //  2. The terminal handler edge — the business handler whose ServeHTTP terminates the
 //     chain CAN be invoked when a request flows through, so the route reaches it. For the
 //     INLINE shape (ServeHTTP in F, on the threaded handler) that is F→T; for the FACTORED
@@ -96,7 +98,13 @@ func MiddlewareChain(res *analyze.Result) MiddlewareResult {
 		seen[key] = true
 		out.Edges = append(out.Edges, Edge{From: from, To: to, Via: ViaMiddlewareChain})
 	}
-	r := &mwReclaimer{res: res, prog: prog, fieldMemo: map[*types.Var]fieldSet{}}
+	r := &mwReclaimer{
+		res:       res,
+		prog:      prog,
+		fieldMemo: map[*types.Var]fieldSet{},
+		storeMemo: map[*types.Var]fieldSet{},
+		resolving: map[*types.Var]bool{},
+	}
 	for _, n := range res.Graph.Nodes {
 		f := n.Func
 		if f == nil {
@@ -126,6 +134,8 @@ type mwReclaimer struct {
 	res         *analyze.Result
 	prog        *ssa.Program
 	fieldMemo   map[*types.Var]fieldSet
+	storeMemo   map[*types.Var]fieldSet
+	resolving   map[*types.Var]bool
 	fieldAddrs  map[*types.Var][]*ssa.FieldAddr
 	callerSites map[*ssa.Function][]mwCallSite
 }

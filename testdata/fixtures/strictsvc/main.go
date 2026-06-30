@@ -19,8 +19,9 @@ import (
 func main() {
 	r := chi.NewRouter()
 	srv := server.New(store.New(nil))
-	// nil-in-prod: ChiServerOptions carries no Middlewares, so HandlerMiddlewares is wired
-	// empty through the options param-field — the dominant real oapi-codegen shape.
-	api.HandlerWithOptions(api.NewStrictHandler(srv), api.ChiServerOptions{BaseRouter: r})
+	// HandlerFromMux is the real wiring services use: it forwards to HandlerWithOptions with
+	// nil-in-prod Middlewares, so the middleware set reaches the field through two hops — the
+	// multi-hop param-field bootstrap the reclaimer must trace transitively.
+	api.HandlerFromMux(api.NewStrictHandler(srv), r)
 	_ = http.ListenAndServe(":8080", r)
 }
