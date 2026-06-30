@@ -233,6 +233,45 @@ func TestMiddlewareChainAppendResultMutationAbstains(t *testing.T) {
 	}
 }
 
+// The oapi-codegen STRICT-server layer's inline EMPTY shape (mwchainsvc.StrictEmptyWrapper):
+// a second middleware loop of element type StrictEmptyMW, one layer deeper than the http
+// wrapper. Its call is `mw(h, "op")` (two args — handler + operation id, where the http layer
+// has one), the handler is a plain func value threaded through identity ChangeType conversions,
+// and the terminal CALLS the threaded handler `h(ctx, w, r, nil)` rather than dispatching
+// ServeHTTP. middlewares is never populated, so the loop is provably empty: the reclaimer
+// recovers the closure terminal (Route→Route$1) and CLEARS the seam — the strict-layer coverage
+// the http reclaimer did not reach.
+func TestMiddlewareChainStrictServerEmptyClears(t *testing.T) {
+	edges, seams := mwEdges(t, "mwchainsvc")
+
+	if !hasEdgeSuffix(edges, "StrictEmptyWrapper).Route", "StrictEmptyWrapper).Route$1") {
+		t.Errorf("strict empty: want recovered Route→Route$1 closure terminal; got %v", edges)
+	}
+	if !hasSeam(seams, "StrictEmptyWrapper).Route") {
+		t.Errorf("strict empty: a provably-empty strict-server loop should be a resolved seam; got %v", seams)
+	}
+}
+
+// Soundness: the strict layer's NON-EMPTY shape (mwchainsvc.StrictKnownWrapper, middlewares
+// wired from a const slice literal {strictAuth}). The reclaimer resolves the middleware
+// (Route→strictAuth) and recovers the closure terminal (Route→Route$1), but does NOT clear the
+// seam — each strict middleware re-dispatches through its own `f(…)` hop this pass does not
+// chase, so the loop stays disclosed exactly as the http KnownWrapper does. Over-clearing here
+// would launder those hidden hops into a false absence proof.
+func TestMiddlewareChainStrictServerKnownDiscloses(t *testing.T) {
+	edges, seams := mwEdges(t, "mwchainsvc")
+
+	if !hasEdgeSuffix(edges, "StrictKnownWrapper).Route", "mwchainsvc.strictAuth") {
+		t.Errorf("strict known: want Route→strictAuth (resolved middleware); got %v", edges)
+	}
+	if !hasEdgeSuffix(edges, "StrictKnownWrapper).Route", "StrictKnownWrapper).Route$1") {
+		t.Errorf("strict known: want Route→Route$1 (recovered terminal); got %v", edges)
+	}
+	if hasSeam(seams, "StrictKnownWrapper).Route") {
+		t.Errorf("strict known: a non-empty strict-server loop must stay disclosed; got %v", seams)
+	}
+}
+
 // Soundness / no false positives: services with no middleware-application loop yield nothing.
 // A reclaimer that fired on any range-over-funcs loop, or any ServeHTTP dispatch, would emit
 // spurious edges here.

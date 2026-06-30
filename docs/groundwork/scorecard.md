@@ -44,13 +44,21 @@ no committed lock would be ⚠️, not ✅.
 | Graph stamping (`--stamp`) | ✅ | All four verify behaviors tested; goldens proven unstamped/unchanged | Caller-supplied only — verifies the claim chain, not the deploy pipeline's existence |
 | Static-frontier classifier (`flowmap frontier`) | ✅ | Classifier + attribution check locked on hand-authored graph fixtures and the `strictsvc`/`oapisvc`/`loansvc` services (`internal/static/frontier/frontier_test.go`, `frontier_classify_test.go`); the three-valued disclosure (confirmed-starved / unconfirmed / clean) is tested both ways so a 0-loss can't be misread | **Measurement, not a gate** — imports no verdict surface; attribution loss is a *lower bound*, not a proof; whole-service only (a scoped `--entry` build carries no frontier section by design) |
 | Strict-server seam reclaimer (`flowmap graph --reclaim`) | ✅ | Recovers exactly the strict-server dispatch edges, each tagged with `via` provenance, and **zero false positives** on non-seam services (`internal/static/reclaim/reclaim_test.go`); folding the edges in drives the frontier's attribution loss to 0 | Opt-in by design (default graph and goldens unchanged); covers only the oapi strict-server seam shape; promotion to default-on is gated on real-service prevalence evidence (not yet collected) |
-| Middleware-chain reclaimer (`flowmap graph --reclaim-middleware`) | ✅ | Resolves the `for _, mw := range HandlerMiddlewares { h = mw(h) }` loop to its concrete funcs when the set is statically provable (const literal / append chain / empty), tags edges `via=middleware-chain`, and clears the `UnresolvedCall` seam only when the set is provably empty AND the threaded handler is the sole terminal; soundness guards (field-slice escape, append-result aliasing, sibling-return, anchored type-match) and all five poles tested (`internal/static/reclaim/middleware_test.go`, `graphio/middleware_test.go`, `graphio/middleware_internal_test.go`, fixture `mwchainsvc`) | Opt-in by design (default graph and goldens unchanged); a dynamic/escaping middleware source stays disclosed; the non-empty chain reconnects edges but its per-middleware `next.ServeHTTP` hop stays an honest residual seam |
+| Middleware-chain reclaimer (`flowmap graph --reclaim-middleware`) | ✅ | Resolves the `for _, mw := range HandlerMiddlewares { h = mw(h …) }` loop to its concrete funcs when the set is statically provable (const literal / append chain / empty), in BOTH the http layer (`mw(h)`, `ServeHTTP` terminal) and the oapi-codegen strict-server layer one level deeper (`mw(h, "Op")` over `[]StrictHTTPMiddlewareFunc`, func-value `h(…)` terminal); tags edges `via=middleware-chain`, and clears the `UnresolvedCall` seam only when the set is provably empty AND the threaded handler is the sole terminal; soundness guards (field-slice escape, append-result aliasing, sibling-return, anchored type-match) and all poles tested (`internal/static/reclaim/middleware_test.go`, `graphio/middleware_test.go`, `graphio/middleware_internal_test.go`, fixture `mwchainsvc`) | Opt-in by design (default graph and goldens unchanged); a dynamic/escaping middleware source stays disclosed; the non-empty chain reconnects edges but its per-middleware re-dispatch hop (`next.ServeHTTP` / strict `f(…)`) stays an honest residual seam |
 | Capture-fidelity provenance (producer-set + reconciled) | ✅ | The grade is producer-set (the harness marks captures `integration`, a deploy sets `production` via a resource attribute), self-described by the committed corpus, and reconciled in `impeach.Audit`: a caller-asserted grade that contradicts the capture fails CLOSED to unestablished; only `production`/`integration` may be asserted (`capture.AssertableGrade`, one source for the verify CLI and MCP); §12.6 tests | **No cryptographic attestation yet** — a mislabeled producer is trusted (a signing authority is the named next step); `synthetic`/absent never promote, by design |
 
 ### Coverage boundary — the middleware-chain reclaimer
 
 The `--reclaim-middleware` pass recovers the oapi-codegen/chi middleware-application
-seam (`for _, mw := range siw.HandlerMiddlewares { h = mw(h) }; h.ServeHTTP(w, r)`).
+seam in BOTH layers oapi-codegen emits: the http layer
+(`for _, mw := range siw.HandlerMiddlewares { h = mw(h) }; h.ServeHTTP(w, r)`) and the
+strict-server layer one level deeper, where the element type is
+`StrictHTTPMiddlewareFunc`, the call carries the operation id
+(`for _, mw := range sh.middlewares { h = mw(h, "Op") }`), and the terminal dispatches
+by CALLING the threaded handler as a func value (`h(ctx, w, r, req)`) rather than via
+`ServeHTTP`. The same recurrence — `h` fed back by the call result, here through the
+identity `ChangeType` conversions go/ssa inserts between the closure's func type and the
+named `StrictHTTPHandlerFunc` — drives both, so the same provably-empty clearing applies.
 Because a recovered edge under an *absence* proof is a false PROVEN — the worst
 outcome (CLAUDE.md tenet 4) — the boundary between what it proves and what it
 refuses is itself a soundness claim, stated here in full so "statically
@@ -62,10 +70,11 @@ determinable" is never oversold.
 
 | Middleware-set shape | Outcome | Fixture wrapper |
 |---|---|---|
-| Const slice literal (`[]MiddlewareFunc{a, b}`) | Edges to `a`, `b`, tagged `via=middleware-chain` | `KnownWrapper` |
+| Const slice literal (`[]MiddlewareFunc{a, b}`) | Edges to `a`, `b`, tagged `via=middleware-chain`; NOT cleared (non-empty) | `KnownWrapper`, `StrictKnownWrapper` (strict layer) |
 | `append` chain (`append(append(nil, a), b)`) | Edges to every appended func | `AppendWrapper` |
 | Param-field copy / transitive-empty bootstrap (`HandlerMiddlewares: options.Middlewares`, nil-in-prod, through *N* hops) | Cleared — the field is provably empty across the whole closed program | `strictsvc` (real two-hop `HandlerFromMux` → `HandlerWithOptions`) |
 | Provably-empty loop (no store, or only empty stores) | Cleared — seam resolves to the threaded handler alone | `EmptyWrapper`, `InlineWrapper` |
+| Provably-empty strict-server loop (`mw(h, "Op")`, func-value `h(…)` terminal) | Cleared — same recurrence/empty proof, one element type and one constructor deeper | `StrictEmptyWrapper` |
 | Reverse-index loop (`for i := len(m)-1; i >= 0; i--`, the `ApplyChiMiddlewareFirstToLast` variant) | Same as forward — keyed on the `mw(h)` phi, not the induction form | (verified ad hoc; not fixture-locked) |
 
 **Abstains** (site stays `UnresolvedCall`, no edge added, no disclosure cleared —
@@ -91,9 +100,10 @@ silent. Promotion to default-on, or to library targets, is gated on making that
 assumption checkable — not yet done.
 
 **Honest residual even when it proves.** For a *non-empty* chain the pass
-reconnects the `mw(h)` edges, but each middleware's own `next.ServeHTTP(w, r)`
-hop remains an `UnresolvedCall` — an honest residual seam, not a recovered one.
-The reclaimer narrows the blind spot; it does not claim to eliminate it.
+reconnects the `mw(h)` edges, but each middleware's own re-dispatch hop remains an
+`UnresolvedCall` — the http layer's `next.ServeHTTP(w, r)` or the strict layer's
+`f(ctx, w, r, req)` — an honest residual seam, not a recovered one. The reclaimer
+narrows the blind spot; it does not claim to eliminate it.
 
 ## groundwork (the judge)
 

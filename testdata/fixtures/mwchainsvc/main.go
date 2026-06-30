@@ -36,9 +36,22 @@
 //     may alias the field's backing array; the reclaimer abstains (the append-result guard).
 //   - InlineMW / InlineWrapper — the INLINE empty shape (loop + handler + ServeHTTP in one
 //     method), exercising the inline terminal-recovery branch + clearing.
+//   - StrictEmptyMW / StrictEmptyWrapper — the oapi-codegen STRICT-server layer's inline empty
+//     shape: a SECOND middleware loop of a different element type, one layer deeper, whose
+//     handler is a plain func value (not http.Handler) and whose terminal CALLS the threaded
+//     handler `h(ctx, w, r, req)` rather than dispatching ServeHTTP. middlewares never
+//     populated, so the loop is provably empty: the reclaimer recovers the closure terminal
+//     and CLEARS the seam — the new strict-layer coverage.
+//   - StrictKnownMW / StrictKnownWrapper — the strict layer's NON-EMPTY shape: middlewares
+//     wired from a const slice literal {strictAuth}. The reclaimer resolves `mw(h, op)` to
+//     strictAuth and recovers the closure terminal, but LEAVES the seam disclosed (each
+//     middleware re-dispatches through its own `f(…)` hop this pass does not chase).
 package main
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // ---- shared business handlers and effects ----
 
@@ -274,6 +287,78 @@ func (siw *EscAppendWrapper) Route(w http.ResponseWriter, r *http.Request) {
 	siw.apply(http.HandlerFunc(businessGetItems)).ServeHTTP(w, r)
 }
 
+// ---- StrictEmptyMW / StrictEmptyWrapper: the oapi-codegen STRICT-server inline empty shape ----
+
+// StrictHandlerFunc is the (ctx,w,r,request)->(response,error) handler the strict-server layer
+// threads — a named func type, like oapi-codegen's runtime StrictHTTPHandlerFunc. go/ssa
+// inserts identity ChangeType conversions between this named type and the per-operation
+// closure's underlying func type on every middleware hop (argument and result); the reclaimer
+// looks through those (stripConv) to recognize the recurrence in either layer.
+type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error)
+
+func strictBusinessGet()  { readOnlyWork() }
+func strictBusinessPost() { dbWrite() }
+
+// StrictEmptyMW matches oapi-codegen's strict-server middleware hook
+// (StrictHTTPMiddlewareFunc): it takes the handler AND the operation id, so the loop call is
+// `mw(h, "op")` — two args, not one. middlewares is never populated and StrictEmptyMW has no
+// concrete value, so the loop is a zero-resolution UnresolvedCall under VTA.
+type StrictEmptyMW func(f StrictHandlerFunc, operationID string) StrictHandlerFunc
+
+type StrictEmptyWrapper struct {
+	middlewares []StrictEmptyMW
+}
+
+// Route is the strict-server route method: it builds a per-operation closure, threads it
+// through the middleware loop, then dispatches by CALLING the threaded handler as a func value
+// (`handler(ctx, w, r, nil)`) — the strict-layer terminal, distinct from the http layer's
+// `handler.ServeHTTP(w, r)`. With the set empty the loop is dead and the closure runs directly.
+func (sh *StrictEmptyWrapper) Route(w http.ResponseWriter, r *http.Request) {
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		strictBusinessGet()
+		return nil, nil
+	}
+	for _, mw := range sh.middlewares {
+		handler = mw(handler, "Route")
+	}
+	_, _ = handler(r.Context(), w, r, nil)
+}
+
+// ---- StrictKnownMW / StrictKnownWrapper: the strict layer's NON-EMPTY shape ----
+
+type StrictKnownMW func(f StrictHandlerFunc, operationID string) StrictHandlerFunc
+
+// strictAuth is a strict-server middleware: it wraps the next handler, doing work before
+// re-dispatching through `f(…)` — the per-middleware hop the reclaimer does not chase, which
+// is why a non-empty strict loop stays disclosed.
+func strictAuth(f StrictHandlerFunc, operationID string) StrictHandlerFunc {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		strictAuthWork()
+		return f(ctx, w, r, request)
+	}
+}
+
+func strictAuthWork() {}
+
+type StrictKnownWrapper struct {
+	middlewares []StrictKnownMW
+}
+
+func (sh *StrictKnownWrapper) Route(w http.ResponseWriter, r *http.Request) {
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		strictBusinessPost()
+		return nil, nil
+	}
+	for _, mw := range sh.middlewares {
+		handler = mw(handler, "Route")
+	}
+	_, _ = handler(r.Context(), w, r, nil)
+}
+
+func newStrictKnown() *StrictKnownWrapper {
+	return &StrictKnownWrapper{middlewares: []StrictKnownMW{strictAuth}}
+}
+
 func main() {
 	empty := &EmptyWrapper{}
 	known := newKnown()
@@ -284,6 +369,8 @@ func main() {
 	escApp := &EscAppendWrapper{}
 	escApp.build()
 	inline := &InlineWrapper{}
+	strictEmpty := &StrictEmptyWrapper{}
+	strictKnown := newStrictKnown()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /items", empty.GetItems)
@@ -295,6 +382,8 @@ func main() {
 	mux.HandleFunc("GET /sib", sib.Route)
 	mux.HandleFunc("GET /escapp", escApp.Route)
 	mux.HandleFunc("GET /inline", inline.Route)
+	mux.HandleFunc("GET /strictempty", strictEmpty.Route)
+	mux.HandleFunc("GET /strictknown", strictKnown.Route)
 
 	srv := &http.Server{Addr: ":0", Handler: mux}
 	_ = srv.ListenAndServe()

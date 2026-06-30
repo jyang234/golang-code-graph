@@ -203,10 +203,12 @@ func (r *mwReclaimer) reclaimFunc(fqn string, f *ssa.Function, addEdge func(from
 }
 
 // findMiddlewareLoops returns every middleware-application loop in f: a func-value call
-// `c = mw(h)` whose callee is a slice element and whose handler argument is a phi fed back
-// by the call's own result (the `h = mw(h)` recurrence). That recurrence is the signature
+// `c = mw(h …)` whose callee is a slice element and ONE of whose arguments is a phi fed back
+// by the call's own result (the `h = mw(h …)` recurrence). That recurrence is the signature
 // that distinguishes a middleware chain from an ordinary "call each func in a slice" loop
 // (where the argument is loop-invariant), and it is what lets the terminal handler be traced.
+// Both layers oapi-codegen emits match: the http layer's single-arg `mw(h)` and the
+// strict-server layer's `mw(h, operationID)` (the extra operation-id arg is loop-invariant).
 func findMiddlewareLoops(f *ssa.Function) []mwLoop {
 	var out []mwLoop
 	for _, b := range f.Blocks {
@@ -254,28 +256,59 @@ func sliceElementCallee(callee ssa.Value) (ssa.Value, bool) {
 	return idx.X, true
 }
 
-// threadedHandler returns the handler phi `h` of a `h = mw(h)` call and the phi's pre-loop
-// operand (the handler before any middleware runs). The phi is the argument whose own
-// edges include call (the call result loops back into it); the pre-loop operand is the
-// other edge. A canonical `for _, mw := range s { h = mw(h) }` produces a phi with EXACTLY
-// two edges — the pre-loop value and this call — so threadedHandler requires exactly one
-// non-call edge: a phi with several pre-loop operands (an irreducible CFG, a goto into the
-// loop) has no single intrinsic "initial handler", and picking one arbitrarily could name a
-// terminal real execution does not take. Returns ok=false unless the argument is such a
-// self-threading phi with a single pre-loop operand.
+// threadedHandler returns the handler phi `h` of a `h = mw(h …)` call and the phi's pre-loop
+// operand (the handler before any middleware runs). The threaded handler is the SOLE
+// argument that is a self-threading phi: a phi whose own edges include this call's result
+// (the call loops back into it) with EXACTLY ONE other (pre-loop) edge. The http layer's
+// `mw(h)` passes that phi as its only argument, untouched. The strict-server layer's
+// `mw(h, operationID)` carries it alongside a loop-invariant operation-id string AND wraps it
+// in the no-op `ChangeType` conversions between the per-operation closure's func type and the
+// named StrictHTTPHandlerFunc the middleware signature uses — both on the argument
+// (`mw(ChangeType(h), …)`) and on the result feeding the phi back (`h = ChangeType(mw(…))`).
+// stripConv looks through those identity conversions on both sides, so the recurrence is
+// recognized in either layer. A canonical `for _, mw := range s { h = mw(h …) }` produces a
+// phi with EXACTLY two edges — the pre-loop value and this call — so a phi with several
+// pre-loop operands (an irreducible CFG, a goto into the loop) has no single intrinsic
+// "initial handler", and picking one arbitrarily could name a terminal real execution does
+// not take. Returns ok=false unless EXACTLY ONE argument is such a self-threading phi (zero
+// leaves nothing to thread; two is a shape this pass cannot bind to a single terminal).
 func threadedHandler(call *ssa.Call, args []ssa.Value) (*ssa.Phi, ssa.Value, bool) {
-	if len(args) != 1 {
+	var (
+		foundPhi     *ssa.Phi
+		foundInitial ssa.Value
+		count        int
+	)
+	for _, arg := range args {
+		phi, ok := stripConv(arg).(*ssa.Phi)
+		if !ok {
+			continue
+		}
+		initial, ok := selfThreadingInitial(phi, call)
+		if !ok {
+			continue
+		}
+		count++
+		foundPhi, foundInitial = phi, initial
+	}
+	if count != 1 {
 		return nil, nil, false
 	}
-	phi, ok := args[0].(*ssa.Phi)
-	if !ok {
-		return nil, nil, false
-	}
+	return foundPhi, foundInitial, true
+}
+
+// selfThreadingInitial reports whether phi is fed back by call's own result — the
+// `h = mw(h …)` recurrence — and returns its single pre-loop operand. A canonical loop phi
+// has EXACTLY two edges: the pre-loop value and this call. The recurrence edge may be the
+// call directly (http layer) or the call behind identity ChangeType/Convert conversions
+// (strict-server layer), so it is compared after stripConv. Requires the call edge to be
+// present and exactly one non-call edge; ok=false otherwise. The pre-loop operand is returned
+// UNSTRIPPED — handlerTarget unwraps its own conversions when resolving the terminal.
+func selfThreadingInitial(phi *ssa.Phi, call *ssa.Call) (ssa.Value, bool) {
 	var initial ssa.Value
 	nonCall := 0
 	loops := false
 	for _, e := range phi.Edges {
-		if e == ssa.Value(call) {
+		if stripConv(e) == ssa.Value(call) {
 			loops = true
 			continue
 		}
@@ -283,7 +316,27 @@ func threadedHandler(call *ssa.Call, args []ssa.Value) (*ssa.Phi, ssa.Value, boo
 		initial = e
 	}
 	if !loops || nonCall != 1 {
-		return nil, nil, false
+		return nil, false
 	}
-	return phi, initial, true
+	return initial, true
+}
+
+// stripConv strips the identity func-value conversions go/ssa inserts between a named func
+// type and its underlying signature (the strict-server layer's StrictHTTPHandlerFunc ↔ the
+// per-operation closure type). ChangeType is a no-op at runtime (same representation, same
+// callee); Convert between func types is likewise representation-preserving. Stripping them
+// lets the middleware-loop recurrence be matched in both the http (no conversion) and
+// strict-server (conversion on both sides) shapes. It does NOT strip MakeInterface or
+// MakeClosure — those change what is being called, not merely its static type.
+func stripConv(v ssa.Value) ssa.Value {
+	for {
+		switch x := v.(type) {
+		case *ssa.ChangeType:
+			v = x.X
+		case *ssa.Convert:
+			v = x.X
+		default:
+			return v
+		}
+	}
 }

@@ -88,10 +88,14 @@ func TestApplyMiddlewareReclaimerClosesEmptySeam(t *testing.T) {
 	if added == 0 {
 		t.Fatal("ApplyMiddlewareReclaimer folded no edges")
 	}
-	// Exactly the two provably-empty loops clear (the factored EmptyWrapper.apply and the
-	// inline InlineWrapper.Route); the dynamic / escaping / sibling loops are left blind.
-	if cleared != 2 {
-		t.Fatalf("want exactly 2 cleared seams (the empty factored + inline loops), got %d", cleared)
+	// Exactly the three provably-empty loops clear: the factored http EmptyWrapper.apply, the
+	// inline http InlineWrapper.Route, and the inline strict-server StrictEmptyWrapper.Route;
+	// the dynamic / escaping / sibling loops and the non-empty known loops are left blind.
+	if cleared != 3 {
+		t.Fatalf("want exactly 3 cleared seams (the empty factored + inline http loops + the empty strict-server loop), got %d", cleared)
+	}
+	if unresolvedAt(g, "StrictEmptyWrapper).Route") {
+		t.Error("after --reclaim-middleware the empty strict-server middleware seam must be cleared")
 	}
 
 	taggedFound := false

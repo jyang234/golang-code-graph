@@ -8,10 +8,14 @@ import (
 
 // recoverTerminals recovers the edge(s) to the business handler the middleware chain
 // dispatches to, and reports whether EVERY terminal the loop feeds was recovered (the gate
-// the empty-set blind-spot clearing rides on). Two shapes:
+// the empty-set blind-spot clearing rides on). Three shapes:
 //
-//   - INLINE: f dispatches `h.ServeHTTP(...)` on the threaded handler itself. The handler is
-//     built in f, so its target is f's own initial handler — recover f→T.
+//   - INLINE (http): f dispatches `h.ServeHTTP(...)` on the threaded handler itself. The
+//     handler is built in f, so its target is f's own initial handler — recover f→T.
+//   - INLINE (strict-server): f dispatches the threaded handler by CALLING it as a func value
+//     `h(ctx, w, r, request)` — the oapi-codegen strict layer, whose handler is a plain func
+//     type, not an http.Handler. Same recovery as the http inline shape: f→T, T being f's
+//     initial handler (the per-operation closure).
 //   - FACTORED: f RETURNS the threaded handler and the CALLER dispatches
 //     `f(handler).ServeHTTP(...)`. The target is the handler the caller passed in — recover
 //     caller→T, traced to the caller's argument at the handler parameter's position.
@@ -21,7 +25,7 @@ import (
 // recovered ServeHTTP dispatch — either case leaves a hop unaccounted, so the seam must not
 // be cleared.
 func (r *mwReclaimer) recoverTerminals(fqn string, f *ssa.Function, lp mwLoop, addEdge func(from, to string)) bool {
-	// INLINE: a ServeHTTP receiver in f that derives from the threaded handler.
+	// INLINE (http): a ServeHTTP receiver in f that derives from the threaded handler.
 	for _, recv := range serveHTTPReceivers(f) {
 		if valueReaches(recv, lp.phi, map[ssa.Value]bool{}) {
 			t := handlerTarget(lp.initial)
@@ -31,6 +35,15 @@ func (r *mwReclaimer) recoverTerminals(fqn string, f *ssa.Function, lp mwLoop, a
 			addEdge(fqn, t.RelString(nil))
 			return true
 		}
+	}
+	// INLINE (strict-server): f calls the threaded handler as a func value `h(...)`.
+	if dispatchesThreadedHandler(f, lp) {
+		t := handlerTarget(lp.initial)
+		if t == nil {
+			return false
+		}
+		addEdge(fqn, t.RelString(nil))
+		return true
 	}
 	// FACTORED: f returns the threaded handler; the caller dispatches its ServeHTTP. EVERY
 	// return must yield the threaded handler — a sibling return of a DIFFERENT handler is an
@@ -68,6 +81,36 @@ func (r *mwReclaimer) recoverFactoredTerminals(f *ssa.Function, lp mwLoop, addEd
 		}
 	}
 	return allRecovered
+}
+
+// dispatchesThreadedHandler reports whether f invokes the threaded handler by CALLING it as a
+// func value — the oapi-codegen strict-server terminal `h(ctx, w, r, request)`, distinct from
+// the http layer's `h.ServeHTTP(...)`. It matches a func-value call (not an interface or
+// static call, not a builtin) whose CALLEE value reaches the loop phi. The loop's own
+// `mw(h …)` call is excluded both explicitly (it is lp.call) and intrinsically (its callee is
+// a slice element, not the phi). When the middleware set is empty the loop body is dead and
+// `h` is exactly f's initial handler, so this call invokes that handler directly — the same
+// can-reach edge the http inline shape recovers.
+func dispatchesThreadedHandler(f *ssa.Function, lp mwLoop) bool {
+	for _, b := range f.Blocks {
+		for _, instr := range b.Instrs {
+			call, ok := instr.(*ssa.Call)
+			if !ok || call == lp.call {
+				continue
+			}
+			c := call.Common()
+			if c.IsInvoke() || c.StaticCallee() != nil {
+				continue
+			}
+			if _, isBuiltin := c.Value.(*ssa.Builtin); isBuiltin {
+				continue
+			}
+			if valueReaches(c.Value, lp.phi, map[ssa.Value]bool{}) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isServeHTTPReceiverOf reports whether instr is a net/http ServeHTTP invoke whose receiver
