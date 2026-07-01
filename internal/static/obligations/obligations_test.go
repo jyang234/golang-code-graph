@@ -363,6 +363,75 @@ func TransferRecoverNamed(s *Store) error {
 }
 `
 
+// reassignSrc mirrors the C-2 PoC: a named error result + annotating defer +
+// an intermediate fallible call that REASSIGNS err. The reassigned `if err != nil`
+// leaks tx, but the old failure-branch pruning treated every load of the named
+// result's alloc as the acquire's failure test and pruned the leaking arm →
+// false SATISFIED.
+const reassignSrc = `package fix
+
+type Tx struct{ closed bool }
+type Store struct{ tx *Tx }
+
+func (s *Store) BeginTx() (*Tx, error) { return &Tx{}, nil }
+func (t *Tx) Commit() error            { t.closed = true; return nil }
+func (t *Tx) Rollback() error          { t.closed = true; return nil }
+
+func annotate(err error) error { return err }
+func doWork() error            { return nil }
+
+// The bug shape: err is reassigned by doWork() before its own failure check,
+// which leaks tx. Must NOT be SATISFIED.
+func LeakAfterReassign(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	err = doWork()
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Control: the acquire's own failure branch (no reassignment) is still pruned,
+// and the deferred rollback covers every real exit → SATISFIED. This pins that
+// the fix did not over-abstain on the ordinary named-result idiom.
+func NoReassign(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return tx.Commit()
+}
+`
+
+// TestReassignedErrNotSatisfied is the C-2 regression.
+func TestReassignedErrNotSatisfied(t *testing.T) {
+	fns := buildSSA(t, reassignSrc)
+	rules := []config.ObligationRule{
+		{Name: "tx-must-close", Acquire: "example.com/fix#BeginTx",
+			Release: []string{"example.com/fix#Commit", "example.com/fix#Rollback"}},
+	}
+	fs := Check(rules, fns, "", nil)
+
+	if f := one(t, fs, "LeakAfterReassign"); f.Status == Satisfied {
+		t.Errorf("LeakAfterReassign = SATISFIED — false universal proof; the reassigned err "+
+			"failure branch was pruned (%s)", f.Detail)
+	} else if f.Status != CantProve {
+		t.Errorf("LeakAfterReassign = %s (%s), want CANT-PROVE (reassignment blinds the "+
+			"failed-acquire branch)", f.Status, f.Detail)
+	}
+
+	if f := one(t, fs, "NoReassign"); f.Status != Satisfied {
+		t.Errorf("NoReassign = %s (%s), want SATISFIED — the fix must not over-abstain on "+
+			"the ordinary named-result + annotating-defer idiom", f.Status, f.Detail)
+	}
+}
+
 func TestRF4ReleaseIdioms(t *testing.T) {
 	fns := buildSSA(t, rf4Src)
 	rules := []config.ObligationRule{
