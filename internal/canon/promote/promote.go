@@ -14,6 +14,7 @@
 package promote
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/jyang234/golang-code-graph/ir"
@@ -37,64 +38,114 @@ func Filter(span *ir.CanonicalSpan, keep func(*ir.CanonicalSpan) bool) {
 
 	var out []ir.ChildGroup
 	for _, g := range span.Children {
-		if g.Concurrent {
-			members := make([]*ir.CanonicalSpan, 0, len(g.Members))
-			for _, m := range g.Members {
-				if keep(m) {
-					members = append(members, m)
-					continue
-				}
-				// Promote the dropped wrapper's children into the race only when it
-				// is lossless. A concurrent group holds racing branches, not ordered
-				// steps, so a wrapper whose surviving subtree is more than one
-				// child-group carries a happens-before sequence that flattening would
-				// turn into a race. In that case the node is the minimal structure
-				// that preserves the ordering, so we retain it rather than corrupt
-				// the snapshot (canon §3.3, plan [C3]). A wrapper with one child-group
-				// (its members are a single span or an already-concurrent set)
-				// promotes cleanly.
-				if len(m.Children) <= 1 {
-					for _, cg := range m.Children {
-						members = append(members, cg.Members...)
-					}
-				} else {
-					members = append(members, m)
-				}
+		switch {
+		case g.Concurrent:
+			out = appendContracted(out, g, keep, groupConcurrent)
+		case g.Unordered:
+			// Symmetric with Concurrent: post-hoc canonicalization mints
+			// multi-member Unordered groups (canon.go), so the old single-member
+			// sequential branch below silently processed only Members[0] and dropped
+			// the rest — the C-7 false-golden (a tier-1 write erased, or a
+			// sub-threshold member leaking in, depending on the op-key sort order).
+			out = appendContracted(out, g, keep, groupUnordered)
+		default:
+			// Sequential group: exactly one member (a happens-before step). Canon
+			// never emits a multi-member plain-sequential group; a violation here
+			// would mean an unlabeled ordering claim, so fail closed rather than
+			// silently process only Members[0] (the shape that hid C-7).
+			if len(g.Members) != 1 {
+				panic(fmt.Sprintf("promote: sequential group under %q has %d members, want exactly 1", span.Op, len(g.Members)))
 			}
-			switch len(members) {
-			case 0:
-				// nothing survives
-			case 1:
-				// A race that lost all but one member is no longer a race.
-				out = append(out, ir.ChildGroup{Multiplicity: g.Multiplicity, Members: members})
-			default:
-				sortByOp(members)
-				out = append(out, ir.ChildGroup{Concurrent: true, Multiplicity: g.Multiplicity, Members: members})
+			m := g.Members[0]
+			if keep(m) {
+				out = append(out, g)
+				continue
 			}
-			continue
+			// Splice the dropped node's child-groups into its slot, preserving order.
+			// Carry the dropped group's loop multiplicity onto each spliced child
+			// (M-26): the children ran as many times as the contracted wrapper did,
+			// so discarding the marker would assert "once" where the truth is "1..*".
+			for _, cg := range m.Children {
+				out = append(out, withMultiplicity(cg, g.Multiplicity))
+			}
 		}
-
-		// Sequential group: exactly one member (a happens-before step).
-		m := g.Members[0]
-		if keep(m) {
-			out = append(out, g)
-			continue
-		}
-		// Splice the dropped node's child-groups into its slot, preserving order.
-		out = append(out, m.Children...)
 	}
 	span.Children = out
 }
 
-// sortByOp re-sorts contracted concurrent members by Op after promotion. It is a
-// STABLE sort on Op alone, which suffices ONLY because its input is already in
-// canon's full canonical order (op + subtree signature): canon.group sorts every
-// concurrent component with bySig before promote.Filter runs, and promotion only
-// splices already-canonical subtrees, so same-op ties keep that deterministic
-// bySig order here. The stable Op sort therefore preserves a run-independent
-// order; it does not by itself impose the full canonical key on a same-op tie
-// (bySig owns that upstream). Keep that dependency intact: feeding sortByOp a
-// non-bySig-ordered slice would reopen a same-op interleaving hole.
+// groupKind selects which unordered-vs-concurrent flag a re-formed multi-member
+// group carries after contraction.
+type groupKind int
+
+const (
+	groupConcurrent groupKind = iota
+	groupUnordered
+)
+
+// appendContracted applies keep/lossless-promotion to a Concurrent or Unordered
+// group and appends the survivors to out. Both kinds share this logic (tenet 5):
+// a dropped wrapper's children are promoted into the group only when lossless,
+// i.e. the wrapper's surviving subtree is at most one child-group. A concurrent
+// group holds racing branches and an unordered group holds order-ambiguous ones;
+// neither is an ordered sequence, so a wrapper carrying more than one child-group
+// carries a happens-before sequence that flattening into the group would corrupt
+// (canon §3.3, plan [C3]) — retain such a wrapper rather than corrupt the
+// snapshot. A group that loses all but one member is no longer a race/ambiguity
+// and degrades to a plain sequential group.
+func appendContracted(out []ir.ChildGroup, g ir.ChildGroup, keep func(*ir.CanonicalSpan) bool, kind groupKind) []ir.ChildGroup {
+	members := make([]*ir.CanonicalSpan, 0, len(g.Members))
+	for _, m := range g.Members {
+		if keep(m) {
+			members = append(members, m)
+			continue
+		}
+		if len(m.Children) <= 1 {
+			for _, cg := range m.Children {
+				members = append(members, cg.Members...)
+			}
+		} else {
+			members = append(members, m)
+		}
+	}
+	switch len(members) {
+	case 0:
+		// nothing survives
+	case 1:
+		out = append(out, ir.ChildGroup{Multiplicity: g.Multiplicity, Members: members})
+	default:
+		sortByOp(members)
+		grp := ir.ChildGroup{Multiplicity: g.Multiplicity, Members: members}
+		switch kind {
+		case groupConcurrent:
+			grp.Concurrent = true
+		case groupUnordered:
+			grp.Unordered = true
+		}
+		out = append(out, grp)
+	}
+	return out
+}
+
+// withMultiplicity returns cg with the outer loop multiplicity applied when cg
+// carries none of its own (M-26). The only multiplicity value is "1..*"; a child
+// that already carries it keeps it — nested repetition is still "1..*".
+func withMultiplicity(cg ir.ChildGroup, outer string) ir.ChildGroup {
+	if outer != "" && cg.Multiplicity == "" {
+		cg.Multiplicity = outer
+	}
+	return cg
+}
+
+// sortByOp re-sorts contracted concurrent or unordered members by Op after
+// promotion. It is a STABLE sort on Op alone, which suffices ONLY because its
+// input is already in canon's full canonical order (op + subtree signature):
+// canon.group sorts every concurrent/unordered component with bySig before
+// promote.Filter runs, and promotion only splices already-canonical subtrees, so
+// same-op ties keep that deterministic bySig order here. The stable Op sort
+// therefore preserves a run-independent order; it does not by itself impose the
+// full canonical key on a same-op tie (bySig owns that upstream). Keep that
+// dependency intact: feeding sortByOp a non-bySig-ordered slice would reopen a
+// same-op interleaving hole.
 func sortByOp(members []*ir.CanonicalSpan) {
 	sort.SliceStable(members, func(i, j int) bool { return members[i].Op < members[j].Op })
 }
