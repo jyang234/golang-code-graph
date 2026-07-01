@@ -529,8 +529,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("flowmap config: pins[%d].tier %d out of range 1..4", i, p.Tier)
 		}
 	}
-	if _, ok := salienceTiers[c.Canon.SalienceTier]; c.Canon.SalienceTier != "" && !ok {
-		return fmt.Errorf("flowmap config: canon.salienceTier %q not one of warn|info|debug|all", c.Canon.SalienceTier)
+	if c.Canon.SalienceTier != "" && !ValidSalienceTier(c.Canon.SalienceTier) {
+		return fmt.Errorf("flowmap config: canon.salienceTier %q not one of %s", c.Canon.SalienceTier, SalienceTierNames())
 	}
 	names := make(map[string]bool, len(c.Obligations))
 	for i, r := range c.Obligations {
@@ -657,6 +657,21 @@ func (c *CanonConfig) OrderGuard() time.Duration {
 
 // salienceTiers maps a salience name to the maximum tier retained in a snapshot.
 var salienceTiers = map[string]int{"warn": 2, "info": 3, "debug": 4, "all": 4}
+
+// ValidSalienceTier reports whether name is a recognized salience-tier name
+// (warn|info|debug|all). It is the ONE vocabulary check shared by config.Validate
+// and the public flow.Flow.Tier override, so the file path and the programmatic
+// path cannot disagree on what a valid tier is (CLAUDE.md one source of truth) —
+// an unknown name must fail loudly on both, never silently degrade to the warn
+// default (tenet 2, fail closed).
+func ValidSalienceTier(name string) bool {
+	_, ok := salienceTiers[name]
+	return ok
+}
+
+// SalienceTierNames returns the recognized tier names in canonical vocabulary
+// order for use in error messages.
+func SalienceTierNames() string { return "warn|info|debug|all" }
 
 // SalienceThreshold is the maximum (least consequential) tier kept in the
 // canonical snapshot; spans with a higher tier number are dropped and promoted.

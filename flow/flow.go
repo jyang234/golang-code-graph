@@ -238,6 +238,15 @@ func (f *Flow) resolveConfig(t TB) *config.Config {
 		cfg = loaded
 	}
 	if f.tier != "" {
+		// Validate the override against the SAME vocabulary config.Load enforces on
+		// the file path. Without this, an unknown name (a typo like "Info" or
+		// "trace") silently degrades to the warn threshold — a public-API fail-open
+		// that contradicts tenet 2, while the config-file path hard-errors on the
+		// identical typo. Fail loudly here too.
+		if !config.ValidSalienceTier(f.tier) {
+			t.Fatalf("flow %q: Tier(%q) not one of %s", f.name, f.tier, config.SalienceTierNames())
+			return cfg
+		}
 		cfg.Canon.SalienceTier = f.tier // per-flow override
 	}
 	return cfg
