@@ -7,6 +7,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
+	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 )
 
 // checkNoConcurrentReach evaluates each concurrency invariant: no target
@@ -48,7 +49,7 @@ func checkNoConcurrentReach(p *policy.Policy, ix *graph.Index, r *Result) {
 	}
 	cone := setutil.SortedKeys(coneSet)
 	effects := ix.Effects(cone...)
-	blindSite, blindFound := frontierBlindSiteWith(ix, cone, effects)
+	blindSite, blindFound := concurrentBlindProbe(ix, cone, effects, direct)
 
 	type pair struct{ from, to string }
 	for _, rule := range p.NoConcurrentReach {
@@ -110,4 +111,39 @@ func checkNoConcurrentReach(p *policy.Policy, ix *graph.Index, r *Result) {
 			})
 		}
 	}
+}
+
+// concurrentBlindProbe reports whether the concurrent surface has a blind spot
+// that makes a "no concurrent path" conclusion unsound, returning a
+// representative site for the caution. It layers three probes:
+//
+//   - the resolved cone's own frontier (frontierBlindSiteWith): a reflect /
+//     HighFanOut / unsafe / <dynamic>-effect site reachable FROM a spawned func;
+//   - a `direct` concurrent boundary edge that is itself <dynamic> (e.g. a
+//     `go publish(topicVar, …)` whose target could not be named);
+//   - a ConcurrentDispatch blind spot ANYWHERE in the graph.
+//
+// The third is the C-6 fix. An unresolved `go someFuncValue()` produces NO edge —
+// so no seed, and its spawned body never enters the concurrent cone — only a
+// ConcurrentDispatch blind spot at the SPAWNING function. Probing only the cone
+// therefore misses it entirely, yielding a vacuous clean pass (silent even under
+// require_proof). An unresolved goroutine is a concurrent entry the cone cannot
+// represent, so it must blind the whole rule. Severity ("trivial") is deliberately
+// NOT consulted: it is disclosure-only and never reads into a verdict, and
+// over-approximating here only costs precision (tenet 4), the permitted direction.
+func concurrentBlindProbe(ix *graph.Index, cone []string, effects, direct []graph.Edge) (string, bool) {
+	if site, ok := frontierBlindSiteWith(ix, cone, effects); ok {
+		return site, true
+	}
+	for _, e := range direct {
+		if e.IsDynamic() {
+			return "unresolved concurrent boundary effect " + e.To, true
+		}
+	}
+	for _, b := range ix.BlindSpots() {
+		if blindspots.Kind(b.Kind) == blindspots.ConcurrentDispatch {
+			return fmt.Sprintf("%s at %s", b.Kind, ShortName(b.Site)), true
+		}
+	}
+	return "", false
 }
