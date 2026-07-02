@@ -291,6 +291,27 @@ func TestRunUnknownSubcommand(t *testing.T) {
 	}
 }
 
+// TestRunHelpFlagIsCleanAcrossSubcommands pins M-33: `flowmap <cmd> -h/--help`
+// must exit 0 with that command's own flag list (printed by the FlagSet), not exit
+// 1 with "flag: help requested". run() maps the FlagSet's flag.ErrHelp to a clean
+// exit, and the FlagSet's own output is the single source that lists every real
+// flag — so the help can never omit a flag the command actually accepts.
+func TestRunHelpFlagIsCleanAcrossSubcommands(t *testing.T) {
+	silenceStdout(t)
+	cmds := [][]string{
+		{"boundary"}, {"graph"}, {"frontier"}, {"schema-drift"},
+		{"taint"}, {"diff"}, {"coverage"}, {"behavior"}, {"behavior", "ingest"},
+	}
+	for _, cmd := range cmds {
+		for _, flg := range []string{"-h", "--help"} {
+			args := append(append([]string{}, cmd...), flg)
+			if err := run(args); err != nil {
+				t.Errorf("run(%v) = %v, want a clean help exit", args, err)
+			}
+		}
+	}
+}
+
 // TestRunBoundaryCheckCurrent verifies the gate passes against the fixture's
 // committed contract.
 func TestRunBoundaryCheckCurrent(t *testing.T) {

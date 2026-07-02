@@ -169,22 +169,22 @@ usage:
   groundwork mcp --service <name>=<graph.json> ...      same server holding several services' maps (+ fleet-events lens)
   groundwork mcp ... --http <addr> [--token <secret>]    team-shared streamable-HTTP transport (token required off loopback)
   groundwork chains <graph.json>... [--service <name>=<graph.json>]... [--policy <p.json>]...  cross-service effect chains (CX-5, observational)
-  groundwork fitness <policy.json> <graph.json> [--expect <sha>] evaluate the policy's invariants (non-zero exit on violation)
+  groundwork fitness <policy.json> <graph.json> [--expect <sha>] [--sarif <out>] [--json]  evaluate the policy's invariants (non-zero exit on violation; --sarif writes a SARIF report)
   groundwork review <policy> <base.json> <branch.json> [--expect <sha>] [--json]   computed MR review artifact (BLOCK exits non-zero)
   groundwork review-triage <base.json> <branch.json> [--json|--mermaid|--summary] [--policy <p.json>] [--scope-fqns <file|->] [--full] [--max-nodes N]   PROTOTYPE: 3-zone reviewer triage; --summary is an MR-comment digest; --policy adds per-route write movement; --scope-fqns marks the author-edited functions
-  groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--json] pre-flight gate: new violations, scope creep, breaking contract
+  groundwork verify <policy> <base> <branch> [--scope p,q] [--expect <sha>] [--corpus <t.json>...] [--capture <grade>] [--json]  pre-flight gate: new violations, scope creep, breaking contract; --corpus adds a behavioral-impeachment gate, --capture asserts its fidelity grade
   groundwork diff <base-contract.json> <branch-contract.json>     boundary-contract diff (breaking change exits non-zero)
   groundwork verify-artifact <artifact> <policy> <base> <branch> [--expect <sha>]  prove an artifact is authentic (not tampered/stale)
+  groundwork exceptions <policy.json> <graph.json> [--json]      audit every allow-list entry; flag dead ones
+  groundwork transcript <calls.jsonl> [--json]   summarize an mcp --log transcript: sessions, tool/service mix, cross-service hops
+  groundwork init <graph.json> [--name <svc>] [--out <policy.json>] [--guide <out.md>]  propose a baseline policy from measured facts (--out writes the policy)
+  groundwork policy-check <policy.json>        load and validate a policy
+  groundwork version
 
 The gate commands (fitness/review/verify/verify-artifact) take --expect <sha> to
 bind the verdict to the code under review: it must equal the stamp the graph was
 produced with (flowmap graph --stamp <sha>), so a stale graph can't gate the
 wrong code. Set GROUNDWORK_REQUIRE_STAMP=1 in CI to make --expect mandatory.
-  groundwork exceptions <policy.json> <graph.json> [--json]      audit every allow-list entry; flag dead ones
-  groundwork transcript <calls.jsonl> [--json]   summarize an mcp --log transcript: sessions, tool/service mix, cross-service hops
-  groundwork init <graph.json> [--name <svc>] [--guide <out.md>]  propose a baseline policy from measured facts
-  groundwork policy-check <policy.json>        load and validate a policy
-  groundwork version
 
 The graph must be produced by trusted CI (flowmap graph <service>); groundwork
 only ever reads it.

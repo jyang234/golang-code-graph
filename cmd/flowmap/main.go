@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,6 +52,18 @@ func main() {
 }
 
 func run(args []string) error {
+	err := dispatch(args)
+	// A subcommand FlagSet (ContinueOnError) prints its full flag list to stderr on
+	// -h/--help and returns flag.ErrHelp. That is a help request, not a usage error,
+	// so exit 0 — previously it exited 1 with "flag: help requested", and the
+	// FlagSet's own output is the single source that lists every real flag (M-33).
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+func dispatch(args []string) error {
 	if len(args) == 0 {
 		usage()
 		return nil
@@ -750,6 +763,9 @@ func cmdBehavior(args []string) error {
 	switch args[0] {
 	case "ingest":
 		return cmdIngest(args[1:])
+	case "-h", "--help":
+		fmt.Println("usage: flowmap behavior ingest <traces> [--service-dir D] [--flows-dir D] [--update]")
+		return nil
 	default:
 		return fmt.Errorf("unknown behavior subcommand %q (try `flowmap behavior ingest`)", args[0])
 	}
@@ -1372,10 +1388,10 @@ usage: flowmap <command> [flags] [dir]
 
 commands:
   boundary [--check] [dir]   generate the gated boundary contract (--check: verify currency)
-  graph [--entry R] [--algo A] [--mermaid] [--rollup package] [--reclaim] [--reclaim-middleware] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/middleware/SQL/bus labels)
+  graph [--entry R] [--algo A] [--stamp SHA] [--mermaid] [--rollup package] [--reclaim] [--reclaim-middleware] [--reclaim-sql] [--reclaim-topic] [dir]  print the non-gated call-graph view (--stamp binds the graph to a commit; --mermaid: flowchart; --rollup package: component/C3 view, with --diff a code-vs-disclosure delta; --reclaim* close sound seams/middleware/SQL/bus labels; run 'flowmap graph -h' for the full flag list)
   frontier [--algo A] [--reclaim] [--reclaim-middleware] [--reclaim-sql] [--reclaim-topic] [--json] [dir]  classify the static frontier (A/B/B2/C) — measurement, not a gate
   schema-drift [--graph G] [--migrations D] [--library-owned a,b] [--reclaim-sql] [--gate] [--json] [dir]  cross-check code DB writes against the migration-defined schema (omit --graph to build fresh from dir; dir's .flowmap.yaml supplies static.schemaCheck; --gate: non-zero exit on drift)
-  taint [--gate] [--json] [dir]  forward value-flow: do declared sensitive sources reach declared sinks? FLOW/NO-FLOW/ABSTAIN (dir's .flowmap.yaml supplies taint.{sourceFuncs,sourceFields,sinks}; --gate: non-zero exit on FLOW)
+  taint [--algo A] [--gate] [--strict] [--json] [dir]  forward value-flow: do declared sensitive sources reach declared sinks? FLOW/NO-FLOW/ABSTAIN (dir's .flowmap.yaml supplies taint.{sourceFuncs,sourceFields,sinks}; --gate: non-zero exit on FLOW; --strict also fails on ABSTAIN)
   diff <a.json> <b.json>     print the structural change set between two golden traces
   coverage [--flows D] [dir] boundary effects no committed flow exercises
   behavior ingest <traces>   map an OTLP/JSON trace export to boundary effects

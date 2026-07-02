@@ -122,6 +122,37 @@ func TestRunHelpFlagIsCleanAcrossSubcommands(t *testing.T) {
 	}
 }
 
+// TestUsageBodyDocumentsEverySubcommand pins M-33's help/flag parity: every
+// subcommand the dispatcher accepts must have a line in usageBody (which
+// printSubUsage scans for per-command help), and every gate command's disclosed
+// flags must be documented. A subcommand present in the switch but absent from
+// usageBody would answer `-h` with the whole-usage fallback, hiding its own shape.
+func TestUsageBodyDocumentsEverySubcommand(t *testing.T) {
+	subcommands := []string{
+		"reach", "triage", "ground", "mcp", "chains", "fitness", "review",
+		"review-triage", "verify", "diff", "verify-artifact", "exceptions",
+		"transcript", "init", "policy-check", "version",
+	}
+	for _, cmd := range subcommands {
+		if !strings.Contains(usageBody, "groundwork "+cmd+" ") && !strings.Contains(usageBody, "groundwork "+cmd+"\n") {
+			t.Errorf("subcommand %q has no usageBody line — `groundwork %s -h` would fall back to the whole usage", cmd, cmd)
+		}
+	}
+	// The flags the audit found missing must stay documented (they were silently
+	// omitted, so their help never mentioned them).
+	mustDoc := map[string]string{
+		"fitness --sarif":  "--sarif",
+		"verify --corpus":  "--corpus",
+		"verify --capture": "--capture",
+		"init --out":       "--out",
+	}
+	for what, flag := range mustDoc {
+		if !strings.Contains(usageBody, flag) {
+			t.Errorf("usageBody omits %s (%s) — the sub-help would not list a real flag", flag, what)
+		}
+	}
+}
+
 // Verdict failures and operational failures exit differently (1 vs 2) so CI
 // can tell "the change failed the gate" from "the gate failed to run". The
 // boundary is the error's type; main maps it to the exit code.
