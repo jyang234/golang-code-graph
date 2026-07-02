@@ -161,7 +161,10 @@ func bindingRules(ix *graph.Index, p *policy.Policy, fqn string, c *Card) []stri
 				out = append(out, fmt.Sprintf("no_concurrent_reach %s: must not be reached on a concurrent path", r.Name))
 			}
 		}
-		if p.IOBudget != nil && len(ix.Callers(fqn)) == 0 {
+		// IsRoute is the enforcer's own route predicate — the card must not claim
+		// the budget binds a caller-less function main-package startup that
+		// checkIOBudget will never charge (H-8).
+		if p.IOBudget != nil && fitness.IsRoute(p, ix, fqn) {
 			out = append(out, fmt.Sprintf("io_budget: routes may reach at most %d external write(s)", p.IOBudget.MaxWritesPerRoute))
 		}
 	}

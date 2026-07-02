@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
@@ -46,7 +47,7 @@ func Propose(ix *graph.Index, service string) (*policy.Policy, string) {
 	proposeEffectRatchet(ix, p, &g)
 
 	reconcile(ix, p, &g)
-	g.closing(ix)
+	g.closing(p, ix)
 	return p, g.String()
 }
 
@@ -251,14 +252,14 @@ func proposeLayers(ix *graph.Index, p *policy.Policy, g *guide) {
 func proposeWaypoint(ix *graph.Index, p *policy.Policy, g *guide) {
 	writers := map[string]bool{}
 	for _, e := range ix.Edges() {
-		if strings.HasPrefix(e.To, "boundary:db ") && IsWrite(e) {
+		if strings.HasPrefix(e.To, boundarylabel.DBPrefix) && IsWrite(e) {
 			writers[e.From] = true
 		}
 	}
 	// Opaque DB effects scoped to routes (non-main entrypoints) — the same scope
 	// proposeReadOnly/proposeBudget/closing use, so every section that discloses
 	// the db-call frontier agrees on its count and labels.
-	unclassified := routeUnclassifiedDB(ix)
+	unclassified := routeUnclassifiedDB(p, ix)
 	if len(writers) == 0 {
 		// "No DB write effects exist" is a MEASUREMENT claim, and it is wrong on a
 		// db-call substrate: a write whose SQL is non-constant labels "db call"
@@ -303,7 +304,7 @@ func proposeWaypoint(ix *graph.Index, p *policy.Policy, g *guide) {
 			}
 			cone, _ := guardedWalk(ix, s, []string{through})
 			for _, e := range ix.Effects(cone...) {
-				if strings.HasPrefix(e.To, "boundary:db ") && IsWrite(e) {
+				if strings.HasPrefix(e.To, boundarylabel.DBPrefix) && IsWrite(e) {
 					return false
 				}
 			}
@@ -378,7 +379,7 @@ func dbWriteTargets() []string {
 	verbs := sqlverb.MutatingVerbs()
 	out := make([]string, len(verbs))
 	for i, v := range verbs {
-		out[i] = "boundary:db " + v
+		out[i] = boundarylabel.DBPrefix + v
 	}
 	return out
 }
@@ -436,10 +437,10 @@ func concurrentUnclassifiedDB(ix *graph.Index) []string {
 // excluded from the read-only ratchet, uncounted in the write budget" framing
 // accurate: a migration reachable only from main is not a route and is not what
 // those sections exclude or count.
-func routeUnclassifiedDB(ix *graph.Index) []string {
+func routeUnclassifiedDB(p *policy.Policy, ix *graph.Index) []string {
 	set := map[string]bool{}
 	for _, s := range ix.Sources() {
-		if strings.HasSuffix(s, ".main") {
+		if !IsRoute(p, ix, s) {
 			continue
 		}
 		cone := append([]string{s}, ix.Reachable(s)...)
@@ -471,7 +472,7 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 	var unproven []string
 	unclassLabels := map[string]bool{}
 	for _, s := range ix.Sources() {
-		if strings.HasSuffix(s, ".main") {
+		if !IsRoute(p, ix, s) {
 			continue
 		}
 		cone := readOnlyCone(ix, s)
@@ -508,7 +509,7 @@ func proposeReadOnly(ix *graph.Index, p *policy.Policy, g *guide) {
 	// own baseline and frame a deliberate forward-ratchet as a user typo, so the
 	// rule is DEFERRED with an honest disclosure instead (R-series self-clean: init
 	// must not emit a baseline its own gate flags).
-	to := append(dbWriteTargets(), "boundary:bus PUBLISH")
+	to := append(dbWriteTargets(), boundarylabel.BusPrefix+"PUBLISH")
 	switch {
 	case len(readOnly) > 0 && bindsAnyTarget(ix, to):
 		p.MustNotReach = []policy.ReachRule{{
@@ -588,7 +589,7 @@ func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 		if e.Concurrent && !e.IsBoundary() && ix.Has(e.To) {
 			seeds[e.To] = true
 		}
-		if e.Concurrent && e.IsBoundary() && strings.HasPrefix(e.To, "boundary:db ") {
+		if e.Concurrent && e.IsBoundary() && strings.HasPrefix(e.To, boundarylabel.DBPrefix) {
 			if IsWrite(e) {
 				g.section("Concurrency (no_concurrent_reach): not proposed",
 					"A concurrent DB write already exists — the rule would fire today. Decide whether that write is intended; if not, fix it and re-run init.")
@@ -602,7 +603,7 @@ func proposeConcurrent(ix *graph.Index, p *policy.Policy, g *guide) {
 	cone := setutil.SortedKeys(seeds)
 	cone = append(cone, ix.Reachable(cone...)...)
 	for _, e := range ix.Effects(cone...) {
-		if strings.HasPrefix(e.To, "boundary:db ") && IsWrite(e) {
+		if strings.HasPrefix(e.To, boundarylabel.DBPrefix) && IsWrite(e) {
 			g.section("Concurrency (no_concurrent_reach): not proposed",
 				"A goroutine/defer-spawned path already reaches a DB write. Decide whether it is intended; if not, fix it and re-run init.")
 			return
@@ -646,7 +647,7 @@ func proposeBudget(ix *graph.Index, p *policy.Policy, g *guide) {
 	maxWrites := 0
 	unclassified := map[string]bool{}
 	for _, s := range ix.Sources() {
-		if strings.HasSuffix(s, ".main") {
+		if !IsRoute(p, ix, s) {
 			continue
 		}
 		cone := append([]string{s}, ix.Reachable(s)...)
@@ -860,7 +861,7 @@ for the team" as its working checklist.
 `, service)
 }
 
-func (g *guide) closing(ix *graph.Index) {
+func (g *guide) closing(p *policy.Policy, ix *graph.Index) {
 	cannot := "- **Path obligations** (`.flowmap.yaml`): lifecycle and ordering rules need intent — which acquire/release pairs and audit-before-publish orderings are REQUIRED, not just current. Review the graph's `effect_order` facts for committed effects that precede fallible calls, and decide which orderings are contracts.\n" +
 		"- **Security-critical seams**: which `must_not_reach` / `must_pass_through` rules deserve `require_proof: true` (unprovability fails closed).\n" +
 		"- **Intent vs accident**: every proposed rule encodes what the code DOES; only the team knows what it SHOULD do.\n"
@@ -872,7 +873,7 @@ func (g *guide) closing(ix *graph.Index) {
 	// frontier (what the concurrency section could not lock) — so the summary never
 	// under-reports an opaque write some section above already flagged (R6).
 	uset := map[string]bool{}
-	for _, l := range routeUnclassifiedDB(ix) {
+	for _, l := range routeUnclassifiedDB(p, ix) {
 		uset[l] = true
 	}
 	for _, l := range concurrentUnclassifiedDB(ix) {

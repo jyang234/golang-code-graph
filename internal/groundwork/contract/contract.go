@@ -108,7 +108,16 @@ func (d Diff) Breaking() bool {
 // events, and consumed events are breaking (a downstream service can break);
 // additions are not. Outbound dependency changes are reported but never breaking —
 // they are the service's own requirements, not promises to others.
-func Compare(base, branch *Contract) Diff {
+//
+// It REFUSES when the two contracts name different services: comparing one
+// service's base against another's branch (a copy-paste mix-up) yields a plausible
+// mostly-breaking diff and a spurious BLOCK from surfaces that are simply
+// unrelated. A mismatched-input verdict must abstain, not fabricate a breaking
+// diff (tenet 2, fail closed; M-27).
+func Compare(base, branch *Contract) (Diff, error) {
+	if base.Service != branch.Service {
+		return Diff{}, fmt.Errorf("contract compare: base names service %q but branch names %q — comparing two different services yields a spurious diff; check the inputs", base.Service, branch.Service)
+	}
 	d := Diff{Service: branch.Service}
 
 	d.Changes = append(d.Changes, diffSet("route", routeKeys(base), routeKeys(branch), true)...)
@@ -126,7 +135,7 @@ func Compare(base, branch *Contract) Diff {
 		}
 		return a.Name < b.Name
 	})
-	return d
+	return d, nil
 }
 
 // diffSet emits +/- changes between two key sets; removalBreaking marks removals

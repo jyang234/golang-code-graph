@@ -134,11 +134,22 @@ func (g *Graph) rootedSubgraph(root string) (*Graph, []string, string, bool) {
 // mounted under a prefix, the same loose match triage uses). The first hit wins;
 // determinism holds because Entrypoints and Nodes are canonically sorted.
 func (g *Graph) resolveRoot(root string) (string, bool) {
-	// Exact matches are authoritative and tried first.
+	// Exact Name match is authoritative, but two entrypoints can share a Name and
+	// resolve to DIFFERENT handlers; fail closed on that ambiguity rather than
+	// returning whichever sorted first (M-12, symmetric with build-time
+	// resolveEntryRoot — an ambiguous root abstains, it never resolves arbitrarily).
+	byName := map[string]bool{}
 	for _, e := range g.Entrypoints {
 		if e.Name == root {
-			return e.Fn, true
+			byName[e.Fn] = true
 		}
+	}
+	if len(byName) == 1 {
+		for fn := range byName {
+			return fn, true
+		}
+	} else if len(byName) > 1 {
+		return "", false
 	}
 	for _, n := range g.Nodes {
 		if n.FQN == root {

@@ -766,27 +766,22 @@ func (f *mcpFleet) fleetEvents() map[string]any {
 // since-redeployed graph, the same disclosure every fleet lens carries.
 func (f *mcpFleet) chains() map[string]any {
 	var fleet []chains.Service
-	brokers := map[string]policy.Broker{}
-	conflicts := map[string]bool{}
+	var perService []map[string]policy.Broker
 	for _, name := range f.names {
 		s := f.services[name]
 		fleet = append(fleet, chains.Service{Name: name, Index: s.ix})
 		if s.p == nil {
 			continue
 		}
-		for bn, b := range s.p.Brokers {
-			if existing, ok := brokers[bn]; ok && existing != b {
-				conflicts[bn] = true
-			}
-			brokers[bn] = b
-		}
+		perService = append(perService, s.p.Brokers)
 	}
+	// policy.MergeBrokers is the ONE merge shared with the CLI `chains` command; it
+	// returns the conflicting names SORTED so the error is byte-identical run to run
+	// (ranging s.p.Brokers directly otherwise reported whichever conflict the map
+	// iteration visited), and both surfaces refuse on exactly the same condition (M-4).
+	brokers, conflicts := policy.MergeBrokers(perService)
 	if len(conflicts) > 0 {
-		// Sort the conflicting names so the error is byte-identical run to run —
-		// ranging s.p.Brokers (a map) otherwise reported whichever conflict the
-		// iteration happened to visit last, breaking the determinism every fleet
-		// lens and replayed drill depends on.
-		return toolError(fmt.Sprintf("broker(s) %s declared differently by more than one loaded policy; the bus guarantee must have a single source", strings.Join(setutil.SortedKeys(conflicts), ", ")))
+		return toolError(fmt.Sprintf("broker(s) %s declared differently by more than one loaded policy; the bus guarantee must have a single source", strings.Join(conflicts, ", ")))
 	}
 	return toolText(f.staleNotes() + chains.Build(fleet, brokers).Render())
 }
@@ -821,11 +816,17 @@ func (s *mcpServer) call(name string, a toolArgs) map[string]any {
 		}
 		res := fitness.Check(p, ix)
 		var b strings.Builder
+		// Provenance first, then the per-finding witness lines — byte-for-byte the
+		// disclosure the CLI `fitness` command prints. Dropping the substrate line and
+		// the caveats (as the MCP tool used to) let an unsound-substrate pass answer a
+		// bare "all invariants hold" to the agent loop — a clean-green laundering
+		// channel (H-9). GateCaveats is the ONE assembly the CLI/SARIF surfaces share.
+		b.WriteString(graph.ProvenanceLine(ix.Algo(), ix.GateCaveats(p.Substrate)))
 		for _, f := range res.Violations() {
-			fmt.Fprintf(&b, "⛔ [%s] %s\n", f.Rule, f.Summary)
+			writeFinding(&b, "⛔", f)
 		}
 		for _, f := range res.Cautions() {
-			fmt.Fprintf(&b, "⚠️ [%s] %s\n", f.Rule, f.Summary)
+			writeFinding(&b, "⚠️ ", f)
 		}
 		if len(res.Findings) == 0 {
 			b.WriteString("all invariants hold; no cautions\n")
@@ -850,6 +851,11 @@ func (s *mcpServer) call(name string, a toolArgs) map[string]any {
 		}
 		return withStale(toolText(card.Render()))
 	case "reach":
+		// NOTE (M-11): this MCP `reach` renders the impact blast-radius card
+		// (impact.ForNodes) — DELIBERATELY a different view than the CLI `reach`
+		// command, which prints a bespoke bidirectional callers/callees/cover/effects
+		// report. They share a name but are distinct lenses on purpose; the shared
+		// resolution logic that DID drift (triage) is unified via resolveTriage above.
 		if !ix.Has(a.FQN) {
 			return toolError(fmt.Sprintf("no function %q in graph", a.FQN))
 		}
@@ -857,43 +863,14 @@ func (s *mcpServer) call(name string, a toolArgs) map[string]any {
 	case "annotate":
 		return withStale(annotateCard(ix, a))
 	case "triage":
-		var res impact.Resolution
-		set := 0
-		if a.Frame != "" {
-			res, set = impact.ResolveFrame(ix, a.Frame), set+1
+		// resolveTriage/renderTriage are shared with the CLI `triage` command so the
+		// two surfaces dispatch the symptom, demand exactly one, and render the
+		// disclosure identically (M-11).
+		res, card, err := resolveTriage(ix, triageSymptom{Frame: a.Frame, Route: a.Route, Table: a.Table, Event: a.Event, Peer: a.Peer, Fail: a.Fail})
+		if err != nil {
+			return toolError(err.Error())
 		}
-		if a.Route != "" {
-			res, set = impact.ResolveRoute(ix, a.Route), set+1
-		}
-		if a.Table != "" {
-			res, set = impact.ResolveTable(ix, a.Table), set+1
-		}
-		if a.Event != "" {
-			res, set = impact.ResolveEvent(ix, a.Event), set+1
-		}
-		if a.Peer != "" {
-			res, set = impact.ResolvePeer(ix, a.Peer), set+1
-		}
-		if set != 1 {
-			return toolError(fmt.Sprintf("exactly one of frame/route/table/event/peer is required (got %d)", set))
-		}
-		if len(res.Matches) == 0 && len(res.Possible) == 0 {
-			return toolError("symptom resolved to nothing in this graph")
-		}
-		suspects := append(append([]string{}, res.Matches...), res.Possible...)
-		card := impact.ForNodes(ix, suspects)
-		if a.Fail {
-			card = impact.ForFault(ix, suspects)
-		}
-		var b strings.Builder
-		if res.Ambiguous {
-			fmt.Fprintf(&b, "symptom is ambiguous — %d candidates, all included\n\n", len(res.Matches))
-		}
-		if len(res.Possible) > 0 {
-			fmt.Fprintf(&b, "%d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
-		}
-		b.WriteString(card.Render())
-		return withStale(toolText(b.String()))
+		return withStale(toolText(renderTriage(res, card)))
 	case "exceptions":
 		if p == nil {
 			return toolError("the server was started without --policy; exceptions needs one")

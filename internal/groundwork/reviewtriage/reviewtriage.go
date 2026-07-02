@@ -34,7 +34,9 @@
 // that enables only the per-route write-movement section (reused from the review artifact).
 //
 // PROTOTYPE scope/limits (ride with the report): the changed set is the set-based
-// node/edge/effect delta; the per-function evidence is a static blast radius (what the
+// node/edge/effect delta in BOTH directions (a function that gained OR lost a call/
+// effect is in-scope, so a removed guard is not silently un-triaged); the
+// per-function evidence is a static blast radius (what the
 // change COULD touch, not the route a given input takes); novelty is computed by
 // comparing each function's base vs branch FORWARD blind-spot set, so a brand-new call
 // SITE to an already-reachable blind spot reads as carried, not new; and "accounted" is
@@ -424,7 +426,13 @@ func splitNewCarried(branchSerious, baseSerious []graph.BlindSpot) (newSeams, ca
 }
 
 // changedFns is the sorted set of branch functions the MR structurally moved: new
-// functions, signature changes, and functions that gained an outgoing call or effect.
+// functions, signature changes, and functions that GAINED or LOST an outgoing call
+// or effect. The lost-edge direction is load-bearing: a body change that REMOVED a
+// call — e.g. deleting an auth-check invocation — leaves the function's signature
+// and its surviving edges untouched, so an add-only delta would place it in NO
+// triage zone and a reviewer would never be steered to the very edit that dropped a
+// guard (M-28). An edge whose From was deleted entirely is not a surviving changed
+// function, so lost edges are only attributed to a From still present in the branch.
 func changedFns(base, branch *graph.Graph) []string {
 	baseSig := make(map[string]string, len(base.Nodes))
 	for _, n := range base.Nodes {
@@ -441,9 +449,18 @@ func changedFns(base, branch *graph.Graph) []string {
 	for _, e := range base.Edges {
 		baseEdge[e.From+"\x00"+e.To] = true
 	}
+	branchEdge := make(map[string]bool, len(branch.Edges))
+	for _, e := range branch.Edges {
+		branchEdge[e.From+"\x00"+e.To] = true
+	}
 	for _, e := range branch.Edges {
 		if branchNode[e.From] && !baseEdge[e.From+"\x00"+e.To] {
-			changed[e.From] = true
+			changed[e.From] = true // gained an outgoing call/effect
+		}
+	}
+	for _, e := range base.Edges {
+		if branchNode[e.From] && !branchEdge[e.From+"\x00"+e.To] {
+			changed[e.From] = true // lost an outgoing call/effect (still-present From)
 		}
 	}
 	return setutil.SortedKeys(changed)

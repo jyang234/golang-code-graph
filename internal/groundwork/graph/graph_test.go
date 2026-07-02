@@ -220,6 +220,27 @@ func TestSQLFoldCaveatSeparateFromEdgeReclaim(t *testing.T) {
 	}
 }
 
+// H-10 wording bug: a `topic-constfold` fold recovers a BUS TOPIC, not a DB verb,
+// so the caveat must describe it as a bus topic — the un-split count called every
+// via-tagged boundary edge a "DB effect verb". A graph carrying BOTH folds must
+// disclose each kind on its own, so a reader can tell what was actually recovered.
+func TestSQLFoldCaveatSplitsByViaKind(t *testing.T) {
+	const j = `{"algo":"vta","nodes":[{"fqn":"a","sig":"f"}],"edges":[` +
+		`{"from":"a","to":"boundary:db INSERT users","boundary":"outbound-sync","via":"sql-constfold"},` +
+		`{"from":"a","to":"boundary:bus PUBLISH loan.approved","boundary":"outbound-sync","via":"topic-constfold"}],"blind_spots":[]}`
+	g, err := Load(strings.NewReader(j))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sc := g.SQLFoldCaveat()
+	if !strings.Contains(sc, "1 DB effect verb") {
+		t.Errorf("caveat must count the DB verb fold: %q", sc)
+	}
+	if !strings.Contains(sc, "1 bus topic") {
+		t.Errorf("caveat must describe the topic fold as a bus topic, not a DB verb: %q", sc)
+	}
+}
+
 // A folded label with no edge reclaimer leaves ReclaimCaveat silent — only the
 // SQL disclosure fires.
 func TestSQLFoldCaveatAloneLeavesReclaimSilent(t *testing.T) {

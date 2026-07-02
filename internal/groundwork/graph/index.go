@@ -422,6 +422,31 @@ func (ix *Index) Frontier() *FrontierSection { return ix.g.Frontier }
 // is computed on, and what a policy's recorded Substrate is checked against.
 func (ix *Index) Algo() string { return ix.g.Algo }
 
+// GateCaveats assembles the substrate/provenance disclosures a SINGLE-graph gate
+// verdict (the CLI `fitness` command, its SARIF form, and the MCP `fitness` tool)
+// must ride alongside its findings: the graph's own caveats, a policy-vs-graph
+// substrate mismatch (policySubstrate is the policy's recorded Substrate), and the
+// two reclaimer disclosures — the dispatch-seam EDGE reclaim (ReclaimCaveat) and
+// the constant-fragment LABEL fold (SQLFoldCaveat). It is the single-graph analogue
+// of review's provenanceCaveats. Sharing ONE assembly across every gate surface is
+// what stops a green fitness pass from laundering an unsound substrate as a clean
+// run on the surface that forgot a caveat (H-9/H-10): the CLI, SARIF, and MCP tool
+// cannot fall out of step because they all read this list.
+func (ix *Index) GateCaveats(policySubstrate string) []string {
+	g := ix.g
+	caveats := append([]string{}, g.Caveats...)
+	if mc := SubstrateMismatchCaveat(policySubstrate, g.Algo); mc != "" {
+		caveats = append(caveats, mc)
+	}
+	if rc := g.ReclaimCaveat(); rc != "" {
+		caveats = append(caveats, rc)
+	}
+	if sc := g.SQLFoldCaveat(); sc != "" {
+		caveats = append(caveats, sc)
+	}
+	return caveats
+}
+
 // Stamp returns the producer's caller-supplied code identity (typically the
 // deployed commit SHA), or "" when unrecorded. A behavioral-impeachment witness
 // records it as the impeached graph's identity (the denominator): an impeachment

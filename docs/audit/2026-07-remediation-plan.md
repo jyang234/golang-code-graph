@@ -98,17 +98,17 @@ tests (the `TestNoHardcodedOpKeyPrefix` / `TestVerbParity` pattern).
 
 | # | ID(s) — coupled | What (short) | Where | Test to ship |
 |---|---|---|---|---|
-| 3.1 | **H-8 + M-9** | ONE io_budget root predicate: `fitness.IsRoute(p, ix, fqn)` used by the ground card and enforcer; `RouteWrites` falls back to `CompositionRoots()` when `RootPackages()` empty; proposers call the enforcer's predicate. | `ground/ground.go:164`, `fitness/budget.go:14-22,135-141`, `fitness/propose.go:439-476,645-653` | Root-package source: card ↔ enforcer agree; property-test generator gets `.main` roots. |
-| 3.2 | **H-9 + H-10** | ONE caveat-assembly helper feeding CLI fitness, SARIF, and MCP fitness; MCP prefixes `ProvenanceLine` + per-finding witness lines; add `SQLFoldCaveat` to fitness/SARIF and split it by via kind. | `cmd/groundwork/mcp.go:818-833`, `main.go:571-596,577-583`, `review/provenance.go:43`, `graph.go:420-436` | MCP-parity test mirroring `TestSARIFCarriesCaveats`; folded fixture. |
-| 3.3 | **M-4** | Shared broker-conflict merge helper (`policy.MergeBrokers`), sorted conflict names, used by CLI + MCP. | `main.go:512-521`, `mcp.go:777-790` | Two conflicting brokers → deterministic text both surfaces. |
-| 3.4 | **M-7** | Hoist `"boundary:db "`/`"boundary:bus "` label grammar into a shared package (alongside `effectkind`/`opkey`); extend the prefix-guard repo-scan test. | ~10 packages | Repo-scan guard test à la `TestNoHardcodedOpKeyPrefix`. |
-| 3.5 | **M-8** | Named parity test for the obligation verdict vocabulary (producer vs consumer). | `obligations.go:56-61`, `fitness/obligations.go:13-18` | Direct parity test like `TestVerbParity`. |
-| 3.6 | **M-10** | Export one `opkey.DBOperation(attrs)` used by both derivation sites. | `opkey.go:259-269`, `canon.go:595-609` | Parity comment + test. |
-| 3.7 | **M-11** | Shared `triageCard(ix, symptom)`; converge or explicitly rename the two `reach` renders. | `main.go:202-274`, `mcp.go:859-896` | Parity/behavior test for the shared card. |
-| 3.8 | **M-12** | Share ONE `--entry` resolver; `Build` errors on ambiguity. | `scope.go:127-134`, `mermaid_rooted.go:153-168` | Ambiguous `--entry` fails closed. |
-| 3.9 | **M-27** | `contract.Compare` refuses on `base.Service != branch.Service`. | `contract/contract.go:111-117` | Mixed-service compare → refused. |
-| 3.10 | **M-28** | `changedFns` marks `e.From` changed for base edges absent from branch; correct the doc. | `reviewtriage.go:426-450` | Body change that removed an auth-check call appears in a triage zone. |
-| 3.11 | **M-29** | io_effects delta dedupe on `(Op, Effect, Write)` dropping cancelling pairs (inherit the contract-surface R10 fix). | `review.go:370-385`, `delta.go:169-181` | Pure emitter move → no duplicate `+`/phantom `-` rows. |
+| 3.1 `[x]` | **H-8 + M-9** | ONE io_budget root predicate: `fitness.IsRoute(p, ix, fqn)` used by the ground card and enforcer; `RouteWrites` falls back to `CompositionRoots()` when `RootPackages()` empty; proposers call the enforcer's predicate. | `ground/ground.go:164`, `fitness/budget.go:14-22,135-141`, `fitness/propose.go:439-476,645-653` | Root-package source: card ↔ enforcer agree; property-test generator gets `.main` roots. |
+| 3.2 `[x]` | **H-9 + H-10** | ONE caveat-assembly helper feeding CLI fitness, SARIF, and MCP fitness; MCP prefixes `ProvenanceLine` + per-finding witness lines; add `SQLFoldCaveat` to fitness/SARIF and split it by via kind. | `cmd/groundwork/mcp.go:818-833`, `main.go:571-596,577-583`, `review/provenance.go:43`, `graph.go:420-436` | MCP-parity test mirroring `TestSARIFCarriesCaveats`; folded fixture. |
+| 3.3 `[x]` | **M-4** | Shared broker-conflict merge helper (`policy.MergeBrokers`), sorted conflict names, used by CLI + MCP. | `main.go:512-521`, `mcp.go:777-790` | Two conflicting brokers → deterministic text both surfaces. |
+| 3.4 `[x]` | **M-7** | Hoist `"boundary:db "`/`"boundary:bus "` label grammar into a shared package (alongside `effectkind`/`opkey`); extend the prefix-guard repo-scan test. | ~10 packages | Repo-scan guard test à la `TestNoHardcodedOpKeyPrefix`. |
+| 3.5 `[x]` | **M-8** | Named parity test for the obligation verdict vocabulary (producer vs consumer). | `obligations.go:56-61`, `fitness/obligations.go:13-18` | Direct parity test like `TestVerbParity`. |
+| 3.6 `[x]` | **M-10** | Export one `opkey.DBOperation(attrs)` used by both derivation sites. | `opkey.go:259-269`, `canon.go:595-609` | Parity comment + test. |
+| 3.7 `[x]` | **M-11** | Shared `triageCard(ix, symptom)`; converge or explicitly rename the two `reach` renders. | `main.go:202-274`, `mcp.go:859-896` | Parity/behavior test for the shared card. |
+| 3.8 `[x]` | **M-12** | Share ONE `--entry` resolver; `Build` errors on ambiguity. | `scope.go:127-134`, `mermaid_rooted.go:153-168` | Ambiguous `--entry` fails closed. |
+| 3.9 `[x]` | **M-27** | `contract.Compare` refuses on `base.Service != branch.Service`. | `contract/contract.go:111-117` | Mixed-service compare → refused. |
+| 3.10 `[x]` | **M-28** | `changedFns` marks `e.From` changed for base edges absent from branch; correct the doc. | `reviewtriage.go:426-450` | Body change that removed an auth-check call appears in a triage zone. |
+| 3.11 `[x]` | **M-29** | io_effects delta dedupe on `(Op, Effect, Write)` dropping cancelling pairs (inherit the contract-surface R10 fix). | `review.go:370-385`, `delta.go:169-181` | Pure emitter move → no duplicate `+`/phantom `-` rows. |
 
 **Phase 3 exit:** each drifted predicate has one home + a parity guard; `make
 verify` green.

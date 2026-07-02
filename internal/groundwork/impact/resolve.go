@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 )
@@ -151,7 +152,7 @@ func isParamSeg(s string) bool {
 // ResolveTable resolves a DB table to the functions that touch it (any
 // boundary:db edge whose label names the table).
 func ResolveTable(ix *graph.Index, table string) Resolution {
-	return resolveEffect(ix, "boundary:db ", table)
+	return resolveEffect(ix, boundarylabel.DBPrefix, table)
 }
 
 // ResolveEvent resolves a bus event to its publishers and consumers. The
@@ -160,7 +161,7 @@ func ResolveTable(ix *graph.Index, table string) Resolution {
 // main/run wiring) — both are kept when both exist, since dropping evidence
 // is guessing in the other direction.
 func ResolveEvent(ix *graph.Index, event string) Resolution {
-	res := resolveEffect(ix, "boundary:bus ", event)
+	res := resolveEffect(ix, boundarylabel.BusPrefix, event)
 	set := setutil.StringSet(res.Matches)
 	for _, ep := range ix.Entrypoints() {
 		if ep.Kind == "consumer" && ep.Name == event {
@@ -174,7 +175,7 @@ func ResolveEvent(ix *graph.Index, event string) Resolution {
 
 // ResolvePeer resolves an outbound peer to its callers (boundary:<peer> edges).
 func ResolvePeer(ix *graph.Index, peer string) Resolution {
-	return resolveEffect(ix, "boundary:"+peer+" ", "")
+	return resolveEffect(ix, boundarylabel.Prefix+peer+" ", "")
 }
 
 // resolveEffect matches boundary edges by label prefix and an optional token

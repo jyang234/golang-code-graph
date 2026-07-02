@@ -28,17 +28,20 @@ package schemadrift
 import (
 	"sort"
 	"strings"
+
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 )
 
-// dbBoundaryPrefix is the prefix graphio puts on a DB boundary edge's target:
-// "boundary:db " + joinOpTable(op, table) (internal/static/graphio: labels.go
-// joinOpTable, graphio.go edge construction). A resolved write reads back as
-// "boundary:db INSERT event_types"; an unreadable statement falls back to the
-// driver method name ("boundary:db ExecContext", "boundary:db call") or a
-// table-less bare verb ("boundary:db DELETE"). This constant and tableNamingVerb
-// encode that format contract; TestVerbParity / TestCodeTables pin it so a change
-// to the emitted label cannot silently break the check.
-const dbBoundaryPrefix = "boundary:db "
+// dbBoundaryPrefix is the prefix graphio puts on a DB boundary edge's target —
+// the shared boundarylabel.DBPrefix — followed by joinOpTable(op, table)
+// (internal/static/graphio: labels.go joinOpTable, graphio.go edge construction).
+// A resolved write reads back as "boundary:db INSERT event_types"; an unreadable
+// statement falls back to the driver method name ("boundary:db ExecContext",
+// "boundary:db call") or a table-less bare verb ("boundary:db DELETE"). This
+// constant and tableNamingVerb encode that format contract; TestVerbParity /
+// TestCodeTables pin it so a change to the emitted label cannot silently break the
+// check.
+const dbBoundaryPrefix = boundarylabel.DBPrefix
 
 // tableNamingVerb is the set of SQL verbs that name a primary table — the exact
 // verbs canon/sql.operationAndTable returns a non-empty Table for. The emitted

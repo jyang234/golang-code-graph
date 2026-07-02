@@ -17,8 +17,9 @@ import (
 // not a route and whose startup writes (migrations, seeding) must not be charged
 // against a per-route budget. Reads (DB SELECT, outbound GET, bus consume) do not
 // count, only mutations (DB INSERT/UPDATE/DELETE, bus PUBLISH, outbound
-// POST/PUT/PATCH/DELETE). "Route" is approximated by "non-root entrypoint"; the
-// boundary contract refines it to named HTTP routes and bus consumers.
+// POST/PUT/PATCH/DELETE). "Route" is approximated by IsRoute (a non-root
+// entrypoint); the boundary contract refines it to named HTTP routes and bus
+// consumers.
 func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 	if p.IOBudget == nil {
 		return
@@ -128,15 +129,49 @@ type RouteIO struct {
 	UnclassifiedEffects []string
 }
 
+// routeRootPkgs returns the composition-root package set the route predicate
+// excludes. The layering config's declared roots win when present; otherwise it
+// falls back to the graph's AUTHORITATIVE main-package set (roots.KindMain,
+// carried as CompositionRoots). Without this fallback a policy that sets
+// io_budget but no layering has an EMPTY root set, so main is charged as a route
+// (M-9): the enforcer would then measure the budget over routes-INCLUDING-main
+// and inflate every real route's write count by main's startup writes
+// (migrations, seeding). Both authoritative sources are package paths.
+func routeRootPkgs(p *policy.Policy, ix *graph.Index) []string {
+	if roots := p.RootPackages(); len(roots) > 0 {
+		return roots
+	}
+	return ix.CompositionRoots()
+}
+
+// IsRoute reports whether the entrypoint fqn is a service route: a graph source
+// (caller-less entrypoint) whose declaring package is NOT a composition root.
+// This is the ONE route predicate the io_budget enforcer (RouteWrites), its init
+// proposers, and the ground card all share, so a card can never claim the budget
+// binds a function the enforcer will never charge (H-8) and the proposers can
+// never scope over a different route set than Check enforces (M-9).
+//
+// When neither declared layering roots nor a recorded composition-root set is
+// available (a pre-field graph), it falls back to the structural `.main`
+// heuristic so a startup entrypoint is still not charged as a route.
+func IsRoute(p *policy.Policy, ix *graph.Index, fqn string) bool {
+	if len(ix.Callers(fqn)) != 0 {
+		return false // not a caller-less entrypoint, so never a route
+	}
+	if roots := routeRootPkgs(p, ix); len(roots) > 0 {
+		return !isRootPkg(roots, PkgOf(fqn))
+	}
+	return !strings.HasSuffix(fqn, ".main")
+}
+
 // RouteWrites computes the write surface of every route (non-root entrypoint),
 // with checkIOBudget's exact semantics — one computation, shared with the
 // review artifact's per-route delta section so the two surfaces can never
-// disagree about what a route writes.
+// disagree about what a route writes. "Route" is IsRoute: a non-root entrypoint.
 func RouteWrites(p *policy.Policy, ix *graph.Index) map[string]RouteIO {
-	roots := p.RootPackages()
 	out := map[string]RouteIO{}
 	for _, src := range ix.Sources() {
-		if isRootPkg(roots, PkgOf(src)) {
+		if !IsRoute(p, ix, src) {
 			continue // the composition root (main) is an entrypoint but not a route
 		}
 		cone := append([]string{src}, ix.Reachable(src)...)

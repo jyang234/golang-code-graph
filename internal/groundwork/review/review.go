@@ -32,7 +32,7 @@ func Review(p *policy.Policy, base, branch *graph.Graph) Artifact {
 		Touches:          d.pkgDeltas(),
 		NewViolations:    newViolations,
 		Contract:         contractChanges(baseIx, branchIx),
-		Effects:          ioEffects(d),
+		Effects:          ioEffects(baseIx, branchIx),
 		RouteIO:          RouteIODeltas(p, baseIx, branchIx, baseRW, branchRW),
 		NewWriteTargets:  newWriteTargets(p, base, branch),
 		Reach:            reachExisting(d, baseIx, branchIx),
@@ -367,13 +367,31 @@ func classifyContract(e graph.Edge) (surface, name string, ok bool) {
 
 // ioEffects reports every external I/O effect added or removed, DB writes
 // included, with the write flag.
-func ioEffects(d graphDelta) []EffectChange {
+//
+// It keys on the SET of effect LABELS (each "boundary:"-stripped target), NOT per
+// emitting edge: an effect is present if ANY function makes it, so which function
+// does is an implementation detail. The per-edge delta (effectsAdded/Removed)
+// over-fired on a pure emitter MOVE — a rename, extract-function, or consolidation
+// that shifts a boundary edge from function A to B emits the same label from a new
+// From, so the moved edge read as a removed+added pair for a target the branch
+// still has. Set-keying (the contract surface's R10 fix, here extended to DB
+// effects) reports a change only when a target actually enters or leaves the branch,
+// so a move renders no phantom I/O row — the real structural move is surfaced in
+// the node/edge delta instead. The write flag is a pure function of the label, so
+// the two sides never disagree on it for one label.
+func ioEffects(baseIx, branchIx *graph.Index) []EffectChange {
+	base := effectLabelSet(baseIx)
+	branch := effectLabelSet(branchIx)
 	var out []EffectChange
-	for _, e := range d.effectsAdded {
-		out = append(out, EffectChange{Op: "+", Effect: strings.TrimPrefix(e.To, "boundary:"), Write: fitness.IsWrite(e)})
+	for label, write := range branch {
+		if _, had := base[label]; !had {
+			out = append(out, EffectChange{Op: "+", Effect: label, Write: write})
+		}
 	}
-	for _, e := range d.effectsRemoved {
-		out = append(out, EffectChange{Op: "-", Effect: strings.TrimPrefix(e.To, "boundary:"), Write: fitness.IsWrite(e)})
+	for label, write := range base {
+		if _, has := branch[label]; !has {
+			out = append(out, EffectChange{Op: "-", Effect: label, Write: write})
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Effect != out[j].Effect {
@@ -381,6 +399,21 @@ func ioEffects(d graphDelta) []EffectChange {
 		}
 		return out[i].Op < out[j].Op
 	})
+	return out
+}
+
+// effectLabelSet is a graph's boundary-effect surface as a SET of labels (the
+// "boundary:"-stripped target) mapped to the write flag — deduped across every
+// emitting edge, so which function emits a label is invisible here. This is what
+// makes ioEffects blind to a pure emitter move.
+func effectLabelSet(ix *graph.Index) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range ix.Edges() {
+		if !e.IsBoundary() {
+			continue
+		}
+		out[strings.TrimPrefix(e.To, "boundary:")] = fitness.IsWrite(e)
+	}
 	return out
 }
 

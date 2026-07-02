@@ -230,27 +230,9 @@ func cmdTriage(args []string) error {
 	}
 	ix := graph.NewIndex(g)
 
-	var res impact.Resolution
-	switch {
-	case hasFrame:
-		res = impact.ResolveFrame(ix, frame)
-	case hasRoute:
-		res = impact.ResolveRoute(ix, route)
-	case hasTable:
-		res = impact.ResolveTable(ix, table)
-	case hasEvent:
-		res = impact.ResolveEvent(ix, event)
-	case hasPeer:
-		res = impact.ResolvePeer(ix, peer)
-	}
-	if len(res.Matches) == 0 && len(res.Possible) == 0 {
-		return fmt.Errorf("triage: symptom resolved to nothing in this graph")
-	}
-
-	suspects := append(append([]string{}, res.Matches...), res.Possible...)
-	card := impact.ForNodes(ix, suspects)
-	if fail {
-		card = impact.ForFault(ix, suspects)
+	res, card, err := resolveTriage(ix, triageSymptom{Frame: frame, Route: route, Table: table, Event: event, Peer: peer, Fail: fail})
+	if err != nil {
+		return fmt.Errorf("triage: %w", err)
 	}
 	if asJSON {
 		b, err := canonjson.Marshal(struct {
@@ -263,14 +245,71 @@ func cmdTriage(args []string) error {
 		fmt.Println(string(b))
 		return nil
 	}
+	fmt.Print(renderTriage(res, card))
+	return nil
+}
+
+// triageSymptom names the incident symptom to resolve — the shared input to the
+// CLI `triage` command and the MCP `triage` tool. Exactly one of Frame/Route/
+// Table/Event/Peer is set; Fail requests the fault-scoped card.
+type triageSymptom struct {
+	Frame, Route, Table, Event, Peer string
+	Fail                             bool
+}
+
+// resolveTriage is the ONE symptom→card resolution shared by the CLI and MCP
+// triage surfaces (M-11): it dispatches the symptom to its resolver, demands
+// EXACTLY one symptom, fails closed when the symptom resolves to nothing, and
+// builds the fault-scoped card when Fail is set. Presentation stays with each
+// surface (the CLI also has --json), but the resolution and card build — the real
+// duplication that had drifted — live here so the two cannot disagree on what they
+// resolve or which card they build.
+func resolveTriage(ix *graph.Index, s triageSymptom) (impact.Resolution, impact.Card, error) {
+	var res impact.Resolution
+	set := 0
+	if s.Frame != "" {
+		res, set = impact.ResolveFrame(ix, s.Frame), set+1
+	}
+	if s.Route != "" {
+		res, set = impact.ResolveRoute(ix, s.Route), set+1
+	}
+	if s.Table != "" {
+		res, set = impact.ResolveTable(ix, s.Table), set+1
+	}
+	if s.Event != "" {
+		res, set = impact.ResolveEvent(ix, s.Event), set+1
+	}
+	if s.Peer != "" {
+		res, set = impact.ResolvePeer(ix, s.Peer), set+1
+	}
+	if set != 1 {
+		return impact.Resolution{}, impact.Card{}, fmt.Errorf("exactly one of frame/route/table/event/peer is required (got %d)", set)
+	}
+	if len(res.Matches) == 0 && len(res.Possible) == 0 {
+		return res, impact.Card{}, fmt.Errorf("symptom resolved to nothing in this graph")
+	}
+	suspects := append(append([]string{}, res.Matches...), res.Possible...)
+	card := impact.ForNodes(ix, suspects)
+	if s.Fail {
+		card = impact.ForFault(ix, suspects)
+	}
+	return res, card, nil
+}
+
+// renderTriage renders the shared text form of a triage result: the resolution
+// preamble (ambiguity + the <dynamic>-boundary possibles) followed by the card
+// body. Both triage surfaces render through here so the disclosure wording cannot
+// drift between them.
+func renderTriage(res impact.Resolution, card impact.Card) string {
+	var b strings.Builder
 	if res.Ambiguous {
-		fmt.Printf("symptom is ambiguous — %d candidates, all included:\n\n", len(res.Matches))
+		fmt.Fprintf(&b, "symptom is ambiguous — %d candidates, all included\n\n", len(res.Matches))
 	}
 	if len(res.Possible) > 0 {
-		fmt.Printf("⚠️  %d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
+		fmt.Fprintf(&b, "%d possible match(es) via <dynamic> boundary effects, included and flagged\n\n", len(res.Possible))
 	}
-	fmt.Print(card.Render())
-	return nil
+	b.WriteString(card.Render())
+	return b.String()
 }
 
 // verifyStamp enforces an opt-in identity check: when the caller says which
@@ -498,8 +537,10 @@ func cmdChains(args []string) error {
 
 	// The broker guarantee is fleet-wide: the bus is one thing, so it must have
 	// one declared source. Reading it from several policies that disagree would
-	// print a guarantee no one authored — refuse rather than pick.
-	brokers := map[string]policy.Broker{}
+	// print a guarantee no one authored — refuse rather than pick. policy.MergeBrokers
+	// is the ONE merge shared with the MCP chains lens, so both refuse on exactly the
+	// same condition and word it identically (M-4).
+	var perService []map[string]policy.Broker
 	for _, pp := range policyPaths {
 		path := pp
 		if _, p, ok := strings.Cut(pp, "="); ok {
@@ -509,16 +550,11 @@ func cmdChains(args []string) error {
 		if err != nil {
 			return err
 		}
-		for name, b := range pol.Brokers {
-			// A broker named by two policies is only a problem if they DISAGREE:
-			// the bus is one thing, so two different guarantees for it have no
-			// single source. An identical re-declaration is harmless (mirrors the
-			// mcp chains lens, which conflicts only on differing values).
-			if existing, dup := brokers[name]; dup && existing != b {
-				return fmt.Errorf("broker %q declared differently by more than one --policy; the bus guarantee must have a single source", name)
-			}
-			brokers[name] = b
-		}
+		perService = append(perService, pol.Brokers)
+	}
+	brokers, conflicts := policy.MergeBrokers(perService)
+	if len(conflicts) > 0 {
+		return fmt.Errorf("broker(s) %s declared differently by more than one --policy; the bus guarantee must have a single source", strings.Join(conflicts, ", "))
 	}
 
 	fmt.Print(chains.Build(fleet, brokers).Render())
@@ -562,25 +598,21 @@ func cmdFitness(args []string) error {
 	if err := verifyGateStamp(g, expect, hasExpect); err != nil {
 		return err
 	}
-	res := fitness.Check(p, graph.NewIndex(g))
+	ix := graph.NewIndex(g)
+	res := fitness.Check(p, ix)
 
 	// Provenance first: a green fitness pass is only as strong as the substrate it
 	// was computed on, so the verdict states which call-graph algorithm produced
 	// the graph it judged (R3), flags a policy-vs-graph algorithm mismatch (§9),
-	// and, when the graph was built with `--reclaim`, that the verdict leaned on
-	// edges recovered at a dispatch seam (R9). All three ride the substrate line as
-	// caveats — a disclosure, never a gate finding, so the same signal cannot leak
-	// into a review/verify finding diff (which judges over the same fitness.Check).
-	// They are computed once here and surfaced on BOTH output paths: the SARIF path
-	// carries them as notifications so an unsound-substrate pass cannot annotate a
-	// PR as a clean green run.
-	caveats := append([]string{}, g.Caveats...)
-	if mc := graph.SubstrateMismatchCaveat(p.Substrate, g.Algo); mc != "" {
-		caveats = append(caveats, mc)
-	}
-	if rc := g.ReclaimCaveat(); rc != "" {
-		caveats = append(caveats, rc)
-	}
+	// and, when the graph was built with `--reclaim`/`--reclaim-sql`, that the
+	// verdict leaned on edges/labels recovered at a dispatch seam (R9). All ride the
+	// substrate line as caveats — a disclosure, never a gate finding, so the same
+	// signal cannot leak into a review/verify finding diff (which judges over the
+	// same fitness.Check). ix.GateCaveats is the ONE assembly shared by this CLI
+	// surface, its SARIF form, and the MCP `fitness` tool, so no gate surface can
+	// annotate an unsound-substrate pass as a clean green run by forgetting a caveat
+	// (H-9/H-10).
+	caveats := ix.GateCaveats(p.Substrate)
 
 	if sarif {
 		b, err := toSARIF(res.Findings, caveats)
@@ -623,16 +655,25 @@ func edgeLine(f fitness.Finding) string {
 	return f.From
 }
 
-// printFinding renders one finding, Detail included — a caution's witness is
-// as load-bearing as a violation's.
-func printFinding(prefix string, f fitness.Finding) {
-	fmt.Printf("%s [%s] %s\n", prefix, f.Rule, f.Summary)
+// writeFinding renders one finding to w, Detail included — a caution's witness is
+// as load-bearing as a violation's. Shared by the CLI fitness surface (printFinding
+// → stdout) and the MCP `fitness` tool so neither can drop the per-finding witness
+// (the exact From→To edge and the via/Detail line) the other prints (H-9).
+func writeFinding(b *strings.Builder, prefix string, f fitness.Finding) {
+	fmt.Fprintf(b, "%s [%s] %s\n", prefix, f.Rule, f.Summary)
 	if f.From != "" {
-		fmt.Printf("     %s\n", edgeLine(f))
+		fmt.Fprintf(b, "     %s\n", edgeLine(f))
 	}
 	if f.Detail != "" {
-		fmt.Printf("     via %s\n", f.Detail)
+		fmt.Fprintf(b, "     via %s\n", f.Detail)
 	}
+}
+
+// printFinding renders one finding to stdout — the CLI wrapper over writeFinding.
+func printFinding(prefix string, f fitness.Finding) {
+	var b strings.Builder
+	writeFinding(&b, prefix, f)
+	fmt.Print(b.String())
 }
 
 // ruleCount is a rough tally of configured invariants, for the OK summary.
@@ -882,7 +923,10 @@ func cmdDiff(args []string) error {
 	if err != nil {
 		return err
 	}
-	d := contract.Compare(base, branch)
+	d, err := contract.Compare(base, branch)
+	if err != nil {
+		return err
+	}
 	if d.Empty() {
 		fmt.Println("no boundary-contract changes")
 		return nil

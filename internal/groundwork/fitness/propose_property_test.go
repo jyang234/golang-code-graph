@@ -129,7 +129,33 @@ func genGraph(r *rand.Rand) *graph.Graph {
 		}
 	}
 
-	return &graph.Graph{Algo: "vta", Nodes: dedupeNodes(nodes), Edges: edges}
+	// Optional composition root: a `cmd/…/svc.main` entrypoint that reaches into
+	// the body AND makes its own startup writes (migrations/seeding). This is the
+	// M-9 shape: main is a caller-less entrypoint but NOT a route, so IsRoute must
+	// exclude it in the proposers and the enforcer alike. Half the time record the
+	// AUTHORITATIVE CompositionRoots field; half leave it unset (a pre-field graph)
+	// to exercise the structural `.main` fallback. If main were charged as a route,
+	// its startup writes would inflate proposeBudget or (with a tight enough budget)
+	// make init emit a baseline that fails its own gate — the self-clean break the
+	// enforcing test above would catch.
+	var roots []string
+	if r.Intn(100) < 50 {
+		mainPkg := "example.com/svc/cmd/svc"
+		mainFQN := mainPkg + ".main"
+		nodes = append(nodes, graph.Node{FQN: mainFQN, Sig: "func()", Tier: 3})
+		if len(fqns) > 0 {
+			addEdge(mainFQN, fqns[r.Intn(len(fqns))])
+		}
+		// A couple of direct startup writes off main only.
+		edges = append(edges,
+			graph.Edge{From: mainFQN, To: "boundary:db INSERT schema_migrations", Tier: 1, Boundary: "outbound-sync"},
+			graph.Edge{From: mainFQN, To: "boundary:db UPDATE seed_data", Tier: 1, Boundary: "outbound-sync"})
+		if r.Intn(100) < 50 {
+			roots = []string{mainPkg}
+		}
+	}
+
+	return &graph.Graph{Algo: "vta", Nodes: dedupeNodes(nodes), Edges: edges, CompositionRoots: roots}
 }
 
 // randEffect returns one boundary effect label spanning the classifier's whole

@@ -658,20 +658,16 @@ func normalizeStatus(s string) string {
 	}
 }
 
+// dbOperation delegates to opkey.DBOperation — the ONE operation-derivation shared
+// with the op-key builder, so the canon effect classifier and the impeachment op
+// key can never disagree about a DB span's verb (M-10). It returns the verb
+// upper-cased; dbEffect classifies case-insensitively, so the casing is immaterial
+// to the effect but keeps the derivation identical to dbKey's.
 func dbOperation(attrs map[string]string) string {
 	if attrs == nil {
 		return ""
 	}
-	if op := attrs["db.operation"]; op != "" {
-		return op
-	}
-	if op := attrs["db.operation.name"]; op != "" {
-		return op
-	}
-	if stmt := opkey.Statement(attrs); stmt != "" {
-		return sqlnorm.Normalize(stmt).Operation
-	}
-	return ""
+	return opkey.DBOperation(attrs)
 }
 
 func dbEffect(op string) model.Effect {

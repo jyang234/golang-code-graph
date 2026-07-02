@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -80,6 +81,37 @@ type Broker struct {
 
 // Signed reports whether the broker declaration carries a human warrant.
 func (b Broker) Signed() bool { return strings.TrimSpace(b.SignedBy) != "" }
+
+// MergeBrokers folds each loaded service's declared brokers into one fleet-wide
+// map. The bus is one thing, so it must have a single declared source: a broker
+// named by two policies with DIFFERENT guarantees has no single source (an
+// identical re-declaration is harmless). It returns the merged map plus the SORTED
+// list of broker names declared with conflicting values — empty when none.
+//
+// Sorting the conflict names is what makes the caller's refusal byte-identical run
+// to run: ranging a policy's Brokers map directly (as the CLI `chains` command did)
+// reported whichever conflicting name the map iteration happened to visit, so the
+// error text moved between runs. Shared by the CLI and the MCP chains lens so the
+// two surfaces conflict on exactly the same condition and word it identically
+// (M-4, CLAUDE.md: one source of truth).
+func MergeBrokers(perService []map[string]Broker) (map[string]Broker, []string) {
+	merged := map[string]Broker{}
+	conflict := map[string]bool{}
+	for _, brokers := range perService {
+		for name, b := range brokers {
+			if existing, dup := merged[name]; dup && existing != b {
+				conflict[name] = true
+			}
+			merged[name] = b
+		}
+	}
+	names := make([]string, 0, len(conflict))
+	for name := range conflict {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return merged, names
+}
 
 // Layer names an architectural tier and the import-path prefixes that belong to
 // it. Order is significant: layers are listed top (entry) to bottom (storage),

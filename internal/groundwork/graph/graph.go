@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 )
 
@@ -417,28 +418,53 @@ func (g *Graph) ReclaimCaveat() string {
 		" edge(s) recovered at a dispatch seam (flowmap --reclaim*) — a reachable verdict may rest on a reclaimed edge"
 }
 
-// SQLFoldCaveat returns a substrate caveat disclosing that this graph carries DB
-// effect labels whose verb the SQL const-accumulation fold recovered (flowmap's
-// opt-in `--reclaim-sql`), or "" when it carries none. A folded label feeds the
-// write-surface classification (a recovered mutating verb is charged to the
-// budget; a recovered SELECT is trusted as a read), so a verdict that leaned on
-// one must disclose it — the label analogue of ReclaimCaveat (plan §3, L3).
+// SQLFoldCaveat returns a substrate caveat disclosing that this graph carries
+// effect labels a const-accumulation fold recovered from constant SQL/topic
+// fragments (flowmap's opt-in `--reclaim-sql`), or "" when it carries none. A
+// folded label feeds classification (a recovered mutating DB verb is charged to
+// the budget; a recovered SELECT is trusted as a read; a recovered bus topic
+// names the PUBLISH target), so a verdict that leaned on one must disclose it —
+// the label analogue of ReclaimCaveat (plan §3, L3).
+//
+// The count is SPLIT by the recovered label KIND, not lumped: a boundary edge
+// carrying a `topic-constfold` recovered a BUS TOPIC, not a DB verb, so describing
+// it as "DB effect verb(s)" (as the un-split count did) is a false provenance
+// claim. Each kind is counted and worded on its own so the disclosure names what
+// was actually folded (H-10).
 //
 // The fold is sound-or-abstain, so a folded label is at least as trustworthy as a
 // call-site constant; the disclosure exists so a verdict resting on a RECOVERED
-// verb is auditable as such, not mistaken for one the labeler read directly.
+// label is auditable as such, not mistaken for one the labeler read directly.
 func (g *Graph) SQLFoldCaveat() string {
-	n := 0
+	var dbVerbs, busTopics, other int
 	for _, e := range g.Edges {
-		if e.Via != "" && e.IsBoundary() {
-			n++
+		if e.Via == "" || !e.IsBoundary() {
+			continue
+		}
+		switch {
+		case boundarylabel.HasKind(e.To, boundarylabel.KindDB):
+			dbVerbs++
+		case boundarylabel.HasKind(e.To, boundarylabel.KindBus):
+			busTopics++
+		default:
+			other++
 		}
 	}
-	if n == 0 {
+	if dbVerbs+busTopics+other == 0 {
 		return ""
 	}
-	return fmt.Sprintf("sql-fold-informed: %d DB effect verb(s) recovered from constant-fragment SQL "+
-		"(flowmap --reclaim-sql) — a write/read classification may rest on a folded verb", n)
+	var parts []string
+	if dbVerbs > 0 {
+		parts = append(parts, fmt.Sprintf("%d DB effect verb(s) recovered from constant-fragment SQL", dbVerbs))
+	}
+	if busTopics > 0 {
+		parts = append(parts, fmt.Sprintf("%d bus topic(s) recovered from constant fragments", busTopics))
+	}
+	if other > 0 {
+		parts = append(parts, fmt.Sprintf("%d other effect label(s) recovered from constant fragments", other))
+	}
+	return "sql-fold-informed: " + strings.Join(parts, ", ") +
+		" (flowmap --reclaim-sql) — a write/read classification may rest on a folded label"
 }
 
 // SubstrateMismatchCaveat returns a disclosure when a policy proposed on

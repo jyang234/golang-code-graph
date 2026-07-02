@@ -144,14 +144,37 @@ func omittedPackages(res *analyze.Result, g *Graph) []string {
 	return sortedKeys(omitted)
 }
 
-// rootByName returns the root function registered under name (a route or topic).
-func rootByName(res *analyze.Result, name string) *ssa.Function {
+// resolveEntryRoot maps a user-supplied --entry name to the single root function
+// it names, at build time (SSA in hand). It collects EVERY root registered under
+// name and FAILS CLOSED when more than one DISTINCT function matches, rather than
+// returning whichever was registered first — a wrong-but-plausible scope must
+// abstain, not resolve arbitrarily (CLAUDE.md: fail closed). This is the build-time
+// analogue of (*Graph).resolveRoot's ambiguity guard, so the two --entry resolvers
+// agree that an ambiguous name refuses (M-12). Returns (nil, nil) when no root
+// matches — the caller raises EntryNotFoundError.
+func resolveEntryRoot(res *analyze.Result, name string) (*ssa.Function, error) {
+	distinct := map[string]*ssa.Function{}
+	var match *ssa.Function
 	for _, r := range res.Roots.Roots {
-		if r.Name == name {
-			return r.Func
+		if r.Name != name || r.Func == nil {
+			continue
 		}
+		distinct[r.Func.RelString(nil)] = r.Func
+		match = r.Func
 	}
-	return nil
+	switch len(distinct) {
+	case 0:
+		return nil, nil
+	case 1:
+		return match, nil
+	default:
+		fns := make([]string, 0, len(distinct))
+		for fqn := range distinct {
+			fns = append(fns, fqn)
+		}
+		sort.Strings(fns)
+		return nil, &EntryAmbiguousError{Entry: name, Fns: fns}
+	}
 }
 
 // reachableFirstParty returns the first-party functions reachable from root,

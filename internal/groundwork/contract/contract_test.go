@@ -32,7 +32,10 @@ func TestCompareAddRemoveBreaking(t *testing.T) {
 			{Peer: "peer2", Kind: "http", Ops: []string{"GET /z"}},            // added
 		},
 	}
-	d := Compare(base, branch)
+	d, err := Compare(base, branch)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
 
 	// Additions are not breaking.
 	if c := find(d, "+", "route", "GET /c"); c == nil || c.Breaking {
@@ -67,9 +70,27 @@ func TestCompareIdenticalIsEmpty(t *testing.T) {
 		EntryPoints: EntryPoints{HTTP: []HTTPEntry{{Method: "GET", Route: "/a"}}},
 		Published:   []Event{{Event: "e1"}},
 	}
-	d := Compare(c, c)
+	d, err := Compare(c, c)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
 	if !d.Empty() || d.Breaking() {
 		t.Errorf("identical contracts must produce an empty, non-breaking diff; got %v", d.Changes)
+	}
+}
+
+// M-27: comparing two DIFFERENT services (a copy-paste mix-up of base/branch
+// inputs) must refuse, not fabricate a plausible mostly-breaking diff and a
+// spurious BLOCK from unrelated surfaces.
+func TestCompareRefusesServiceMismatch(t *testing.T) {
+	base := &Contract{Service: "paymentsvc", EntryPoints: EntryPoints{HTTP: []HTTPEntry{{Method: "POST", Route: "/charge"}}}}
+	branch := &Contract{Service: "ordersvc", EntryPoints: EntryPoints{HTTP: []HTTPEntry{{Method: "GET", Route: "/orders"}}}}
+	if _, err := Compare(base, branch); err == nil {
+		t.Fatal("Compare accepted two different services; expected a refusal")
+	}
+	branch.Service = "paymentsvc"
+	if _, err := Compare(base, branch); err != nil {
+		t.Errorf("Compare refused a same-service pair: %v", err)
 	}
 }
 
@@ -82,7 +103,10 @@ func TestLoadGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load branch: %v", err)
 	}
-	d := Compare(base, branch)
+	d, err := Compare(base, branch)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
 	if !d.Breaking() {
 		t.Fatalf("the committed branch contract drops the PUT route — diff must be breaking; got %v", d.Changes)
 	}
@@ -102,7 +126,10 @@ func TestDiffDepsSamePeerTwoKinds(t *testing.T) {
 		{Peer: "acme", Kind: "http", Ops: []string{"GET /x"}},
 		{Peer: "acme", Kind: "blob", Ops: []string{"PutObject"}},
 	}}
-	d := Compare(base, branch)
+	d, err := Compare(base, branch)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
 	if c := find(d, "+", "dependency", "acme (http)"); c == nil {
 		t.Errorf("missing http dependency change for acme: %+v", d.Changes)
 	}
