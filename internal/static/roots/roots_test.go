@@ -3,6 +3,7 @@ package roots_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/static/loader"
@@ -159,6 +160,68 @@ func main() {
 	}
 	if !hasMain {
 		t.Error("main root missing")
+	}
+}
+
+// TestDiscoverDynamicRouteResolvedHandlerDisclosed pins M-35: a registration whose
+// HANDLER resolves to a concrete function but whose ROUTE is a non-constant string
+// (and the registrar implies no HTTP method to name it) leaves the root nameless.
+// graphio omits a nameless root from the entrypoint surface, so without disclosure
+// the entry would vanish from Entrypoints / the frontier's route universe /
+// RouteEntrypointCount silently. It must be recorded as a blind spot while the
+// handler is still rooted for reachability.
+func TestDiscoverDynamicRouteResolvedHandlerDisclosed(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := t.TempDir()
+	write(t, dir, "go.mod", "module dyn\n\ngo 1.24\n")
+	// A method-less registrar (route is the whole name): NameArg=0, no Method.
+	write(t, dir, "reg/reg.go", `package reg
+type Handler func()
+func Register(route string, h Handler) {}
+`)
+	write(t, dir, "main.go", `package main
+import "dyn/reg"
+func handler() {}
+func routeFor() string { return "/" + dynamic() }
+func dynamic() string { return "x" }
+func main() {
+	reg.Register(routeFor(), handler) // handler resolves; route is non-constant
+}
+`)
+	svc, err := loader.Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	prog, err := ssabuild.Build(svc)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	res := roots.Discover(prog, []roots.Registrar{
+		{PkgPath: "dyn/reg", Name: "Register", Kind: roots.KindHTTP, NameArg: 0, HandlerArg: 1},
+	})
+
+	// The handler resolved, so it must still be rooted (reachability preserved).
+	var rootedHandler bool
+	for _, r := range res.Roots {
+		if r.Kind == roots.KindHTTP && strings.HasSuffix(r.FQN(), ".handler") {
+			rootedHandler = true
+		}
+	}
+	if !rootedHandler {
+		t.Errorf("resolved handler must still be rooted for reachability; roots: %+v", res.Roots)
+	}
+	// And the non-constant route must be disclosed as a blind spot, not dropped.
+	var disclosed bool
+	for _, bs := range res.BlindSpots {
+		if bs.Registrar == "dyn/reg.Register" && strings.Contains(bs.Detail, "not a compile-time constant") {
+			disclosed = true
+			if bs.Pos == "" {
+				t.Errorf("dynamic-route blind spot missing source position: %+v", bs)
+			}
+		}
+	}
+	if !disclosed {
+		t.Errorf("non-constant route must be disclosed as a blind spot; blind spots: %+v", res.BlindSpots)
 	}
 }
 

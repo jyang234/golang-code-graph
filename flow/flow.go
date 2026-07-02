@@ -105,6 +105,13 @@ func (f *Flow) TriggerEvent(name string, deliver func(ctx context.Context)) *Flo
 // Expect declares an expected-exit op (the flow's I/O contract): it gates
 // completion (the capture waits until the op is observed) but asserts no
 // cardinality beyond at-least-once.
+//
+// Declaring a marker is REQUIRED for any fire-and-forget effect — an async span
+// (detached goroutine, late publish) that lands after the request handler returns.
+// Without an Expect for it, completion may be decided by the quiet period before
+// the effect fires, dropping it from the golden with Complete=true, or the effect
+// may straddle the quiet boundary and flake the golden run-to-run (M-19). Expect
+// the late op so the capture waits for it deterministically.
 func (f *Flow) Expect(op string) *Flow {
 	f.expect = append(f.expect, expectation{op: op})
 	return f

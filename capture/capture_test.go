@@ -24,6 +24,32 @@ func TestScopeFiltersByCorrelation(t *testing.T) {
 	}
 }
 
+// TestCorrelationLessDisclosesLostBaggage pins M-18: an in-window span with an
+// empty correlation id (a lost baggage context) is excluded from the scoped set,
+// and CorrelationLess counts it so the drop is disclosed rather than silent. A span
+// belonging to a DIFFERENT run is filtered without being counted (it is not a lost
+// context — it is another run's span).
+func TestCorrelationLessDisclosesLostBaggage(t *testing.T) {
+	spans := []Span{
+		{ID: "root", Kind: ir.KindServer, Attrs: map[string]string{CorrelationKey: "mine"}, Start: t0(0), End: t0(10)},
+		{ID: "lost", ParentID: "root", Kind: ir.KindClient, Start: t0(1), End: t0(2)},                                    // no correlation id
+		{ID: "other", Kind: ir.KindServer, Attrs: map[string]string{CorrelationKey: "theirs"}, Start: t0(0), End: t0(5)}, // another run
+	}
+	if n := CorrelationLess(spans, "mine"); n != 1 {
+		t.Fatalf("CorrelationLess = %d, want 1 (only the empty-correlation span)", n)
+	}
+	// The scoped set excludes the correlation-less span, so a silent drop is exactly
+	// what the count guards against.
+	scoped, _ := Scope(spans, "mine")
+	if len(scoped) != 1 {
+		t.Fatalf("scoped %d spans, want 1 (only the correlated root)", len(scoped))
+	}
+	// The fast path does no correlation filtering, so nothing is lost.
+	if n := CorrelationLess(spans, ""); n != 0 {
+		t.Fatalf("CorrelationLess on the runID=\"\" fast path = %d, want 0", n)
+	}
+}
+
 func TestScopeEmptyRunIDKeepsAll(t *testing.T) {
 	spans := []Span{
 		{ID: "root", Start: t0(0), End: t0(2)},

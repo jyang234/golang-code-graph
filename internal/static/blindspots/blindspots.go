@@ -629,11 +629,15 @@ func dedupSort(in []BlindSpot) []BlindSpot {
 }
 
 // SortBlindSpots sorts a manifest in place by the canonical, run-independent order
-// (Kind, then Site, then Detail) — the ONE comparator every blind-spot ordering
-// uses, so a manifest's byte form does not depend on detection or declaration
-// order. Both Detect (via dedupSort) and the graphio declared-seam merge sort
-// through here; keeping the tie-break in one place is what stops the two copies
-// from drifting (CLAUDE.md "one source of truth").
+// (Kind, then Site, then Detail, then Package, then Severity) — the ONE comparator
+// every blind-spot ordering uses, so a manifest's byte form does not depend on
+// detection or declaration order. Both Detect (via dedupSort) and the graphio
+// declared-seam merge sort through here; keeping the tie-break in one place is what
+// stops the two copies from drifting (CLAUDE.md "one source of truth").
+//
+// Package and Severity are included so the comparator is TOTAL over the struct: two
+// spots that tie on (Kind, Site, Detail) but carry a distinct Package (and thus
+// Severity) get a stable, intrinsic order rather than an arrival-order one.
 func SortBlindSpots(bs []BlindSpot) {
 	sort.Slice(bs, func(i, j int) bool {
 		a, b := bs[i], bs[j]
@@ -643,6 +647,12 @@ func SortBlindSpots(bs []BlindSpot) {
 		if a.Site != b.Site {
 			return a.Site < b.Site
 		}
-		return a.Detail < b.Detail
+		if a.Detail != b.Detail {
+			return a.Detail < b.Detail
+		}
+		if a.Package != b.Package {
+			return a.Package < b.Package
+		}
+		return a.Severity < b.Severity
 	})
 }

@@ -115,31 +115,43 @@ verify` green.
 
 ---
 
-## Phase 4 — hardening & disclosure parity (remaining MEDIUM + LOW)
+## Phase 4 — hardening & disclosure parity (remaining MEDIUM + LOW) — `LANDED`
 
-Batch-friendly. Group by theme; each is self-contained.
+Batch-friendly. Group by theme; each is self-contained. All items below landed
+(fix + test, `make verify` green).
 
-**Determinism residues:** M-3 (span-ID tie-break → intrinsic key + canon-fuzz
-extension), M-5 (Mermaid fold merge sorted), M-22 (`FindFunc` collect-all +
-panic on >1), M-23 (reclaim sort `Pos()` tie-break).
+**Determinism residues:** M-3 `[x]` (span-ID tie-break → intrinsic key: op key
+then subtree signature; equal-start unorderable siblings fold to an Unordered
+group; `FuzzCanonSiblingOrderInvariant` added), M-5 `[x]` (Mermaid fold merge
+sorted), M-22 `[x]` (`FindFunc` collect-all + panic on genuine ambiguity), M-23
+`[x]` (reclaim sort `Pos()` tie-break).
 
-**Fail-open / disclosure gaps:** M-14 (keep disclosure accurate post-C-2),
-M-16 (reject edges whose `From` is not a node), M-17 (io_budget zero-route
-vacuity caution), M-18 (disclose correlation-less in-window spans), M-19
-(document fire-and-forget marker requirement), M-30 (impeach `canonicalDigest`
-propagate error), M-35 (roots non-constant-route drop → blind spot + fix
-comment).
+**Fail-open / disclosure gaps:** M-14 `[x]` (disclosure stays accurate post-C-2;
+no code change beyond C-2), M-16 `[x]` (reject edges whose `From` is not a node
+at `graph.Load`), M-17 `[x]` (io_budget zero-route vacuity caution), M-18 `[x]`
+(disclose correlation-less in-window spans via `CapturedFlow.CorrelationLess`),
+M-19 `[x]` (document fire-and-forget marker requirement), M-30 `[x]` (impeach
+`canonicalDigest` fails loud, matching its review sibling), M-35 `[x]` (roots
+non-constant-route drop → blind spot + fixed comment).
 
-**Process / CI:** M-21 (nightly fuzz covers 3/12 targets — enumerate all + add
-H-1's leak fuzzer), M-6 (reflection-based digest field-coverage self-check).
+**Process / CI:** M-21 `[x]` (nightly fuzz enumerates all 14 targets + H-1's
+leak fuzzer; `internal/fuzzcov` parity guard), M-6 `[x]` (reflection-based
+digest field-coverage self-check for `Artifact`/`GateResult`).
 
-**Public API / fidelity:** M-31 (harness links/TraceID), M-32 (`statusRecorder`
-Flusher/Hijacker/Unwrap), M-34 (MCP session-id run epoch), rest of **M-33**
-(CLI ergonomics: `-h` exit code, help/flag parity + parity test, usageBody).
+**Public API / fidelity:** M-31 `[x]` (harness maps span links/TraceID), M-32
+`[x]` (`statusRecorder` `Unwrap`/`Flush` passthrough), M-34 `[x]` (MCP session-id
+continues past an appended log's high-water mark), rest of **M-33** `[x]`
+(flowmap `-h` clean exit via `flag.ErrHelp`; help/flag parity + parity tests;
+usageBody `--expect` prose relocated, omitted flags documented).
 
-**LOW list (audit §5):** batch the stale-comment fixes into one PR; batch the
-robustness/fail-closed polish; batch the CLI/server polish. Fix each stale
-comment in the same PR as any code it describes where the two coincide.
+**LOW list (audit §5):** stale-comment fixes `[x]`, robustness/fail-closed
+polish `[x]` (harness rand fail-loud, `SortBlindSpots` total order, policy
+reach dup-name guards, `BusEffects` malformed tally, ground shared `DedupKey`,
+coverage peerless-HTTP guard, config pin-identity/version guards), CLI/server
+polish `[x]` (MCP token SHA-256 constant-time compare + Bearer scheme + server
+timeouts, stdio `-32700` parse error). A few narrow §5 residuals (CaptureMode
+zero-value refusal — deferred as too disruptive for its LOW value; both
+production callers already set it) are left documented rather than forced.
 
 ---
 

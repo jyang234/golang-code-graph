@@ -24,6 +24,13 @@ type Options struct {
 	// Markers are the flow's declared expected-exit op keys (e.g.
 	// "PUBLISH loan.approved"). Empty means completion rests on the quiet period
 	// and root-ended signals alone.
+	//
+	// A fire-and-forget effect — an async span that lands AFTER the root has ended
+	// — is only guaranteed to be captured if it is declared as a marker: without
+	// one, an effect that fires after Quiet is dropped with Complete=true, and one
+	// that straddles the Quiet boundary makes the golden itself flake (M-19). Every
+	// flow with a detached goroutine / late publish must declare a marker for it;
+	// quiet-alone completion is a backstop for synchronous flows, not a substitute.
 	Markers []string
 	// Match reports whether a span satisfies a marker. Callers pass the op-key
 	// matcher so the marker grammar stays coupled to canonical op keys.

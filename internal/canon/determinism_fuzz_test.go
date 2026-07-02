@@ -45,6 +45,91 @@ func FuzzCanonConcurrentOrderInvariant(f *testing.F) {
 	})
 }
 
+// FuzzCanonSiblingOrderInvariant explores the M-3 determinism contract: siblings on
+// a SHARED or ZERO goroutine with coarse (frequently-equal) caller-clock starts
+// carry no reliable happens-before, so their canonical order must be a function of
+// intrinsic content, never the run-random span id or the arrival order. The fuzzer
+// canonicalizes a flat sibling set, then re-canonicalizes the SAME siblings with
+// their arrival order reversed and their span ids relabeled — exactly what a re-run
+// with fresh random ids does — and requires byte-identical output. Before the fix,
+// an equal-start tie fell through to `ordered[i].ID < ordered[j].ID`, so this would
+// diverge. Self-checking: no oracle.
+func FuzzCanonSiblingOrderInvariant(f *testing.F) {
+	f.Add([]byte{2, 5, 5, 5, 5, 5})
+	f.Add([]byte{4, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{6, 1, 1, 2, 2, 1, 1, 3, 3})
+	f.Fuzz(func(t *testing.T, in []byte) {
+		want, err := Canonicalize(genTiedFlow(in, false), nil)
+		if err != nil {
+			return
+		}
+		got, err := Canonicalize(genTiedFlow(in, true), nil)
+		if err != nil {
+			t.Fatalf("relabeling sibling ids/order flipped canon to error: %v", err)
+		}
+		if w, g := marshal(t, want), marshal(t, got); string(w) != string(g) {
+			t.Fatalf("sibling IR depends on span id / arrival order:\n--- want ---\n%s\n--- relabeled ---\n%s", w, g)
+		}
+	})
+}
+
+// genTiedFlow builds a flat set of root children on goroutine 0 (no concurrency
+// signal) with coarse start times drawn from a tiny range so equal-start ties are
+// common. When relabel is set the children are emitted in reverse arrival order with
+// their span ids renamed, isolating the "does span id / arrival order reach output"
+// question. Children never parent each other, so relabeling is a pure permutation.
+func genTiedFlow(in []byte, relabel bool) capture.CapturedFlow {
+	r := &byteReader{data: in}
+	n := int(r.b()%8) + 1 // 1..8 children
+	type kid struct {
+		start, dur int
+		kind       ir.Kind
+		attrs      map[string]string
+	}
+	kids := make([]kid, n)
+	for i := 0; i < n; i++ {
+		k := kid{
+			start: int(r.b()) % 4, // tiny range ⇒ frequent equal starts
+			dur:   int(r.b()) % 2, // 0 or 1 ms ⇒ often zero-duration
+		}
+		switch r.b() % 3 {
+		case 0:
+			k.kind, k.attrs = ir.KindClient, map[string]string{"db.system": "postgres", "db.statement": fuzzDBStmts[int(r.b())%len(fuzzDBStmts)]}
+		case 1:
+			k.kind, k.attrs = ir.KindProducer, map[string]string{"messaging.destination.name": fuzzTopics[int(r.b())%len(fuzzTopics)]}
+		default:
+			k.kind, k.attrs = ir.KindClient, map[string]string{"http.request.method": "GET", "peer.service": fuzzPeers[int(r.b())%len(fuzzPeers)], "http.target": "/t"}
+		}
+		kids[i] = k
+	}
+	spans := []capture.Span{{
+		ID: "root", Kind: ir.KindServer, Status: capture.StatusOK,
+		Start: ms(0, 0), End: ms(0, 1000), Goroutine: 1,
+		Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"},
+	}}
+	order := make([]int, n)
+	for i := range order {
+		order[i] = i
+	}
+	if relabel {
+		for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+			order[i], order[j] = order[j], order[i]
+		}
+	}
+	for emit, i := range order {
+		k := kids[i]
+		id := fmt.Sprintf("s%d", i)
+		if relabel {
+			id = fmt.Sprintf("r%d", emit) // fresh, differently-ordered ids
+		}
+		spans = append(spans, capture.Span{
+			ID: id, ParentID: "root", Kind: k.kind, Goroutine: 0,
+			Start: ms(0, 1+k.start), End: ms(0, 1+k.start+k.dur), Attrs: k.attrs,
+		})
+	}
+	return capture.CapturedFlow{Flow: "f", Service: "s", Spans: spans, Root: &spans[0], Complete: true}
+}
+
 // genFlow is a total, pure generator: it maps arbitrary fuzz bytes to a valid,
 // Complete single-root flow so almost every input exercises canon rather than
 // bouncing off the incomplete-capture guard. Every span is placed on its OWN

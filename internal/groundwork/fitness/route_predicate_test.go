@@ -1,6 +1,7 @@
 package fitness
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
@@ -61,6 +62,36 @@ func TestIsRouteExcludesCompositionRootWithoutLayering(t *testing.T) {
 		if v.Rule == "io_budget" {
 			t.Errorf("io_budget violated though the only route writes exactly one target: %s", v.Summary)
 		}
+	}
+}
+
+// TestIOBudgetBindsNoRouteDiscloses pins M-17: an io_budget whose graph has no
+// non-root entrypoint binds nothing, so a silent green would read as "writes are
+// bounded" when the guard charged nothing. The enforcer must emit a vacuity
+// Caution, mirroring every other rule kind's inert-binding disclosure.
+func TestIOBudgetBindsNoRouteDiscloses(t *testing.T) {
+	const serverMain = "example.com/svc/cmd/server.main"
+	g := &graph.Graph{
+		CompositionRoots: []string{"example.com/svc/cmd/server"},
+		Nodes:            []graph.Node{{FQN: serverMain, Sig: "func()", Tier: 3}},
+		// main is the only entrypoint and it is a composition root → zero routes.
+		Edges: []graph.Edge{{From: serverMain, To: "boundary:db INSERT schema_migrations", Boundary: "db"}},
+	}
+	ix := graph.NewIndex(g)
+	p := &policy.Policy{Service: "svc", Version: 1, IOBudget: &policy.IOBudget{MaxWritesPerRoute: 1}}
+
+	if routes := RouteWrites(p, ix); len(routes) != 0 {
+		t.Fatalf("expected zero bound routes, got %v", routes)
+	}
+	res := Check(p, ix)
+	found := false
+	for _, c := range res.Cautions() {
+		if c.Rule == "io_budget" && strings.Contains(c.Summary, "binds no route") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("io_budget with no bound route must disclose a vacuity caution; cautions: %v", res.Cautions())
 	}
 }
 

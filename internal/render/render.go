@@ -493,7 +493,15 @@ func brokerServiceMerge(services, brokerPeers, peers map[string]bool) map[string
 			byFold[foldSeparators(p)] = p
 		}
 	}
+	// Services override the peer seed. Iterate sorted so that when two services
+	// share a fold (e.g. "event_bus" and "event-bus"), the last-writer-wins pick
+	// is a deterministic function of the names, not map iteration order.
+	svc := make([]string, 0, len(services))
 	for s := range services {
+		svc = append(svc, s)
+	}
+	sort.Strings(svc)
+	for _, s := range svc {
 		byFold[foldSeparators(s)] = s
 	}
 	var merge map[string]string

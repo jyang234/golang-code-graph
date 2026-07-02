@@ -19,17 +19,46 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false # one target crashing must not hide the others
+      # EVERY FuzzXxx in the repo is listed here — the nightly job must explore all
+      # of them, not a subset (M-21). TestFuzzWorkflowListsEveryTarget (in
+      # internal/fuzzcov) fails the PR gate if a new fuzz target is added without a
+      # matching matrix row, so this list cannot silently fall behind the code.
       matrix:
         include:
+          # Trust-boundary loaders: a panic on novel untrusted input is a crash.
           - pkg: ./internal/groundwork/graph
             target: FuzzGraphLoad
           - pkg: ./internal/groundwork/contract
             target: FuzzContractLoad
-          # Determinism gate: a concurrent group's IR must be blind to the race
-          # outcome (which sibling started first). Explores the byte-identical-IR
-          # contract far beyond the hand-built fixtures.
+          - pkg: ./internal/otlpjson
+            target: FuzzDecodeNoPanic
+          - pkg: ./internal/otlpjson
+            target: FuzzIntStrFailsClosed
+          # Determinism gates: a concurrent/unordered group's IR must be blind to the
+          # race outcome, and the canonical marshaler / FQN order must be total & stable.
           - pkg: ./internal/canon
             target: FuzzCanonConcurrentOrderInvariant
+          - pkg: ./internal/canon
+            target: FuzzCanonSiblingOrderInvariant
+          - pkg: ./internal/canonjson
+            target: FuzzMarshalDeterministic
+          - pkg: ./internal/impeach
+            target: FuzzCanonFQNSymmetry
+          - pkg: ./internal/impeach
+            target: FuzzCanonFQNTotal
+          - pkg: ./internal/impeach
+            target: FuzzWitnessSortStrictWeakOrder
+          # Redaction / normalization invariants (FuzzNormalizeIdempotent already
+          # found a real bug; FuzzNormalizeNoLiteralLeak is H-1's leak-property gate).
+          - pkg: ./internal/canon/sql
+            target: FuzzNormalizeIdempotent
+          - pkg: ./internal/canon/sql
+            target: FuzzNormalizeNoLiteralLeak
+          - pkg: ./internal/canon/url
+            target: FuzzTemplateInvariants
+          # Static-analysis confinement.
+          - pkg: ./internal/static/rebind
+            target: FuzzRebindConfinement
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

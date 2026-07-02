@@ -32,6 +32,19 @@ func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 	// Carried on the Result so review's route-delta section reuses this exact
 	// computation instead of repeating the per-route BFS.
 	r.RouteWrites = routes
+	// Vacuity disclosure (M-17): an io_budget that binds no route enforces
+	// nothing, yet the loop below would add no finding and the rule reads green.
+	// Every other rule kind discloses inert binding (inertRuleFinding,
+	// unbindableTargetFinding, UNMATCHED); the budget must too, so "within budget"
+	// never masks "the guard charged nothing". Fires on a library-only or
+	// all-plumbing graph (no non-root entrypoint to charge).
+	if len(routes) == 0 {
+		r.add(Finding{
+			Rule:     "io_budget",
+			Severity: Caution,
+			Summary:  "io_budget binds no route: the graph has no non-root entrypoint to charge, so the per-route write-blowout guard is vacuous — a within-budget pass here proves nothing about the write surface",
+		})
+	}
 	unclassRoutes := 0
 	blindRoutes := 0
 	unclassEffectRoutes := 0

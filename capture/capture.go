@@ -194,6 +194,18 @@ type CapturedFlow struct {
 	Spans      []Span
 	Root       *Span
 	Complete   bool
+	// CorrelationLess is the count of captured spans that carried no correlation id
+	// (an empty test.run.id — the classic lost-ctx bug where a SUT span is opened
+	// from a fresh context.Background()). Such spans are excluded from Spans by Scope;
+	// dropping them is the sound direction for impeachment, but tenet 3 says disclose:
+	// a non-zero value means this capture had spans it could not attribute to the run.
+	// It is counted over the RAW in-process recorder, which is process-shared, so in a
+	// test binary that captures several flows this ACCUMULATES across them — read a
+	// non-zero value as "un-attributable spans exist in this run", a signal to act on,
+	// not a per-flow exact count. Advisory only: excluded from snapshot equality and
+	// never written to a golden. Zero on the runID=="" fast path (no correlation
+	// filtering happens there).
+	CorrelationLess int
 }
 
 // Attr returns the value of key on s, or "" if absent.
@@ -244,20 +256,56 @@ func Scope(spans []Span, runID string) (scoped []Span, root *Span) {
 	return scoped, root
 }
 
+// CorrelationLess counts the spans that Scope(spans, runID) would exclude for
+// carrying NO correlation id (an empty test.run.id) — distinct from spans belonging
+// to a DIFFERENT run, which are correctly filtered without disclosure. When runID is
+// "" (the in-process fast path keeps every span) no correlation filtering happens,
+// so the count is zero. It is the marker behind CapturedFlow's CorrelationLess
+// disclosure (M-18): a lost-baggage span vanishing from the golden while
+// Complete=true must not be silent. It MUST be given the RAW recorder set, never a
+// Scope-filtered slice — every element of a scoped slice carries the run id, so the
+// count over it is trivially zero.
+func CorrelationLess(spans []Span, runID string) int {
+	if runID == "" {
+		return 0
+	}
+	n := 0
+	for i := range spans {
+		if spans[i].Attr(CorrelationKey) == "" {
+			n++
+		}
+	}
+	return n
+}
+
 // CorrelationKey is the span attribute the harness copies from baggage so a span
 // can be attributed to exactly one test run (§3).
 const CorrelationKey = "test.run.id"
 
 // sortSpans imposes a deterministic, run-independent order on the flat span set:
-// by start time (so assembly and ordering see a stable sequence), then by id as
-// a tiebreaker. Ordering of *siblings in the tree* is decided separately by
-// Order; this is only to keep the flat list reproducible.
+// by start time, then by intrinsic content (name, kind, parent), with the span id
+// only as an absolute last resort for two otherwise-identical spans. The span id is
+// per-run random in the in-process profile (M-3), so letting it decide a start-time
+// tie made the flat order — and any output that inherits it (orphan-head order) —
+// vary run-to-run despite the manifest's "ids: dropped" claim. Ordering of *siblings
+// in the tree* is decided separately by canon on the canonical op key and subtree
+// signature; this only keeps the flat list reproducible.
 func sortSpans(spans []Span) {
 	sort.Slice(spans, func(i, j int) bool {
-		if !spans[i].Start.Equal(spans[j].Start) {
-			return spans[i].Start.Before(spans[j].Start)
+		a, b := spans[i], spans[j]
+		if !a.Start.Equal(b.Start) {
+			return a.Start.Before(b.Start)
 		}
-		return spans[i].ID < spans[j].ID
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.ParentID != b.ParentID {
+			return a.ParentID < b.ParentID
+		}
+		return a.ID < b.ID
 	})
 }
 

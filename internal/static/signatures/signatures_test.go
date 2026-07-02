@@ -31,7 +31,9 @@ func TestGenericSignatureIncludesTypeParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fn := statictest.FindFunc(prog, "internal/codec.Decode")
+	// The generic origin, not its instantiation codec.Decode[…Application] —
+	// FindFunc would (correctly) reject the bare substring as ambiguous.
+	fn := statictest.FindFuncExact(prog, "example.com/loansvc/internal/codec.Decode")
 	if fn == nil {
 		t.Fatal("codec.Decode not found")
 	}

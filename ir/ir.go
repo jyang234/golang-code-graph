@@ -34,7 +34,9 @@ const (
 const SchemaVersion = "flowmap.trace/v1"
 
 // CanonicalTrace is the deterministic representation of one exercised flow.
-// Equality of two traces (ignoring Discards) is the snapshot assertion.
+// Equality of two traces — ignoring the run-varying provenance fields Discards,
+// Stamp, and Provenance (all zeroed by golden.canonicalBytes) — is the snapshot
+// assertion.
 type CanonicalTrace struct {
 	Flow    string `json:"flow"`
 	Service string `json:"service"`

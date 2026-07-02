@@ -81,6 +81,24 @@ func TestLoadRejectsInconsistentBoundaryMarking(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsEdgeFromNonNode pins the M-16 decoder invariant: every edge must
+// originate at a declared node. An edge whose From is unknown would (in NewIndex)
+// silently revoke its To's caller-less source status and inject a non-node FQN into
+// the reaching set, weakening the entrypoint:* rule universe with no disclosure.
+func TestLoadRejectsEdgeFromNonNode(t *testing.T) {
+	// svc.B is a real node and would be a source (caller-less); the edge from the
+	// undeclared svc.Ghost must be refused rather than quietly demote it.
+	const j = `{"nodes":[{"fqn":"svc.B","sig":"func()"}],"edges":[{"from":"svc.Ghost","to":"svc.B"}],"blind_spots":[]}`
+	if _, err := Load(strings.NewReader(j)); err == nil {
+		t.Fatal("expected an error for an edge whose From is not a declared node, got nil")
+	}
+	// The same edge with From declared loads fine.
+	const ok = `{"nodes":[{"fqn":"svc.Ghost","sig":"func()"},{"fqn":"svc.B","sig":"func()"}],"edges":[{"from":"svc.Ghost","to":"svc.B"}],"blind_spots":[]}`
+	if _, err := Load(strings.NewReader(ok)); err != nil {
+		t.Errorf("edge from a declared node should load, got %v", err)
+	}
+}
+
 // A graph carrying flowmap's recorded algo/caveats must round-trip (the schema
 // must accept the provenance keys it now emits), and the substrate line must
 // echo them. An empty algo reads as "unrecorded", never as a substrate (R3).

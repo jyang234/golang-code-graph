@@ -269,6 +269,20 @@ func Discover(prog *ssabuild.Program, registrars []Registrar, declared ...Declar
 					})
 					continue
 				}
+				if name == "" {
+					// Handler resolved, but the registered route is not a compile-time
+					// constant (a dynamic string constStringSegments could not fold, and
+					// the registrar implies no HTTP method to name it). We still root the
+					// handler so its cone stays reachable, but with an empty name graphio
+					// omits it from the entrypoint surface — so without this disclosure
+					// the route would vanish from Entrypoints, the frontier's route
+					// universe, and RouteEntrypointCount's denominator silently (M-35).
+					res.BlindSpots = append(res.BlindSpots, BlindSpot{
+						Registrar: pkg + "." + fname,
+						Pos:       posOf(call),
+						Detail:    "handler resolved but the registered route is not a compile-time constant",
+					})
+				}
 				add(handler, reg.Kind, name)
 			}
 		}
@@ -477,8 +491,9 @@ func isHandlerArg(v ssa.Value) bool {
 // concatenation, eliding non-constant operands. A single string constant is
 // returned verbatim; `baseURL + "/loan-application/{id}"` (a BinOp with a
 // non-constant left operand) yields "/loan-application/{id}". A fully dynamic
-// route yields "" (and is disclosed as a blind spot upstream, like any
-// unresolvable registration).
+// route yields "": when that leaves the registration nameless (no HTTP method to
+// name it either), resolveRegistration's caller records a blind spot so the entry
+// is disclosed rather than silently dropped from the entrypoint surface (M-35).
 func constStringSegments(v ssa.Value) string {
 	switch t := v.(type) {
 	case *ssa.Const:

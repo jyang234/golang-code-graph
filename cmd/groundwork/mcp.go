@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -215,6 +216,16 @@ func cmdMCP(args []string) error {
 		// The E4 measurement apparatus: a deterministic transcript of tool
 		// calls, one JSON line each, for analyzing how an agent actually used
 		// the surface during a drill.
+		// The log is O_APPEND, so a server restart writes on top of a prior run's
+		// transcript. Per-process session ids restarting at 1 would then collide with
+		// the earlier run's "1","2",… and silently MERGE unrelated sessions in the E4
+		// evidence (M-34). Continue numbering past the highest session already in the
+		// file: deterministic (a pure function of the existing content — a replayed
+		// drill over an empty/identical log still starts at 1), non-destructive, and
+		// collision-free across restarts.
+		if data, rerr := os.ReadFile(logPath); rerr == nil {
+			fleet.sessionN = maxLoggedSession(data)
+		}
 		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
@@ -416,8 +427,18 @@ func serveMCP(r io.Reader, w io.Writer, fleet *mcpFleet) error {
 			continue
 		}
 		var req rpcRequest
-		if err := json.Unmarshal(line, &req); err != nil || req.ID == nil {
-			continue // malformed or a notification: nothing to answer
+		if err := json.Unmarshal(line, &req); err != nil {
+			// Malformed JSON: a client that sent a request (not a notification)
+			// would hang forever waiting on a response. Answer with a JSON-RPC parse
+			// error and a null id (the id is unrecoverable from unparseable input),
+			// matching the HTTP transport's 400 rather than silently dropping it.
+			if encErr := enc.Encode(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32700, Message: "parse error"}}); encErr != nil {
+				return encErr
+			}
+			continue
+		}
+		if req.ID == nil {
+			continue // a notification: JSON-RPC produces no response
 		}
 		if req.Method == "initialize" {
 			session = fleet.newSession()
@@ -429,11 +450,32 @@ func serveMCP(r io.Reader, w io.Writer, fleet *mcpFleet) error {
 	return sc.Err()
 }
 
+// maxLoggedSession returns the highest session number already recorded in an
+// existing transcript, or 0 for an empty/new log. It parses only the plain-integer
+// session ids this server emits; a non-numeric id (none are written today) is
+// ignored. Used to continue numbering across a restart so session ids never collide
+// on an appended log (M-34).
+func maxLoggedSession(data []byte) int {
+	max := 0
+	for _, m := range sessionIDRe.FindAllSubmatch(data, -1) {
+		if n, err := strconv.Atoi(string(m[1])); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+var sessionIDRe = regexp.MustCompile(`"session":"(\d+)"`)
+
 // newSession issues the next session id and records the boundary in the
 // transcript. Ids are sequential, not random — deterministic, like the rest
 // of the transcript — and they are attribution labels only: the fleet keeps
 // no per-session state. A session that begins and then asks nothing is
 // itself E4 evidence, which is why the boundary is recorded immediately.
+//
+// Numbering continues past any session already present in an appended log
+// (maxLoggedSession, set at startup), so a restart cannot reissue an id the prior
+// run used and merge two runs' sessions in the transcript.
 func (f *mcpFleet) newSession() string {
 	f.logMu.Lock()
 	defer f.logMu.Unlock()

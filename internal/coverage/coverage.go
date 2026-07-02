@@ -135,6 +135,12 @@ func collectOps(s *ir.CanonicalSpan, into map[string]bool) {
 func externalKey(d boundary.ExternalDep, op string) (string, bool) {
 	switch d.Kind {
 	case "http":
+		if d.Peer == "" {
+			// A peerless HTTP dep would build a malformed "HTTP GET " key (a double
+			// space) that no behavioral op key can ever match — a forever-unexercised
+			// noise row. Skip it, matching the ok=false default rather than emit it.
+			return "", false
+		}
 		method, route, _ := strings.Cut(op, " ")
 		parts := []string{"HTTP", method, d.Peer}
 		if route != "" {

@@ -105,6 +105,14 @@ func TestValidateErrors(t *testing.T) {
 		},
 		"reach no name": {Service: "s", Version: 1, MustNotReach: []ReachRule{{From: []string{"a"}, To: []string{"b"}}}},
 		"reach no from": {Service: "s", Version: 1, MustNotReach: []ReachRule{{Name: "r", To: []string{"b"}}}},
+		"dup reach name": {Service: "s", Version: 1, MustNotReach: []ReachRule{
+			{Name: "r", From: []string{"a"}, To: []string{"b"}},
+			{Name: "r", From: []string{"c"}, To: []string{"d"}},
+		}},
+		"dup concurrent-reach name": {Service: "s", Version: 1, NoConcurrentReach: []ConcurrentRule{
+			{Name: "r", To: []string{"b"}},
+			{Name: "r", To: []string{"d"}},
+		}},
 		"negative budget": {
 			Service: "s", Version: 1, IOBudget: &IOBudget{MaxWritesPerRoute: -1},
 		},

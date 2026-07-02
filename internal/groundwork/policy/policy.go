@@ -414,10 +414,19 @@ func (p *Policy) Validate() error {
 			}
 		}
 	}
+	// Rule names are identity: findings carry them and the exceptions audit
+	// attributes suppressed findings to entries by name, so a duplicate name would
+	// merge two distinct rules' provenance. must_pass_through already guards this;
+	// the reach rules must too (each rule kind has its own namespace).
+	reachNames := make(map[string]bool, len(p.MustNotReach))
 	for i, r := range p.MustNotReach {
 		if strings.TrimSpace(r.Name) == "" {
 			return fmt.Errorf("must_not_reach[%d]: name is required", i)
 		}
+		if reachNames[r.Name] {
+			return fmt.Errorf("must_not_reach[%d]: duplicate name %q", i, r.Name)
+		}
+		reachNames[r.Name] = true
 		if len(r.From) == 0 || len(r.To) == 0 {
 			return fmt.Errorf("must_not_reach[%d] (%s): from and to are both required", i, r.Name)
 		}
@@ -431,10 +440,15 @@ func (p *Policy) Validate() error {
 			return err
 		}
 	}
+	concNames := make(map[string]bool, len(p.NoConcurrentReach))
 	for i, r := range p.NoConcurrentReach {
 		if strings.TrimSpace(r.Name) == "" {
 			return fmt.Errorf("no_concurrent_reach[%d]: name is required", i)
 		}
+		if concNames[r.Name] {
+			return fmt.Errorf("no_concurrent_reach[%d]: duplicate name %q", i, r.Name)
+		}
+		concNames[r.Name] = true
 		if len(r.To) == 0 {
 			return fmt.Errorf("no_concurrent_reach[%d] (%s): to is required", i, r.Name)
 		}

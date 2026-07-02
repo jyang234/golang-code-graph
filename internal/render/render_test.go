@@ -690,3 +690,24 @@ func TestSystemGraph(t *testing.T) {
 		}
 	}
 }
+
+// TestBrokerServiceMergeDeterministicOnFoldCollision pins M-5: when two service
+// names collapse to the same separator-fold ("order-bus" / "order_bus"), the
+// broker remap target must be a deterministic function of the names, not map
+// iteration order. Sorted last-wins means the lexically-greatest service
+// ("order_bus") owns the fold on every run, so the broker peer "order-bus"
+// always remaps onto it. Under the old map-iteration merge, "order-bus" could
+// win the fold instead, yielding no merge at all (c == p) on some runs.
+func TestBrokerServiceMergeDeterministicOnFoldCollision(t *testing.T) {
+	services := map[string]bool{"order-bus": true, "order_bus": true}
+	brokerPeers := map[string]bool{"order-bus": true}
+	peers := map[string]bool{"order-bus": true}
+
+	for i := 0; i < 64; i++ {
+		got := brokerServiceMerge(services, brokerPeers, peers)
+		if got["order-bus"] != "order_bus" {
+			t.Fatalf("run %d: broker peer merged onto %q, want %q (map-order leak)",
+				i, got["order-bus"], "order_bus")
+		}
+	}
+}

@@ -596,10 +596,17 @@ func corpusDigest(traces []*ir.CanonicalTrace) string {
 // canonicalDigest is the shared digest primitive (mirrors review.canonicalDigest):
 // sha256 over the canonical JSON of a value, so a digest is a pure function of the
 // content and recomputable for verification.
+//
+// It fails LOUD, exactly like its review sibling: canonjson only fails on a value
+// it cannot represent (a channel/func/complex field), which none of the impeach
+// types digested here carry — a failure means the IR is corrupt. Swallowing it to
+// "" would collapse EVERY failing trace onto one shared "" corpus entry, deduping
+// distinct impeachment evidence into one cell (M-30) — a silent fail-open in an
+// otherwise rigorously fail-closed package. Refuse rather than corrupt the corpus.
 func canonicalDigest(v any) string {
 	b, err := canonjson.Marshal(v)
 	if err != nil {
-		return ""
+		panic("impeach: marshal for digest failed on a value assumed always representable (corrupt IR): " + err.Error())
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])

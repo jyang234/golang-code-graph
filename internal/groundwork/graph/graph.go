@@ -479,8 +479,10 @@ func (g *Graph) SQLFoldCaveat() string {
 // out — the field footgun where a vta-proposed policy swept with the rta default
 // produced spurious must_not_reach violations. Naming the mismatch lets a reader
 // treat such a finding as an analyzer artifact rather than a regression. Shared by
-// fitness (as a Caution) and the review gate (as a substrate caveat) so the two
-// surfaces word it identically — the Algo/Caveats provenance discipline (R3).
+// fitness (as a substrate-line caveat via cmdFitness — NOT a Check Finding, which
+// would leak into review's base-vs-branch diff; see TestCheckEmitsNoSubstrateFinding)
+// and the review gate (as a substrate caveat) so the two surfaces word it
+// identically — the Algo/Caveats provenance discipline (R3).
 func SubstrateMismatchCaveat(policyAlgo, graphAlgo string) string {
 	if policyAlgo == "" || graphAlgo == "" || policyAlgo == graphAlgo {
 		return ""
@@ -564,9 +566,22 @@ func Load(r io.Reader) (*Graph, error) {
 	// but an empty Boundary field (or vice versa) is malformed; accepting it lets
 	// the two predicates disagree downstream and mask a real reachable violation as
 	// an "unbindable target" caution (H-5). Refuse here rather than gate on it.
+	nodeSet := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodeSet[n.FQN] = true
+	}
 	for i, e := range g.Edges {
 		if e.IsBoundary() != (e.Boundary != "") {
 			return nil, fmt.Errorf("groundwork/graph: edge %d (%s -> %s) has inconsistent boundary marking: To-prefix=%t but Boundary field=%q", i, e.From, e.To, e.IsBoundary(), e.Boundary)
+		}
+		// Fail-closed decoder invariant: every edge originates at a declared node.
+		// NewIndex keys adjacency on From; an edge whose From is not a node would
+		// silently revoke its To's caller-less "source" status (dropping it out of
+		// the entrypoint:* universe the io_budget / read_only / must_pass_through
+		// rules bind) and inject a non-node FQN into Reaching (M-16). Refuse here
+		// rather than let a malformed producer graph mask a rule.
+		if !nodeSet[e.From] {
+			return nil, fmt.Errorf("groundwork/graph: edge %d (%s -> %s) originates at %q which is not a declared node", i, e.From, e.To, e.From)
 		}
 	}
 	return &g, nil

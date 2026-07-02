@@ -333,8 +333,15 @@ func (a *App) Event(name string, deliver func(ctx context.Context)) *Pending {
 
 // CaptureOptions tune quiescence detection. Zero values fall back to spec
 // defaults (2s quiet, 5s timeout).
+//
+// Fire-and-forget flows MUST declare markers. An async effect (a detached
+// goroutine's span, a late publish) that lands after the root has ended is caught
+// only by a marker or the quiet drain; relying on quiet alone drops an effect that
+// fires after Quiet with Complete=true, and flakes the golden for one that
+// straddles the boundary (M-19). Declare a marker for every late effect the flow
+// is meant to assert.
 type CaptureOptions struct {
-	Markers  []string      // declared expected-exit op keys
+	Markers  []string      // declared expected-exit op keys (required for fire-and-forget effects)
 	Quiet    time.Duration // idle interval required after the last span
 	Timeout  time.Duration // hard deadline before failing loudly
 	MinSpans int           // sanity floor on span count
@@ -368,6 +375,18 @@ func (p *Pending) Capture(opt CaptureOptions) (*capture.CapturedFlow, error) {
 	})
 
 	scoped, root := capture.Scope(spans, p.runID)
+	// Disclose spans that could not be attributed to this run (empty correlation id —
+	// the classic lost-ctx bug where a SUT span is opened from a fresh
+	// context.Background()). Excluding them is the sound direction, but never silently
+	// (M-18). The count MUST be taken over the RAW recorder set (a.collect()), not the
+	// scoped `spans`: `spans` is already Scope-filtered, so every element carries this
+	// run's id and a correlation-less-count over it is trivially zero. Because the
+	// in-process recorder is process-shared, this raw count is recorder-wide — in a
+	// test binary that captures several flows it accumulates across them, so a
+	// non-zero value means "this run produced un-attributable spans somewhere", a
+	// signal to act on, not a per-flow exact count. It is advisory and never reaches a
+	// golden (snapshot equality lives on ir.CanonicalTrace).
+	correlationLess := capture.CorrelationLess(a.collect(), p.runID)
 	cf := &capture.CapturedFlow{
 		Flow:    p.flow,
 		Service: a.service,
@@ -376,12 +395,13 @@ func (p *Pending) Capture(opt CaptureOptions) (*capture.CapturedFlow, error) {
 		// faked), so its captures are INTEGRATION grade — a trustworthy impeachment
 		// witness. It is structurally incapable of "production": that grade can only
 		// come from a real deployment's resource attribute (§12.6).
-		Provenance: capture.CaptureIntegration,
-		Trigger:    p.trigger,
-		Mode:       capture.ModeInProcess,
-		Spans:      scoped,
-		Root:       root,
-		Complete:   complete && root != nil,
+		Provenance:      capture.CaptureIntegration,
+		Trigger:         p.trigger,
+		Mode:            capture.ModeInProcess,
+		Spans:           scoped,
+		Root:            root,
+		Complete:        complete && root != nil,
+		CorrelationLess: correlationLess,
 	}
 	if !cf.Complete {
 		return cf, errTruncated{flow: p.flow}
@@ -416,7 +436,12 @@ func (a *App) collect() []capture.Span {
 
 func (a *App) newRunID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	// A zero run id from a silent rand failure would cross-contaminate scoping (every
+	// span filtered by test.run.id would collide), so fail loud rather than mint a
+	// degenerate id. crypto/rand.Read never partially fills — an error means no bytes.
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("harness: crypto/rand failed generating a run id: " + err.Error())
+	}
 	const hex = "0123456789abcdef"
 	var sb [16]byte
 	for i, x := range b {
@@ -431,8 +456,15 @@ func (a *App) newRunID() string {
 func (a *App) injectedContext(runID string) context.Context {
 	var tid oteltrace.TraceID
 	var sid oteltrace.SpanID
-	_, _ = rand.Read(tid[:])
-	_, _ = rand.Read(sid[:])
+	// A zero trace/span id would make the injected span context invalid (dropped by
+	// the SDK) and break correlation, so fail loud on a rand failure rather than
+	// inject a degenerate context.
+	if _, err := rand.Read(tid[:]); err != nil {
+		panic("harness: crypto/rand failed generating a trace id: " + err.Error())
+	}
+	if _, err := rand.Read(sid[:]); err != nil {
+		panic("harness: crypto/rand failed generating a span id: " + err.Error())
+	}
 	sc := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
 		TraceID:    tid,
 		SpanID:     sid,
@@ -478,6 +510,22 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap exposes the wrapped ResponseWriter so http.ResponseController — and the
+// std-lib paths behind it — can reach the underlying http.Flusher / http.Hijacker /
+// io.ReaderFrom that this shallow wrapper would otherwise mask (M-32). Without it a
+// streaming/SSE or hijacking handler silently takes a different code path under the
+// harness than in production, so the harness would not exercise the real behavior.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Flush forwards to the underlying writer when it is an http.Flusher, so a handler
+// that flushes mid-response (SSE, chunked streaming) is not silently buffered by the
+// wrapper — a direct passthrough for the common case, complementing Unwrap.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // fromOTel maps one finished OTel span into the internal model.
 func fromOTel(s sdktrace.ReadOnlySpan) capture.Span {
 	attrs := map[string]string{}
@@ -490,6 +538,7 @@ func fromOTel(s sdktrace.ReadOnlySpan) capture.Span {
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
 	cs := capture.Span{
+		TraceID:   s.SpanContext().TraceID().String(),
 		ID:        s.SpanContext().SpanID().String(),
 		ParentID:  s.Parent().SpanID().String(),
 		Name:      s.Name(),
@@ -498,6 +547,7 @@ func fromOTel(s sdktrace.ReadOnlySpan) capture.Span {
 		Start:     s.StartTime(),
 		End:       s.EndTime(),
 		Goroutine: goroutine,
+		Links:     linksOf(s.Links()),
 	}
 	switch s.Status().Code {
 	case codes.Ok:
@@ -513,6 +563,28 @@ func fromOTel(s sdktrace.ReadOnlySpan) capture.Span {
 		cs.Status = capture.StatusUnset
 	}
 	return cs
+}
+
+// linksOf maps a span's OTel links (references to causally-related spans, possibly
+// in other traces) into the internal model. A cross-trace FOLLOWS_FROM link is the
+// broker-handoff continuation signal ingest.stitch recovers post-hoc; without it an
+// in-process SUT emulating a broker (new root + link) would silently lose the
+// continuation and contradict the Span.Links doc claim (M-31). Only the link's
+// (TraceID, SpanID) identity is carried — the async-membership signal — not its
+// attributes.
+func linksOf(links []sdktrace.Link) []capture.SpanLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]capture.SpanLink, 0, len(links))
+	for _, l := range links {
+		sc := l.SpanContext
+		out = append(out, capture.SpanLink{
+			TraceID: sc.TraceID().String(),
+			SpanID:  sc.SpanID().String(),
+		})
+	}
+	return out
 }
 
 func kindOf(k oteltrace.SpanKind) ir.Kind {

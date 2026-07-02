@@ -2,6 +2,7 @@ package review
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -545,4 +546,81 @@ func TestVerifyResignedForgeryIsStale(t *testing.T) {
 	if res.Status != Stale {
 		t.Fatalf("re-signed forgery status = %s, want STALE (caught by recomputation)", res.Status)
 	}
+}
+
+// nonZero returns a non-zero value of type t that also serializes to something
+// non-empty under omitempty (a slice gets one element, a pointer is allocated and
+// filled), so setting a field to it necessarily changes the canonical JSON — unless
+// the field is excluded from marshaling entirely (json:"-"), which is exactly what
+// the digest-coverage self-check must catch.
+func nonZero(t reflect.Type) reflect.Value {
+	switch t.Kind() {
+	case reflect.String:
+		return reflect.ValueOf("x").Convert(t)
+	case reflect.Bool:
+		return reflect.ValueOf(true).Convert(t)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return reflect.ValueOf(int64(1)).Convert(t)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return reflect.ValueOf(uint64(1)).Convert(t)
+	case reflect.Slice:
+		s := reflect.MakeSlice(t, 1, 1)
+		s.Index(0).Set(nonZero(t.Elem()))
+		return s
+	case reflect.Ptr:
+		p := reflect.New(t.Elem())
+		p.Elem().Set(nonZero(t.Elem()))
+		return p
+	case reflect.Struct:
+		v := reflect.New(t).Elem()
+		for i := 0; i < t.NumField(); i++ {
+			if t.Field(i).PkgPath != "" {
+				continue // unexported: not part of the marshaled surface
+			}
+			v.Field(i).Set(nonZero(t.Field(i).Type))
+		}
+		return v
+	default:
+		panic("nonZero: unhandled kind " + t.Kind().String() + " for " + t.String())
+	}
+}
+
+// assertDigestCoversEveryField perturbs each exported field of typ in turn and
+// asserts the digest moves. A field that does not move it is excluded from the
+// canonical encoding (a json:"-" tag, the pattern impeach.Resolution.Origin already
+// uses) and would therefore silently escape recomputation at the trust boundary.
+func assertDigestCoversEveryField(t *testing.T, typ reflect.Type, digest func(reflect.Value) string) {
+	t.Helper()
+	base := digest(reflect.New(typ).Elem())
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if f.PkgPath != "" {
+			continue // unexported
+		}
+		if f.Name == "Digest" {
+			continue // cleared before hashing by construction, so it cannot move it
+		}
+		v := reflect.New(typ).Elem()
+		v.Field(i).Set(nonZero(f.Type))
+		if digest(v) == base {
+			t.Errorf("field %s (json:%q) does not change the digest — it escapes the digest/verify trust boundary; every exported field must be digest-covered (M-6)", f.Name, f.Tag.Get("json"))
+		}
+	}
+}
+
+// TestArtifactDigestCoversEveryField is the M-6 reflection self-check: every
+// exported Artifact field must be committed to by the digest, so a future
+// json:"-" field cannot silently evade recomputation.
+func TestArtifactDigestCoversEveryField(t *testing.T) {
+	assertDigestCoversEveryField(t, reflect.TypeOf(Artifact{}), func(v reflect.Value) string {
+		return digestOf(v.Interface().(Artifact))
+	})
+}
+
+// TestGateResultDigestCoversEveryField is the M-6 self-check for the gate result's
+// digest — the other artifact recomputed at the trust boundary.
+func TestGateResultDigestCoversEveryField(t *testing.T) {
+	assertDigestCoversEveryField(t, reflect.TypeOf(GateResult{}), func(v reflect.Value) string {
+		return gateDigest(v.Interface().(GateResult))
+	})
 }

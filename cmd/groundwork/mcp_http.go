@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -44,6 +45,12 @@ func serveMCPHTTP(addr, token string, fleet *mcpFleet) error {
 		Addr:              addr,
 		Handler:           fleet.httpHandler(token),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound a slow or stuck client so it cannot pin a connection open: this is a
+		// non-streaming request/response server (no SSE), so generous but finite
+		// whole-request and idle deadlines are safe and close the slowloris footgun.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -105,8 +112,15 @@ func (f *mcpFleet) httpHandler(token string) http.Handler {
 			return
 		}
 		if token != "" {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			// Require the Bearer scheme explicitly (a bare token without it is
+			// rejected), then compare SHA-256 digests rather than the raw tokens:
+			// the digests are fixed-length, so ConstantTimeCompare never
+			// short-circuits on a length mismatch — which would leak the token's
+			// length through timing.
+			presented, hasScheme := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			want := sha256.Sum256([]byte(token))
+			got := sha256.Sum256([]byte(presented))
+			if !hasScheme || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return

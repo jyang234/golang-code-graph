@@ -300,6 +300,44 @@ func TestConcurrentSameOpDeterministicOrder(t *testing.T) {
 	}
 }
 
+// TestEqualStartSiblingsUnorderedNotIDSequence pins M-3: two zero-duration
+// siblings at the same caller-clock instant, with no goroutine signal, cannot be
+// ordered by a reliable happens-before. The in-process path must present them as a
+// single Unordered group whose byte output does not depend on the run-random span
+// id — not as two sequential groups sequenced by that id.
+func TestEqualStartSiblingsUnorderedNotIDSequence(t *testing.T) {
+	// Two zero-duration children (Start == End) at the same instant on goroutine 0:
+	// overlaps() is false (a.Start < b.End requires a.Start < b.Start), so they take
+	// the non-concurrent path where the old code sequenced them by span id.
+	build := func(firstID, secondID string) *ir.CanonicalTrace {
+		spans := []capture.Span{
+			{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+				Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"}},
+			{ID: firstID, ParentID: "root", Kind: ir.KindClient, Start: ms(0, 5), End: ms(0, 5),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO items (id) VALUES (1)"}},
+			{ID: secondID, ParentID: "root", Kind: ir.KindClient, Start: ms(0, 5), End: ms(0, 5),
+				Attrs: map[string]string{"db.system": "postgres", "db.statement": "DELETE FROM sessions"}},
+		}
+		return mustCanon(t, capture.CapturedFlow{Flow: "f", Service: "s", Spans: spans, Root: &spans[0], Complete: true})
+	}
+
+	tr := build("a", "z")
+	if n := len(tr.Root.Children); n != 1 {
+		t.Fatalf("want one child group (an unordered pair), got %d: %+v", n, tr.Root.Children)
+	}
+	g := tr.Root.Children[0]
+	if !g.Unordered || g.Concurrent {
+		t.Fatalf("equal-start unorderable siblings must be Unordered (not sequential/concurrent): %+v", g)
+	}
+	if len(g.Members) != 2 {
+		t.Fatalf("want both siblings in the unordered group, got %d", len(g.Members))
+	}
+	// Swapping the two span ids (the run-random dimension) must not move a byte.
+	if a, b := marshal(t, build("a", "z")), marshal(t, build("z", "a")); string(a) != string(b) {
+		t.Errorf("equal-start sibling order follows span id (non-deterministic):\n--- ids a,z ---\n%s\n--- ids z,a ---\n%s", a, b)
+	}
+}
+
 // TestRedaction replaces a configured attribute's volatile value with a
 // placeholder and records the key in the manifest.
 func TestRedaction(t *testing.T) {

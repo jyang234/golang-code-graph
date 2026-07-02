@@ -9,7 +9,8 @@
 //     sorts string-keyed maps at every depth; struct fields keep declaration
 //     order, which is itself deterministic and reads better than alphabetical.
 //   - HTML escaping is disabled, so placeholder values such as "<uuid>" survive
-//     verbatim instead of becoming "<uuid>".
+//     verbatim instead of becoming "<uuid>" (encoding/json escapes
+//     <, >, and & to \u00xx by default).
 //   - Output is indented with two spaces for reviewable diffs and terminated with
 //     a trailing newline for clean git behavior.
 //

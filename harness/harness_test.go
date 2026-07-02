@@ -33,6 +33,39 @@ func happyMarkers() []string {
 	}
 }
 
+// TestCaptureDisclosesCorrelationLessSpan pins the M-18 disclosure end-to-end: a
+// handler that opens a span from a fresh context.Background() (the lost-ctx bug)
+// produces a correlation-less span that Scope excludes from the golden, and the
+// harness must report it via CapturedFlow.CorrelationLess. This is the regression
+// for the bug where the count was taken over the already-scoped set and was
+// therefore always zero.
+func TestCaptureDisclosesCorrelationLessSpan(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately NOT r.Context(): a fresh context carries no correlation
+		// baggage, so this span cannot be attributed to the run.
+		_, span := otel.Tracer("sut").Start(context.Background(), "orphan-work")
+		span.End()
+		w.WriteHeader(http.StatusOK)
+	})
+	app := harness.NewInProcess(t, handler, harness.WithService("svc"))
+	cf, err := app.HTTP("POST", "/x", nil).Capture(harness.CaptureOptions{
+		Quiet:   10 * time.Millisecond,
+		Timeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if cf.CorrelationLess < 1 {
+		t.Errorf("CorrelationLess = %d, want >= 1 — the lost-context span must be disclosed, not silently zero", cf.CorrelationLess)
+	}
+	// The orphan span must not appear in the scoped golden set.
+	for _, s := range cf.Spans {
+		if s.Name == "orphan-work" {
+			t.Error("correlation-less span leaked into the scoped Spans")
+		}
+	}
+}
+
 func TestHTTPCaptureComplete(t *testing.T) {
 	app := harness.NewInProcess(t, instrumentedSUT(0), harness.WithService("loansvc"))
 	cf, err := app.HTTP("POST", "/loan-application", []byte(`{"id":"8412"}`)).Capture(harness.CaptureOptions{

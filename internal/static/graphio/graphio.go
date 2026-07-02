@@ -1160,6 +1160,10 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 		// "boundary:db init" effect (a false write in the canonical IR). The
 		// internal edge is kept when the callee is first-party so init reachability
 		// still propagates; a crossing into stdlib/third-party renders nothing.
+		//
+		// This is a BACKSTOP, not the common path: the render scope normally excludes
+		// package inits, so the guard rarely fires — it keeps the classification
+		// correct if an init ever does enter scope rather than describing live behavior.
 		if scope[callee] {
 			return []Edge{{From: from, To: callee.RelString(nil), Tier: tier, Concurrent: concurrent}}
 		}

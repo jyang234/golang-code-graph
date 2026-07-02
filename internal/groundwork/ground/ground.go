@@ -87,8 +87,9 @@ func For(ix *graph.Index, p *policy.Policy, fqn string) (Card, error) {
 	seen := map[string]bool{}
 	addBlind := func(b graph.BlindSpot) {
 		// Detail is part of the identity: distinct DynamicEffect labels at one site
-		// are distinct disclosures (parity with impact.addBlind).
-		k := b.Kind + "\x00" + b.Site + "\x00" + b.Detail
+		// are distinct disclosures (parity with impact.addBlind). Use the shared
+		// BlindSpot.DedupKey so this dedup can never drift from the canonical one.
+		k := b.DedupKey()
 		if !seen[k] {
 			seen[k] = true
 			c.BlindSpots = append(c.BlindSpots, b)

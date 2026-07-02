@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +106,40 @@ func TestServeMCPSession(t *testing.T) {
 	// second symptom would mis-scope an incident hunt.
 	if isErr, _ := got[10].Result["isError"].(bool); !isErr || !strings.Contains(text(got[10]), "exactly one") {
 		t.Errorf("two-symptom triage must be an isError tool result naming the rule: %q", text(got[10]))
+	}
+}
+
+// TestServeMCPMalformedJSONGetsParseError pins the CLI/server fix: malformed JSON
+// on the stdio transport must get a JSON-RPC -32700 parse error (id null), not be
+// silently dropped — a request-bearing client otherwise hangs. A valid notification
+// (no id) still gets no response.
+func TestServeMCPMalformedJSONGetsParseError(t *testing.T) {
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize"`,          // truncated: unparseable
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`, // notification: no response
+	}, "\n") + "\n"
+	var out strings.Builder
+	fleet := newMCPFleet(map[string]*mcpServer{})
+	if err := serveMCP(strings.NewReader(in), &out, fleet); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *rpcError       `json:"error"`
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one response (parse error only), got %d:\n%s", len(lines), out.String())
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &resp); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != -32700 {
+		t.Errorf("want a -32700 parse error, got %+v", resp.Error)
+	}
+	if string(resp.ID) != "null" {
+		t.Errorf("parse error must carry a null id, got %s", resp.ID)
 	}
 }
 
@@ -259,6 +294,49 @@ func TestMCPTranscriptLog(t *testing.T) {
 	}, "\n") + "\n"
 	if log.String() != want {
 		t.Errorf("transcript bytes:\ngot:\n%swant:\n%s", log.String(), want)
+	}
+}
+
+// TestMaxLoggedSessionContinuesAcrossRestart pins M-34: a server restart appending
+// to an existing transcript must NOT reissue session ids the prior run used, or two
+// runs' sessions merge in the E4 evidence. maxLoggedSession reads the prior high
+// water mark; newSession continues past it.
+func TestMaxLoggedSessionContinuesAcrossRestart(t *testing.T) {
+	// A fresh/empty log starts numbering at 1 (unchanged behavior).
+	if got := maxLoggedSession(nil); got != 0 {
+		t.Fatalf("maxLoggedSession(empty) = %d, want 0", got)
+	}
+	prior := []byte(`{"init":true,"session":"1"}` + "\n" +
+		`{"call":{"name":"ground","arguments":{}},"service":"oblig","session":"2"}` + "\n" +
+		`{"init":true,"session":"3"}` + "\n")
+	if got := maxLoggedSession(prior); got != 3 {
+		t.Fatalf("maxLoggedSession(prior) = %d, want 3", got)
+	}
+
+	// A restarted fleet seeded with that high-water mark issues 4, not a colliding 1.
+	fleet := newMCPFleet(map[string]*mcpServer{})
+	fleet.sessionN = maxLoggedSession(prior)
+	if sid := fleet.newSession(); sid != "4" {
+		t.Errorf("first session after restart = %q, want \"4\" (no collision with prior run)", sid)
+	}
+
+	// Writer↔reader parity: maxLoggedSession must be able to read the session ids
+	// the server actually WRITES, so the two hand-rolled string forms cannot drift
+	// (a silent regex miss would return 0 and reintroduce the M-34 collision). Drive
+	// real sessions through serveMCP into a log, then feed that log back.
+	var log strings.Builder
+	logged := newMCPFleet(map[string]*mcpServer{})
+	logged.log = &log
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"initialize"}`,
+	}, "\n") + "\n"
+	if err := serveMCP(strings.NewReader(in), io.Discard, logged); err != nil {
+		t.Fatal(err)
+	}
+	if got := maxLoggedSession([]byte(log.String())); got != 3 {
+		t.Errorf("maxLoggedSession over real writer output = %d, want 3 — reader/writer session format drifted", got)
 	}
 }
 

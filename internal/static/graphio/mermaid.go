@@ -40,7 +40,9 @@ type MermaidOptions struct {
 	// into denoising for humans.
 	MaxTier int
 
-	// MaxNodes, when > 0, caps how many first-party nodes a single diagram will draw.
+	// MaxNodes, when > 0, caps how many nodes a single diagram will draw — counting
+	// the FULL drawn set (first-party nodes plus the boundary-effect and blind-spot
+	// disclosure nodes), since that is what determines legibility and the host limits.
 	// A real service's whole-graph render is an illegible hairball (and exceeds the
 	// node limits some Mermaid hosts enforce), so above the cap the renderer emits an
 	// INDEX instead — the entry points to scope at with --root — rather than a broken

@@ -36,6 +36,21 @@ func (r *mwReclaimer) resolveSet(slice ssa.Value) ([]*ssa.Function, bool) {
 // sliceFieldVar reports whether slice is loaded from a struct field
 // (`*ssa.UnOp(MUL)` of `*ssa.FieldAddr`, optionally behind re-slices), returning the
 // field's *types.Var so the program-wide store walk can key on field identity.
+// sortFuncsByFQNThenPos orders a recovered function set on intrinsic, run-independent
+// keys so the middleware-edge set is byte-identical across runs (the prime directive).
+// It breaks FQN ties on Pos() because generic instantiations can share a RelString, so
+// the name alone is not a total order — the same tie-break obligations/summaries.go
+// NewSummaries uses. The ONE home for this predicate so the field-store and field-load
+// resolution sites cannot drift (CLAUDE.md one source of truth).
+func sortFuncsByFQNThenPos(fns []*ssa.Function) {
+	sort.Slice(fns, func(i, j int) bool {
+		if a, b := fns[i].RelString(nil), fns[j].RelString(nil); a != b {
+			return a < b
+		}
+		return fns[i].Pos() < fns[j].Pos()
+	})
+}
+
 func sliceFieldVar(slice ssa.Value) (*types.Var, bool) {
 	v := slice
 	for {
@@ -135,9 +150,7 @@ func (r *mwReclaimer) resolveField(fv *types.Var) fieldSet {
 	// ssautil.AllFunctions ranges a map, so the union order is run-dependent; sort on the
 	// intrinsic FQN so the recovered middleware-edge set is byte-identical across runs
 	// (the prime directive — determinism). The SET is already order-independent (a union).
-	sort.Slice(res.funcs, func(i, j int) bool {
-		return res.funcs[i].RelString(nil) < res.funcs[j].RelString(nil)
-	})
+	sortFuncsByFQNThenPos(res.funcs)
 	r.fieldMemo[fv] = res
 	return res
 }
@@ -362,9 +375,7 @@ func (r *mwReclaimer) fieldStoreSet(fv *types.Var) fieldSet {
 	if !ok {
 		res.funcs = nil
 	}
-	sort.Slice(res.funcs, func(i, j int) bool {
-		return res.funcs[i].RelString(nil) < res.funcs[j].RelString(nil)
-	})
+	sortFuncsByFQNThenPos(res.funcs)
 	delete(r.resolving, fv)
 	r.storeMemo[fv] = res
 	return res

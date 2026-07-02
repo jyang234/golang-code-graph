@@ -513,6 +513,9 @@ func Load(b []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.Version < 0 {
+		return fmt.Errorf("flowmap config: version %d must be >= 0", c.Version)
+	}
 	if c.Static.HighFanOutThreshold < 0 {
 		return fmt.Errorf("flowmap config: static.highFanOutThreshold %d must be >= 0", c.Static.HighFanOutThreshold)
 	}
@@ -525,6 +528,12 @@ func (c *Config) validate() error {
 		}
 	}
 	for i, p := range c.Pins {
+		if strings.TrimSpace(p.Identity) == "" {
+			// A pin with no identity glob matches nothing — a silently-disabled pin
+			// (the author meant to force a tier for SOME symbol). Fail closed rather
+			// than let it read as configured.
+			return fmt.Errorf("flowmap config: pins[%d]: identity is required (an empty identity pins nothing)", i)
+		}
 		if p.Tier < 1 || p.Tier > 4 {
 			return fmt.Errorf("flowmap config: pins[%d].tier %d out of range 1..4", i, p.Tier)
 		}
@@ -597,12 +606,20 @@ func (c *Config) validate() error {
 			return fmt.Errorf("flowmap config: static.declaredBlindSpots[%d] (%s): reason is required (the impeachment witness)", i, b.Site)
 		}
 	}
-	// An empty exempt prefix would match every package — silently suppressing the
-	// whole ExternalBoundaryCall disclosure. Fail closed at load rather than blind
-	// the surface by typo.
+	// An empty exempt/trivial prefix is a dead entry: prefixExempt requires a
+	// segment-boundary match, so "" matches NO package (it never equals a non-empty
+	// path, has no trailing slash, and no path starts with "/"). An author who wrote
+	// one meant to exempt/tag SOMETHING, so it is a silent typo that quietly does
+	// nothing — fail closed at load rather than let it read as configured. Both
+	// prefix lists share prefixExempt, so both get the same guard.
 	for i, p := range c.Static.ExternalBoundaryExempt {
 		if strings.TrimSpace(p) == "" {
-			return fmt.Errorf("flowmap config: static.externalBoundaryExempt[%d] is empty; an empty prefix would suppress every external boundary", i)
+			return fmt.Errorf("flowmap config: static.externalBoundaryExempt[%d] is empty; an empty prefix matches nothing (a dead entry — likely a typo)", i)
+		}
+	}
+	for i, p := range c.Static.ExternalBoundaryTrivial {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("flowmap config: static.externalBoundaryTrivial[%d] is empty; an empty prefix matches nothing (a dead entry — likely a typo)", i)
 		}
 	}
 	// An annotation must name the site it decorates and carry a note (the context).
