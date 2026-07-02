@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 )
 
@@ -190,12 +191,12 @@ func Classify(in *Input) *Result {
 		switch {
 		case strings.Contains(e.To, "<dynamic>"):
 			kind := "dynamic-effect"
-			if strings.HasPrefix(label, "bus ") {
+			if strings.HasPrefix(label, boundarylabel.KindBus+" ") {
 				kind = "dynamic-bus"
 			}
 			add(Marker{Kind: kind, Bin: BinA, Site: label, Owner: e.From,
 				ReclaimerHint: "runtime-resolved target — disclose; resolvable only by observation, never statically"})
-		case strings.HasPrefix(label, "db ") && !readableDBVerb(label):
+		case strings.HasPrefix(label, boundarylabel.KindDB+" ") && !readableDBVerb(label):
 			add(Marker{Kind: "opaque-db", Bin: BinB2, Site: label, Owner: e.From,
 				ReclaimerHint: opaqueDBHint(in.Folded, e.From)})
 		}
@@ -458,7 +459,7 @@ func closureParent(fqn string) (string, bool) {
 // is non-constant. Upper-case-and-alphabetic is the discriminator: sqlOpTable
 // upper-cases the verb, while the *ssa.Function fallback name never is.
 func readableDBVerb(label string) bool {
-	verb := strings.TrimPrefix(label, "db ")
+	verb := strings.TrimPrefix(label, boundarylabel.KindDB+" ")
 	if sp := strings.IndexByte(verb, ' '); sp >= 0 {
 		verb = verb[:sp]
 	}

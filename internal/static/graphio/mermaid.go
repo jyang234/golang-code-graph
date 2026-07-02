@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/render"
 	"github.com/jyang234/golang-code-graph/internal/static/blindspots"
 	"github.com/jyang234/golang-code-graph/internal/static/frontier"
@@ -596,10 +597,10 @@ func isBoundary(to string) bool { return strings.HasPrefix(to, "boundary:") }
 func boundaryShape(to string) (label, class string) {
 	label = strings.TrimPrefix(to, "boundary:")
 	switch {
-	case strings.HasPrefix(label, "bus "):
-		return label, "bus"
-	case strings.HasPrefix(label, "db "):
-		return label, "db"
+	case strings.HasPrefix(label, boundarylabel.KindBus+" "):
+		return label, boundarylabel.KindBus
+	case strings.HasPrefix(label, boundarylabel.KindDB+" "):
+		return label, boundarylabel.KindDB
 	default:
 		return label, "external"
 	}
@@ -610,9 +611,9 @@ func boundaryShape(to string) (label, class string) {
 // two flowcharts read with one visual vocabulary.
 func boundaryDelims(class string) (open, close string) {
 	switch class {
-	case "bus":
+	case boundarylabel.KindBus:
 		return "{{", "}}"
-	case "db":
+	case boundarylabel.KindDB:
 		return "[(", ")]"
 	default:
 		return "([", "])"

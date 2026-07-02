@@ -84,14 +84,19 @@ const (
 
 // appendContracted applies keep/lossless-promotion to a Concurrent or Unordered
 // group and appends the survivors to out. Both kinds share this logic (tenet 5):
-// a dropped wrapper's children are promoted into the group only when lossless,
-// i.e. the wrapper's surviving subtree is at most one child-group. A concurrent
-// group holds racing branches and an unordered group holds order-ambiguous ones;
-// neither is an ordered sequence, so a wrapper carrying more than one child-group
-// carries a happens-before sequence that flattening into the group would corrupt
-// (canon §3.3, plan [C3]) — retain such a wrapper rather than corrupt the
-// snapshot. A group that loses all but one member is no longer a race/ambiguity
-// and degrades to a plain sequential group.
+// a dropped wrapper's children are promoted into the group only when lossless.
+// A concurrent group holds racing branches and an unordered group holds
+// order-ambiguous ones; neither is an ordered sequence. So a wrapper is promotable
+// only when its surviving subtree is a SINGLE child-group that flattening neither
+//   - splices a happens-before sequence into the race (>1 child-group), nor
+//   - erases a loop multiplicity ("1..*" → asserted "once" — M-26/R-3), nor
+//   - upgrades an ordering claim (an Unordered child flattened into a Concurrent
+//     parent would assert a race the child only left order-unknown, and a
+//     Concurrent child into an Unordered parent would drop a proven race).
+//
+// Any wrapper failing that test is RETAINED rather than corrupt the snapshot
+// (canon §3.3, plan [C3]). A group that loses all but one member is no longer a
+// race/ambiguity and degrades to a plain sequential group.
 func appendContracted(out []ir.ChildGroup, g ir.ChildGroup, keep func(*ir.CanonicalSpan) bool, kind groupKind) []ir.ChildGroup {
 	members := make([]*ir.CanonicalSpan, 0, len(g.Members))
 	for _, m := range g.Members {
@@ -99,11 +104,15 @@ func appendContracted(out []ir.ChildGroup, g ir.ChildGroup, keep func(*ir.Canoni
 			members = append(members, m)
 			continue
 		}
-		if len(m.Children) <= 1 {
-			for _, cg := range m.Children {
-				members = append(members, cg.Members...)
-			}
-		} else {
+		switch {
+		case len(m.Children) == 0:
+			// The wrapper's entire subtree fell below threshold: it disappears.
+		case len(m.Children) == 1 && promotableIntoGroup(m.Children[0], kind):
+			members = append(members, m.Children[0].Members...)
+		default:
+			// Promoting would splice a sequence, erase a loop marker, or flip an
+			// ordering claim — retain the wrapper so the snapshot keeps asserting
+			// only what it can prove (M-26/R-3).
 			members = append(members, m)
 		}
 	}
@@ -124,6 +133,30 @@ func appendContracted(out []ir.ChildGroup, g ir.ChildGroup, keep func(*ir.Canoni
 		out = append(out, grp)
 	}
 	return out
+}
+
+// promotableIntoGroup reports whether child-group cg can be flattened DIRECTLY
+// into a parent group of the given kind without losing or strengthening any
+// claim. Safe only when cg carries no loop multiplicity (flattening would erase
+// the "1..*" marker — M-26/R-3) AND cg asserts no ordering incompatible with the
+// parent: a plain happens-before step joins the race/ambiguity harmlessly, and a
+// group of the SAME kind merges associatively; but an Unordered group flattened
+// into a Concurrent parent would upgrade "order unknown" to an asserted race, and
+// a Concurrent group into an Unordered parent would drop a proven race.
+func promotableIntoGroup(cg ir.ChildGroup, kind groupKind) bool {
+	if cg.Multiplicity != "" {
+		return false
+	}
+	switch {
+	case !cg.Concurrent && !cg.Unordered:
+		return true // a plain happens-before step
+	case cg.Concurrent && kind == groupConcurrent:
+		return true
+	case cg.Unordered && kind == groupUnordered:
+		return true
+	default:
+		return false
+	}
 }
 
 // withMultiplicity returns cg with the outer loop multiplicity applied when cg

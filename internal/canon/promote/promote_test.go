@@ -227,6 +227,116 @@ func TestSplicedChildInheritsMultiplicity(t *testing.T) {
 	}
 }
 
+// hasMultiplicity reports whether any group in span's subtree carries mult.
+func hasMultiplicity(span *ir.CanonicalSpan, mult string) bool {
+	for _, g := range span.Children {
+		if g.Multiplicity == mult {
+			return true
+		}
+		for _, m := range g.Members {
+			if hasMultiplicity(m, mult) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestConcurrentWrapperKeepsLoopMarker is the R-3 regression: dropping a wrapper
+// whose sole child-group carries a "1..*" loop marker into a CONCURRENT group must
+// NOT flatten the child and discard the marker — that would assert the INSERT ran
+// exactly once where the truth is 1..*, M-26's defect on the C-7 promotion path.
+// The wrapper is retained so the marker survives.
+func TestConcurrentWrapperKeepsLoopMarker(t *testing.T) {
+	root := span("root", 1,
+		conc(
+			span("HTTP GET /a", 1),
+			span("wrapper", 3, seqM("1..*", span("DB postgres INSERT ledger", 1))),
+		),
+	)
+	Filter(root, keepTier1and2)
+
+	if !hasMultiplicity(root, "1..*") {
+		t.Fatalf("loop multiplicity discarded on concurrent promotion: %+v", root.Children)
+	}
+	// The INSERT must not appear as a bare, marker-less DIRECT member of the
+	// concurrent group (which would assert "runs once").
+	for _, g := range root.Children {
+		if !g.Concurrent {
+			continue
+		}
+		for _, m := range g.Members {
+			if m.Op == "DB postgres INSERT ledger" {
+				t.Errorf("INSERT promoted into the concurrent group bare, erasing its 1..* marker: %+v", g)
+			}
+		}
+	}
+}
+
+// TestUnorderedWrapperKeepsLoopMarker is the R-3 regression on the UNORDERED branch
+// (appendContracted is invoked separately per group kind): dropping a wrapper whose
+// sole child-group carries a "1..*" marker into an UNORDERED group must likewise not
+// flatten-and-discard the marker.
+func TestUnorderedWrapperKeepsLoopMarker(t *testing.T) {
+	root := span("root", 1,
+		unord(
+			span("HTTP GET /a", 1),
+			span("wrapper", 3, seqM("1..*", span("DB postgres INSERT ledger", 1))),
+		),
+	)
+	Filter(root, keepTier1and2)
+
+	if !hasMultiplicity(root, "1..*") {
+		t.Fatalf("loop multiplicity discarded on unordered promotion: %+v", root.Children)
+	}
+	for _, g := range root.Children {
+		if !g.Unordered {
+			continue
+		}
+		for _, m := range g.Members {
+			if m.Op == "DB postgres INSERT ledger" {
+				t.Errorf("INSERT promoted into the unordered group bare, erasing its 1..* marker: %+v", g)
+			}
+		}
+	}
+}
+
+// TestConcurrentWrapperKeepsUnorderedChild is the second R-3 sub-case: an Unordered
+// child-group flattened into a Concurrent parent would UPGRADE "order unknown" to
+// an asserted race. The wrapper must be retained so the unordered relationship is
+// preserved, not strengthened.
+func TestConcurrentWrapperKeepsUnorderedChild(t *testing.T) {
+	root := span("root", 1,
+		conc(
+			span("HTTP GET /a", 1),
+			span("wrapper", 3, unord(
+				span("DB postgres INSERT b", 1),
+				span("DB postgres INSERT c", 1),
+			)),
+		),
+	)
+	Filter(root, keepTier1and2)
+
+	// The two INSERTs must still be under an Unordered group somewhere, not hoisted
+	// as direct racing members of the top concurrent group.
+	var foundUnordered bool
+	var walk func(*ir.CanonicalSpan)
+	walk = func(s *ir.CanonicalSpan) {
+		for _, g := range s.Children {
+			if g.Unordered && len(g.Members) == 2 {
+				foundUnordered = true
+			}
+			for _, m := range g.Members {
+				walk(m)
+			}
+		}
+	}
+	walk(root)
+	if !foundUnordered {
+		t.Errorf("unordered child upgraded to a concurrent race on promotion: %+v", root.Children)
+	}
+}
+
 // TestRootNeverDropped guards the invariant that the entry stays even if its tier
 // somehow exceeds the threshold.
 func TestRootNeverDropped(t *testing.T) {

@@ -5,7 +5,10 @@
 // executed under static analysis.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Recipient mirrors the real PII carrier. Secret is declared a SOURCE FIELD by the
 // field-read test.
@@ -182,7 +185,27 @@ func caseGenericSource() {
 	sinkGeneric(GenericSource[int](0))
 }
 
+// R-4: a first-party method whose tainted RETURN is consumed by a THIRD-PARTY
+// caller. SortLeak implements sort.Interface; sort.Sort calls Less from inside the
+// sort package — a foreign frame the analysis cannot descend into — and Less
+// returns a source-tainted value. Return-flow taints only first-party callers, so
+// without the foreign-caller escape Less's taint would propagate nowhere and set no
+// escape → a false NO-FLOW. (Boxing the untainted SortLeak into sort.Interface does
+// NOT escape, so the return-flow is the ONLY escape channel here.) Truth = ABSTAIN.
+type SortLeak []int
+
+func sourceSort() string { return "pii" }
+
+func (s SortLeak) Len() int           { return len(s) }
+func (s SortLeak) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+func (s SortLeak) Less(i, j int) bool { return sourceSort() < "z" }
+
+func caseSortLeak() {
+	sort.Sort(SortLeak{3, 1, 2})
+}
+
 func main() {
+	caseSortLeak()
 	caseDirect()
 	caseRelay()
 	caseReturn()

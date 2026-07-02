@@ -65,6 +65,20 @@ func TestNoHardcodedBoundaryPrefix(t *testing.T) {
 				t.Errorf("%s hardcodes the boundary-label prefix literal %s — use boundarylabel.%s instead", rel, lit, name)
 			}
 		}
+		// Also flag RECOMPOSITION by concatenation: gluing a bare "<kind> " token
+		// onto the namespace (`boundaryPrefix + "db "`) rebuilds DBPrefix/BusPrefix
+		// without ever typing the whole literal, so the byte-exact scan above misses
+		// it — exactly how the graph.Index decoders evaded this guard (R-5). Flag a
+		// `+ "db "` / `+ "bus "` concatenation (with or without a space after +).
+		for _, kind := range []string{boundarylabel.KindDB, boundarylabel.KindBus} {
+			kindLit := strconv.Quote(kind + " ") // "db " / "bus "
+			for _, glue := range []string{"+ " + kindLit, "+" + kindLit} {
+				if strings.Contains(string(src), glue) {
+					rel, _ := filepath.Rel(repoRoot, path)
+					t.Errorf("%s recomposes a boundary-label prefix by concatenation (%s) — use boundarylabel.DBPrefix/BusPrefix instead", rel, glue)
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {

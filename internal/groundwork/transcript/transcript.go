@@ -38,16 +38,30 @@ type Entry struct {
 	IsError bool            `json:"isError,omitempty"`
 }
 
-// Tool extracts the called tool's name from the raw call params.
-func (e Entry) Tool() string {
+// toolName decodes the called tool's name from raw MCP call params. Unknown
+// fields are tolerated (the params carry far more than the name), but malformed
+// JSON is an error the caller MUST surface, never swallow — a swallowed decode
+// skews the very usage counts this package exists to produce (tenet 6).
+func toolName(raw json.RawMessage) (string, error) {
 	var c struct {
 		Name string `json:"name"`
 	}
-	_ = json.Unmarshal(e.Call, &c)
-	if c.Name == "" {
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return "", fmt.Errorf("malformed call params: %w", err)
+	}
+	return c.Name, nil
+}
+
+// Tool extracts the called tool's name from the raw call params. Load has already
+// validated (fail-loud) that every entry's call params decode, so the only case
+// left here is a call that carried no name field — surfaced as "(unnamed)" rather
+// than dropped. A decode error is unreachable for entries Load produced.
+func (e Entry) Tool() string {
+	name, err := toolName(e.Call)
+	if err != nil || name == "" {
 		return "(unnamed)"
 	}
-	return c.Name
+	return name
 }
 
 // Load decodes a transcript, strictly: the format is this toolset's own, so
@@ -77,6 +91,14 @@ func Load(path string) ([]Entry, error) {
 		}
 		if !e.Init && e.Call == nil {
 			return nil, fmt.Errorf("transcript: %s:%d: neither an init marker nor a call", path, lineNo)
+		}
+		// Strictly validate the call params decode HERE (fail-loud), so Tool() never
+		// has to swallow a decode error into a silent "(unnamed)" that would skew the
+		// counts (tenet 6). Init markers carry no call payload and are exempt.
+		if e.Call != nil {
+			if _, err := toolName(e.Call); err != nil {
+				return nil, fmt.Errorf("transcript: %s:%d: %w", path, lineNo, err)
+			}
 		}
 		out = append(out, e)
 	}

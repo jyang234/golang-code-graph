@@ -409,6 +409,117 @@ func NoReassign(s *Store) (err error) {
 }
 `
 
+// escapeReassignSrc mirrors R-1: err is reassigned through an ESCAPE vehicle (a
+// directly-invoked closure that captures err, or &err passed to a non-deferred
+// call). The reassigning store lands in another function's blocks, invisible to
+// the same-function clean analysis, so the pre-R-1 code kept the post-reassignment
+// load "clean" and pruned the genuinely-leaking failure arm → false SATISFIED.
+const escapeReassignSrc = `package fix
+
+type Tx struct{ closed bool }
+type Store struct{ tx *Tx }
+
+func (s *Store) BeginTx() (*Tx, error) { return &Tx{}, nil }
+func (t *Tx) Commit() error            { t.closed = true; return nil }
+func (t *Tx) Rollback() error          { t.closed = true; return nil }
+
+func annotate(err error) error { return err }
+func doWork() error            { return nil }
+func setErr(p *error)          { *p = doWork() }
+
+// Reassignment inside a directly-invoked closure. Must be VIOLATED (tx leaks on
+// the reassigned failure arm).
+func LeakViaClosureReassign(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	run := func() { err = doWork() }
+	run()
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Reassignment via &err escaping into a non-deferred call. Same class, different
+// vehicle. Must be VIOLATED.
+func LeakViaPointerReassign(s *Store) (err error) {
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	setErr(&err)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// The reassigned-err failure arm RELEASES tx, so no concrete leak is witnessed —
+// but the failed-acquire branch still cannot be isolated from the reassignment,
+// so the sound verdict is CANT-PROVE. Pins the abstain arm: deleting the abstain
+// regresses this to false SATISFIED with the rest of the suite still green.
+func ReassignThenRelease(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	err = doWork()
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// Control: a deferred-only capture of err (annotating defer) must NOT trip the
+// escape guard — the ordinary named-result idiom still proves SATISFIED.
+func DeferredCaptureOK(s *Store) (err error) {
+	defer func() { err = annotate(err) }()
+	tx, err := s.BeginTx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return tx.Commit()
+}
+`
+
+// TestEscapeMediatedReassignNotSatisfied is the R-1 regression: an escape-mediated
+// err reassignment must not let a leaking failure arm be pruned, and a
+// deferred-only capture must not be over-abstained.
+func TestEscapeMediatedReassignNotSatisfied(t *testing.T) {
+	fns := buildSSA(t, escapeReassignSrc)
+	rules := []config.ObligationRule{
+		{Name: "tx-must-close", Acquire: "example.com/fix#BeginTx",
+			Release: []string{"example.com/fix#Commit", "example.com/fix#Rollback"}},
+	}
+	fs := Check(rules, fns, "", nil)
+
+	for _, fn := range []string{"LeakViaClosureReassign", "LeakViaPointerReassign"} {
+		f := one(t, fs, fn)
+		if f.Status == Satisfied {
+			t.Errorf("%s = SATISFIED — false proof; an escape-mediated err reassignment "+
+				"let the leaking arm be pruned (R-1): %s", fn, f.Detail)
+		} else if f.Status != Violated {
+			t.Errorf("%s = %s (%s), want VIOLATED (the reassigned failure leaks tx)", fn, f.Status, f.Detail)
+		}
+	}
+
+	if f := one(t, fs, "ReassignThenRelease"); f.Status != CantProve {
+		t.Errorf("ReassignThenRelease = %s (%s), want CANT-PROVE — the reassigned failed-acquire "+
+			"branch cannot be isolated even though both arms release", f.Status, f.Detail)
+	}
+
+	if f := one(t, fs, "DeferredCaptureOK"); f.Status != Satisfied {
+		t.Errorf("DeferredCaptureOK = %s (%s), want SATISFIED — a deferred-only capture must not "+
+			"trip the escape guard", f.Status, f.Detail)
+	}
+}
+
 // TestReassignedErrNotSatisfied is the C-2 regression.
 func TestReassignedErrNotSatisfied(t *testing.T) {
 	fns := buildSSA(t, reassignSrc)

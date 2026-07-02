@@ -1112,8 +1112,13 @@ func (e *EntryAmbiguousError) Error() string {
 }
 
 // spliceDepthCap bounds edgeOf's recursion through chained $bound/$thunk wrappers.
-// Real wrapper chains are at most ~2 deep; the cap only exists so a pathological
-// cycle fails closed (drops the edge) instead of recurring forever.
+// Real wrapper chains are at most ~2 deep (go/ssa wrapper chains do not cycle), so
+// exceeding this cap means a broken invariant, not a legal-but-deep chain. It must
+// fail LOUD (panic), NOT drop the edge: a dropped boundary edge is the fail-OPEN
+// direction for an absence proof — a missing edge reads as "no path" (a false PASS
+// / false NEVER), the worst outcome. A panic on the genuinely-unreachable cycle is
+// the fail-closed choice (CLAUDE.md: the worst outcome is a confidently-wrong silent
+// result, never a crash — so a loud crash is preferable to a silent wrong edge drop).
 const spliceDepthCap = 16
 
 // edgeOf renders graph edges for an SSA call edge: a typed boundary edge for
@@ -1135,10 +1140,11 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 		// inside or below it) connected WITHOUT rendering a synthetic "$bound" node
 		// (C-1). The original call's concurrency is carried onto the spliced edges: a
 		// `go methodValue()` reaches the wrappee concurrently even though the wrapper's
-		// own body calls it directly. depth bounds the (in practice ≤2) wrapper chain so
-		// a pathological cycle fails closed instead of recurring forever.
+		// own body calls it directly. depth bounds the (in practice ≤2) wrapper chain;
+		// exceeding the cap is an impossible cycle in valid go/ssa, so fail LOUD rather
+		// than drop the edge (dropping is fail-OPEN — a missing edge fakes "no path").
 		if depth > spliceDepthCap {
-			return nil
+			panic(fmt.Sprintf("graphio: $bound/$thunk wrapper splice exceeded depth cap %d at %s — cyclic wrapper chain (impossible in valid go/ssa); refusing to drop the edge (fail-open)", spliceDepthCap, from))
 		}
 		var out []Edge
 		for _, oe := range e.Callee.Out {

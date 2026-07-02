@@ -169,6 +169,27 @@ func TestStructCarriedFieldEscapes(t *testing.T) {
 	}
 }
 
+// TestUnconsumedTaintedReturnEscapes is the R-4 regression: a first-party method
+// (SortLeak.Less) whose tainted return is consumed ONLY by a third-party caller
+// (sort's internal Less dispatch) must ESCAPE. In this front-end the call graph
+// does not build dependency bodies, so that foreign consumption manifests as an
+// EMPTY callsTo — indistinguishable from a genuinely-unconsumed return — and both
+// escape (fail closed → ABSTAIN, never a false NO-FLOW). Before the fix the tainted
+// return propagated nowhere and set no escape → a false NO-FLOW.
+func TestUnconsumedTaintedReturnEscapes(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceSort")},
+		Sinks:       []taint.FuncSpec{sink("sinkClean")}, // an unrelated declared sink
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("foreign-caller return: verdict = NO-FLOW — a tainted return consumed by a "+
+			"third-party caller was silently proven clean (R-4); escaped=%v sites=%v", r.Escaped, r.EscapeSites)
+	}
+	if r.Verdict != taint.Abstain || !r.Escaped {
+		t.Errorf("foreign-caller return: verdict = %s escaped=%v, want ABSTAIN with an escape site", r.Verdict, r.Escaped)
+	}
+}
+
 // TestInterfaceArgReachesParam is the C-3 arg→param regression: a tainted argument
 // passed into an interface method must reach the parameter inside the concrete impl
 // (the invoke receiver-offset bug tainted the receiver and missed the real param).

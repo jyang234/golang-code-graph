@@ -63,14 +63,24 @@ func tokenize(raw string) []string {
 				i++
 			}
 		case c == '/' && i+1 < n && raw[i+1] == '*':
-			// Block comment (/* … */): drop to the closing delimiter, or to input
-			// end if unterminated (conservative — an unterminated comment eats the
-			// rest, never leaks it). Same rationale as the line comment (M-24).
+			// Block comment (/* … */): PostgreSQL NESTS block comments, so track the
+			// nesting depth and drop to the matching close (or to input end if
+			// unterminated — conservative, an unterminated comment eats the rest,
+			// never leaks it). A depth-blind scan would stop at the FIRST */ and spill
+			// the outer comment's tail (`/* a /* b */ secret */` → `secret …`) into the
+			// canonical statement — the exact disclosure channel M-24 closes.
 			i += 2
-			for i < n {
-				if raw[i] == '*' && i+1 < n && raw[i+1] == '/' {
+			depth := 1
+			for i < n && depth > 0 {
+				if raw[i] == '/' && i+1 < n && raw[i+1] == '*' {
+					depth++
 					i += 2
-					break
+					continue
+				}
+				if raw[i] == '*' && i+1 < n && raw[i+1] == '/' {
+					depth--
+					i += 2
+					continue
 				}
 				i++
 			}
@@ -122,25 +132,38 @@ func tokenize(raw string) []string {
 				ident.WriteByte(raw[i])
 				i++
 			}
-			toks = append(toks, strings.ToLower(ident.String()))
+			toks = append(toks, emitIdent(ident.String()))
 		case c == '$':
 			// PostgreSQL dollar-quoted string literal ($tag$ … $tag$): consume the
 			// whole body so NO byte inside it survives into the canonical statement,
 			// the same redaction promise this file makes for '-literals (H-1). A bare
 			// $N bind placeholder ($1) is NOT a dollar quote and falls through to the
-			// placeholder run below. (schemadrift.stripSQL strips the same construct;
-			// keep the two in step.)
+			// placeholder run below.
 			if d := dollarQuoteDelim(raw, i); d > 0 {
 				delim := raw[i : i+d]
 				if k := strings.Index(raw[i+d:], delim); k >= 0 {
+					// A well-formed dollar-quoted literal (matching close found): redact
+					// its whole body REGARDLESS of what precedes it, honoring H-1 even
+					// when the literal abuts an identifier byte (x$$secret$$). Requiring a
+					// matching close is what lets an identifier's embedded '$' (a$b$c,
+					// which has no close) fall through below without swallowing the tail.
 					i += d + k + d // consume body AND the closing delimiter
-				} else {
-					i = n // unterminated body: consume the rest, never leak it
+					toks = append(toks, "?")
+					continue
 				}
-				toks = append(toks, "?")
-				continue
+				// No matching close. At a token boundary this is an UNTERMINATED literal
+				// — consume the rest (fail-closed redaction, never leak). Glued to an
+				// identifier byte it is instead an identifier's embedded '$' (a$b$c):
+				// fall through so the tail is NOT swallowed (Table would drift to "").
+				// This token-boundary guard is the parity partner of
+				// schemadrift.stripSQL's isIdentByte(s[i-1]) check; the two stay in step.
+				if i == 0 || !isIdentByte(raw[i-1]) {
+					i = n
+					toks = append(toks, "?")
+					continue
+				}
 			}
-			// Driver placeholder ($1): consume the run.
+			// Driver placeholder ($1) or an identifier-continuation '$': consume the run.
 			i++
 			for i < n && (isIdent(raw[i]) || isDigit(raw[i])) {
 				i++
@@ -237,6 +260,37 @@ func operationAndTable(toks []string) (op, table string) {
 // as bare identifiers, so they must be skipped to reach the real table.
 var updateQualifiers = map[string]bool{"only": true, "low_priority": true, "ignore": true}
 
+// tableIdent returns the table-name value a table-position token carries, and
+// whether the token is a table identifier at all. It accepts a bare lower-case
+// identifier verbatim AND a re-quoted identifier — emitIdent's output for a
+// keyword-spelled or otherwise non-plain name (e.g. `"order"`, `"user"`) — which it
+// unwraps back to the bare name. Without this, a quoted reserved-word table would
+// lose its Table attribution (the token starts with '"', failing isIdent), merging
+// distinct tables under one op key. Returns ok=false for a placeholder ("?"),
+// punctuation, or an upper-cased keyword token.
+func tableIdent(tok string) (string, bool) {
+	if tok == "" {
+		return "", false
+	}
+	if tok[0] == '"' {
+		return unquoteIdent(tok), true
+	}
+	if isIdent(tok[0]) && tok == strings.ToLower(tok) {
+		return tok, true
+	}
+	return "", false
+}
+
+// unquoteIdent reverses emitIdent's re-quoting: it strips the wrapping double
+// quotes and un-doubles any embedded "" back to a single ". The bytes were already
+// lower-cased by emitIdent, so the result matches the bare-identifier form.
+func unquoteIdent(tok string) string {
+	if len(tok) < 2 || tok[0] != '"' || tok[len(tok)-1] != '"' {
+		return tok
+	}
+	return strings.ReplaceAll(tok[1:len(tok)-1], `""`, `"`)
+}
+
 // updateTable returns the target table of an UPDATE, skipping any leading
 // qualifier words so "UPDATE ONLY loans SET ..." yields "loans", not "only".
 func updateTable(toks []string) string {
@@ -245,8 +299,8 @@ func updateTable(toks []string) string {
 		if updateQualifiers[t] {
 			continue
 		}
-		if t != "" && isIdent(t[0]) && t == strings.ToLower(t) {
-			return t
+		if tbl, ok := tableIdent(t); ok {
+			return tbl
 		}
 		break
 	}
@@ -258,9 +312,8 @@ func updateTable(toks []string) string {
 func identAfter(toks []string, after map[string]bool) string {
 	for i := 0; i < len(toks)-1; i++ {
 		if after[toks[i]] {
-			cand := toks[i+1]
-			if cand != "" && isIdent(cand[0]) && cand == strings.ToLower(cand) {
-				return cand
+			if tbl, ok := tableIdent(toks[i+1]); ok {
+				return tbl
 			}
 		}
 	}
@@ -298,4 +351,58 @@ func dollarQuoteDelim(raw string, i int) int {
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 func isIdent(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isIdentByte reports whether c can appear *inside* an identifier. Unlike isIdent
+// it also admits digits and '$' (PostgreSQL allows '$' inside identifiers, never
+// as the first character), so a '$' following one of these is an identifier
+// continuation, not a dollar-quote opener. Kept byte-for-byte in step with
+// schemadrift.isIdentByte (the dollar-quote token-boundary guard on both sides).
+func isIdentByte(c byte) bool {
+	return c == '$' || isIdent(c) || isDigit(c)
+}
+
+// emitIdent turns an unwrapped quoted-identifier's bytes into a token that
+// re-normalizes to ITSELF — the fixed-point property FuzzNormalizeIdempotent
+// enforces and the canonical key depends on. When the lower-cased bytes form a
+// plain identifier that is not a keyword, we emit them bare so a quoted name keys
+// identically to the same name written unquoted (M-24/M-25). Otherwise a bare
+// emit would re-tokenize DIFFERENTLY on the next pass — digits-leading bytes
+// become a number "?", an embedded ' opens a literal, an embedded -- or /* opens
+// a comment that eats the tail, a keyword-spelled name re-upper-cases — which
+// both breaks idempotence AND re-opens the M-24 leak class (the quoted body
+// spills out reinterpreted). Re-quoting (doubling any embedded quote) always
+// round-trips: the second pass unwraps it right back to these same bytes.
+func emitIdent(raw string) string {
+	low := strings.ToLower(raw)
+	if isBareIdent(low) {
+		return low
+	}
+	var b strings.Builder
+	b.Grow(len(low) + 2)
+	b.WriteByte('"')
+	for i := 0; i < len(low); i++ {
+		if low[i] == '"' {
+			b.WriteByte('"') // double an embedded quote so the re-quoted form re-parses
+		}
+		b.WriteByte(low[i])
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// isBareIdent reports whether s (already lower-cased) can be emitted as an
+// unquoted identifier token that re-tokenizes to the identical single token: it
+// must be non-empty, start with an identifier byte (not a digit), contain only
+// identifier/digit bytes, and not be a keyword (which would re-upper-case).
+func isBareIdent(s string) bool {
+	if s == "" || !isIdent(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !isIdent(s[i]) && !isDigit(s[i]) {
+			return false
+		}
+	}
+	return !keywords[s]
 }

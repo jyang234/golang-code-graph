@@ -687,10 +687,13 @@ func deferReleases(d *ssa.Defer, releases []ref) bool {
 //     Each is an SSA register with a single definition, so it is ALWAYS the
 //     acquire error — safe to prune unconditionally.
 //   - clean: loads (`*A`) of an error-carrying alloc A that reaching-definition
-//     analysis proves are reached ONLY by the acquire error (a reassignment to a
-//     foreign value cannot be observed there). Safe to prune. A load NOT in
-//     clean may observe a reassigned value, so pruning it would be unsound —
-//     the walk abstains (CANT-PROVE) instead.
+//     analysis proves are reached ONLY by the acquire error. Safe to prune. A
+//     load NOT in clean may observe a reassigned value, so pruning it would be
+//     unsound — the walk abstains (CANT-PROVE) instead. This holds only while
+//     every reassignment to A is a store the same-function walk can SEE: if A's
+//     address escapes (captured by a directly-invoked closure, or &A passed to a
+//     non-deferred call) a foreign function may reassign A out of view, so those
+//     allocs are excluded from clean wholesale (allocEscapesToForeignStore, R-1).
 type errWebs struct {
 	all    map[ssa.Value]bool
 	direct map[ssa.Value]bool
@@ -733,6 +736,17 @@ func errorValuesOf(acq *ssa.Call) errWebs {
 	if fn != nil {
 		for v := range ew.all {
 			if alloc, ok := v.(*ssa.Alloc); ok {
+				if allocEscapesToForeignStore(alloc) {
+					// A's address flows somewhere a FOREIGN function could reassign it
+					// (a directly-invoked closure capturing A, or &A passed into a
+					// non-deferred call). Such a store lands in another function's
+					// blocks, invisible to acquireCleanLoads' same-function walk, so a
+					// load after it would be wrongly judged clean and let a genuinely-
+					// leaking failure arm be pruned (R-1 — C-2's bug through an escape
+					// vehicle). Leave every load of A out of `clean`: the failure-branch
+					// pruner then abstains rather than prune unsoundly.
+					continue
+				}
 				for ld := range acquireCleanLoads(fn, alloc, ew.direct) {
 					ew.clean[ld] = true
 				}
@@ -846,6 +860,49 @@ func acquireCleanLoads(fn *ssa.Function, A *ssa.Alloc, direct map[ssa.Value]bool
 		}
 	}
 	return clean
+}
+
+// allocEscapesToForeignStore reports whether alloc A's address flows somewhere a
+// FOREIGN function could store to it BEFORE a mid-function load — so that a
+// reassignment of A can happen in blocks acquireCleanLoads (a same-function store
+// walk) never sees. Two vehicles: A captured by a MakeClosure that is INVOKED
+// (not merely deferred), and &A passed as an argument to a non-deferred call.
+// A deferred capture/call runs only at function exit, after every mid-function
+// load, so it cannot dirty an earlier load — which is exactly why the supported
+// named-result + annotating-defer idiom (`defer func(){ err = annotate(err) }()`)
+// is NOT treated as an escape. Fails closed: any consumer of A's address other
+// than a plain load, a local store, or a deferred capture/call counts as escape.
+func allocEscapesToForeignStore(A *ssa.Alloc) bool {
+	refs := A.Referrers()
+	if refs == nil {
+		return false
+	}
+	for _, in := range *refs {
+		switch r := in.(type) {
+		case *ssa.UnOp:
+			// A load (*A); reads A, never stores to it.
+		case *ssa.Store:
+			// `*A = v` is a local store the walk already models. But A appearing as
+			// the stored VALUE (`&err` copied into another cell) escapes.
+			if r.Val == A {
+				return true
+			}
+		case *ssa.MakeClosure:
+			// Reuse the same deferred-only-capture predicate the ownership check uses
+			// (onlyDeferred), so both agree on what "runs only at exit" means.
+			if !onlyDeferred(r) {
+				return true
+			}
+		case *ssa.Defer:
+			// A passed to a deferred call runs at exit — cannot dirty an earlier load.
+		default:
+			// Non-deferred call taking &A, or any other address consumer
+			// (stored into a slice/map/global, sent on a channel…): a foreign store
+			// is reachable. Fail closed.
+			return true
+		}
+	}
+	return false
 }
 
 // failureBranch recognizes `if <acquireErr> != nil` (or == nil) and returns the

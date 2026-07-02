@@ -130,9 +130,27 @@ func TestLoadFailsClosed(t *testing.T) {
 		`{"call":{"name":"x"},"surprise":1}`,
 		`{"service":"loans"}`,
 		`not json`,
+		// A call payload that is not a decodable params object must fail at Load
+		// (fail-loud), not be silently mislabeled "(unnamed)" by Tool() (tenet 6).
+		`{"call":"oops"}`,
+		`{"call":42}`,
 	} {
 		if _, err := Load(write(t, bad)); err == nil {
 			t.Errorf("Load accepted %q", bad)
 		}
+	}
+}
+
+// TestLoadValidatesCallParams pins the R-6/§4 tenet-6 fix: a malformed call
+// payload is rejected at Load time so Tool() never swallows a decode error, while
+// a well-formed call with no name field is still accepted (Tool → "(unnamed)").
+func TestLoadValidatesCallParams(t *testing.T) {
+	// Well-formed object with no name: accepted; Tool reports "(unnamed)".
+	entries, err := Load(write(t, `{"call":{"args":{}}}`))
+	if err != nil {
+		t.Fatalf("Load rejected a well-formed name-less call: %v", err)
+	}
+	if got := entries[0].Tool(); got != "(unnamed)" {
+		t.Errorf("Tool() = %q, want %q for a name-less call", got, "(unnamed)")
 	}
 }

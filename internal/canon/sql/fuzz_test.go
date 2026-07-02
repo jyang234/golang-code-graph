@@ -62,6 +62,14 @@ func FuzzNormalizeIdempotent(f *testing.F) {
 		"'unterminated",
 		"0\x850",      // regression: a non-ASCII byte outside quotes (FuzzNormalizeIdempotent found this)
 		"SELECT café", // UTF-8 identifier outside quotes must round-trip, not grow
+		// R-2 regressions: an unwrapped quoted identifier must not re-tokenize into
+		// something else on the second pass (a number, a keyword, a literal/comment).
+		`"0000000000000000"`,          // digit-only quoted ident (was: → 0000… → ?)
+		`"from"`,                      // keyword-spelled quoted ident (was re-upper-cased)
+		`SELECT "a'b" FROM "c--d"`,    // embedded ' and -- inside quoted idents
+		`SELECT "a/*b" FROM t`,        // embedded /* inside a quoted ident
+		"/* outer /* inner */ x */ 1", // nested block comment must not spill "x"
+		"SELECT a$b$c FROM t",         // '$' continuing an identifier, not a dollar quote
 	} {
 		f.Add(s)
 	}

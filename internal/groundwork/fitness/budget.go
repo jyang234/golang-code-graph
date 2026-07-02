@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/effectkind"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/graph"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/policy"
@@ -242,7 +243,7 @@ func UnclassifiedDBLabel(e graph.Edge) (string, bool) {
 		return "", false
 	}
 	f := strings.Fields(strings.TrimPrefix(e.To, "boundary:"))
-	if len(f) < 2 || f[0] != "db" {
+	if len(f) < 2 || f[0] != boundarylabel.KindDB {
 		return "", false
 	}
 	if op := strings.ToUpper(f[1]); sqlverb.Mutating(op) || op == "SELECT" {
@@ -367,9 +368,9 @@ func IsWrite(e graph.Edge) bool {
 	}
 	op := strings.ToUpper(f[1])
 	switch f[0] {
-	case "db":
+	case boundarylabel.KindDB:
 		return sqlverb.Mutating(op) // SELECT and other reads are not writes
-	case "bus":
+	case boundarylabel.KindBus:
 		return op == "PUBLISH"
 	default: // outbound HTTP: "<peer> <METHOD> <route>"
 		switch op {

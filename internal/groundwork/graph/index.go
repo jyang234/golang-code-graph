@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/groundwork/setutil"
 )
 
@@ -260,7 +261,7 @@ type BusEffect struct {
 // malformed label would read as "no unnamed bus effects here", a false completeness
 // claim. Never guessed.
 func (ix *Index) BusEffects() (effects []BusEffect, dynamic int) {
-	prefix := boundaryPrefix + "bus "
+	prefix := boundarylabel.BusPrefix
 	for _, e := range ix.g.Edges {
 		if !strings.HasPrefix(e.To, prefix) {
 			continue
@@ -307,7 +308,7 @@ type DBEffect struct {
 // "boundary:db" label vocabulary with the schema owner (consumers never re-parse
 // boundary labels themselves).
 func (ix *Index) DBEffects() (effects []DBEffect, unreadable int) {
-	prefix := boundaryPrefix + "db "
+	prefix := boundarylabel.DBPrefix
 	for _, e := range ix.g.Edges {
 		if !strings.HasPrefix(e.To, prefix) {
 			continue

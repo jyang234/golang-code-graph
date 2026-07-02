@@ -23,6 +23,12 @@
 // bodies; taint passed into non-first-party code (other than a declared sink) is an
 // escape, not a silent no-op.
 //
+// The "never a false NO-FLOW" guarantee holds whenever a call graph is supplied
+// (production always does). Its one documented exception is the degraded API-only
+// nil-cg mode: with no graph an interface-dispatched SOURCE cannot be enumerated
+// at its call site and goes un-seeded, so that corner can emit a false NO-FLOW.
+// See Analyze/prepare.
+//
 // Scope (v1, a measured spike — precision is a follow-up, not assumed): no
 // go/pointer; maps/interfaces/channels/closures/reflection are the abstain frontier;
 // the escaped flag is per-analysis (one escape downgrades the whole no-flow claim).
@@ -192,9 +198,12 @@ type prepared struct {
 }
 
 // prepare walks prog's first-party code once and builds the cfg-independent indexes.
-// cg (the RTA/VTA call graph) resolves interface/func-value dispatch; a nil cg
-// leaves invoke sites un-enumerable, which the analysis treats as an escape
-// frontier (fail closed → ABSTAIN, never a false NO-FLOW).
+// cg (the RTA/VTA call graph) resolves interface/func-value dispatch. With a
+// non-nil cg an un-enumerable invoke ARGUMENT escapes (fail closed → ABSTAIN). A
+// nil cg is the API-only degraded mode: invoke sites are un-enumerable, so an
+// interface-dispatched SOURCE goes un-seeded (its call sites resolve to no callee)
+// — a potential false NO-FLOW in that corner. Production always passes a graph;
+// see Analyze.
 func prepare(prog *ssabuild.Program, cg *callgraph.Graph) *prepared {
 	p := &prepared{
 		prog:        prog,
@@ -268,7 +277,9 @@ func resolveSiteCallees(cg *callgraph.Graph) map[ssa.CallInstruction][]*ssa.Func
 // Analyze runs the forward taint analysis over prog's first-party code and returns
 // the trichotomy report. cg (the RTA/VTA call graph) resolves interface/func-value
 // dispatch so a flow through an interface method is not silently proven absent
-// (C-3/C-4); a nil cg makes every invoke site an escape frontier (ABSTAIN).
+// (C-3/C-4). A nil cg is a degraded, API-only mode: invoke argument sites still
+// escape, but an interface-dispatched SOURCE goes un-seeded (a false-NO-FLOW
+// corner) — the production callers always supply a graph.
 func Analyze(prog *ssabuild.Program, cg *callgraph.Graph, cfg Config) Report {
 	return prepare(prog, cg).analyze(cfg)
 }
@@ -590,6 +601,22 @@ func (a *analysis) handleReturn(ret *ssa.Return, v ssa.Value) {
 			return
 		}
 		a.retTainted[fn] = true
+		if len(a.callsTo[fn]) == 0 {
+			// fn returns taint but NO first-party caller the analysis tracks consumes
+			// that result. In this front-end the call graph does not build dependency
+			// bodies, so a return actually consumed by a foreign frame (a
+			// String()/Error()/sort.Interface method dispatched from the stdlib, an
+			// exported function used by a third-party library) is INDISTINGUISHABLE
+			// from a genuinely-unconsumed one — both leave callsTo empty. We cannot
+			// prove the value reaches no sink, so we escape (fail closed → ABSTAIN,
+			// never a false NO-FLOW — R-4), disclosing fn as the escape site. This is
+			// the observable proxy for the review's "escape when a caller outside
+			// callsTo consumes the return"; it over-approximates onto genuinely dead
+			// code too, which only ever downgrades NO-FLOW to ABSTAIN, never hides a
+			// flow. The package doc's "taint into non-first-party code is an escape"
+			// governs return-flow, not just argument-flow.
+			a.escapeFn(fn)
+		}
 		for _, call := range a.callsTo[fn] {
 			if cv := callResult(call); cv != nil {
 				a.taint(cv)
@@ -707,6 +734,16 @@ func (a *analysis) escape(instr ssa.Instruction) {
 	a.escaped = true
 	if p := instr.Parent(); p != nil {
 		a.escapeSites[p.RelString(nil)] = true
+	}
+}
+
+// escapeFn records an escape attributed to fn itself, for the return-flow case
+// where taint leaves first-party view through a foreign caller and there is no
+// first-party instruction to blame (R-4).
+func (a *analysis) escapeFn(fn *ssa.Function) {
+	a.escaped = true
+	if fn != nil {
+		a.escapeSites[fn.RelString(nil)] = true
 	}
 }
 

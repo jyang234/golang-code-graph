@@ -1,16 +1,18 @@
 # Remediation review — 2026-07 audit resolution
 
-> **`ACTIVE`** · verification of the remediation landed for
-> `docs/audit/2026-07-code-quality-audit.md` · reviewed at commit `b1d566b`
-> (merge of PR #89), `make verify` **green** at review time.
+> **`RESOLVED (residuals fixed; some LOWs deferred)`** · verification of the
+> remediation landed for `docs/audit/2026-07-code-quality-audit.md` · reviewed at
+> commit `b1d566b` (merge of PR #89), `make verify` **green** at review time.
 >
 > This document records what an independent adversarial review found when
 > checking each audit finding's fix against the audit's own demands (fix +
-> regression test + comment honesty). It documents **findings only** — no code
-> is changed by this review. Items marked **[reproduced]** were empirically
-> confirmed against HEAD during this review (via a scratch checkout or a
-> `go test -overlay` probe; the repo itself was never modified); items marked
-> **[code-verified]** were confirmed by direct code reading at HEAD.
+> regression test + comment honesty). It originally documented **findings only**.
+> The residual defects (R-1…R-6), the two live §4 tenet violations, and the R-8
+> comment-polarity fix have since been **landed with regression tests**; the
+> plan-integrity discrepancies (§5) are corrected and the deferred LOW/§3 items
+> recorded in `2026-07-remediation-plan.md` → "Remediation-review resolution
+> (2026-07)". Items marked **[reproduced]** were empirically confirmed against
+> HEAD during the review; items marked **[code-verified]** by direct code reading.
 
 ---
 

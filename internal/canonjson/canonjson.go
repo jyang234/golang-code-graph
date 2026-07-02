@@ -8,9 +8,10 @@
 //   - Object keys from Go maps are emitted in sorted order. encoding/json already
 //     sorts string-keyed maps at every depth; struct fields keep declaration
 //     order, which is itself deterministic and reads better than alphabetical.
-//   - HTML escaping is disabled, so placeholder values such as "<uuid>" survive
-//     verbatim instead of becoming "<uuid>" (encoding/json escapes
-//     <, >, and & to \u00xx by default).
+//   - HTML escaping is disabled, so a placeholder value such as "<uuid>" survives
+//     verbatim instead of becoming "\u003cuuid\u003e" — encoding/json escapes
+//     <, >, and & to their \u00xx form by default, which would churn goldens and
+//     make the literals unreadable in a diff.
 //   - Output is indented with two spaces for reviewable diffs and terminated with
 //     a trailing newline for clean git behavior.
 //
