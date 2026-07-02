@@ -16,6 +16,31 @@ func TestGoidNonZeroAndStable(t *testing.T) {
 	}
 }
 
+// recordTB is a TB whose Fatalf records rather than aborts, so the fail-closed
+// branch of the goid self-check is observable in a test.
+type recordTB struct{ fatal string }
+
+func (r *recordTB) Helper()                           {}
+func (r *recordTB) Fatalf(format string, args ...any) { r.fatal = format }
+
+// TestGoidSelfCheckFiresOnParseFailure is the M-1 regression: when the probe
+// reports 0 (a stack-header parse regression), harness construction must fail
+// loudly through TB rather than silently degrade the structural concurrency
+// signal. The healthy case must stay quiet.
+func TestGoidSelfCheckFiresOnParseFailure(t *testing.T) {
+	var broken recordTB
+	failUnlessGoidOK(&broken, false)
+	if broken.fatal == "" {
+		t.Fatal("goid self-check did not fail when the probe returned 0")
+	}
+
+	var healthy recordTB
+	failUnlessGoidOK(&healthy, true)
+	if healthy.fatal != "" {
+		t.Fatalf("goid self-check fired on a working probe: %q", healthy.fatal)
+	}
+}
+
 func TestGoidDistinctPerGoroutine(t *testing.T) {
 	self := goid()
 	var wg sync.WaitGroup

@@ -237,11 +237,83 @@ var errorInterface = types.Universe.Lookup("error").Type().Underlying().(*types.
 // (nil ssa Pkg). It is the single source of truth for package attribution shared
 // by blindspots and obligations — a fn==nil/Pkg==nil/Pkg.Pkg==nil guard so no
 // caller has to re-derive (and drift on) the nil cases.
+//
+// PkgPath keys on fn.Pkg ALONE and is therefore the DISPLAY-attribution predicate
+// (what package a node claims to belong to). For a first-party DECISION that feeds a
+// soundness claim — an absence proof or a blind-spot disclosure — use EffectivePkgPath
+// instead: go/ssa gives shared synthetic functions (generic instances,
+// $bound/$thunk method-value wrappers) a nil fn.Pkg, so PkgPath returns "" for them
+// and a first-party test on it silently severs reachable first-party behavior from
+// the graph with no blind spot (C-1).
 func PkgPath(fn *ssa.Function) string {
 	if fn == nil || fn.Pkg == nil || fn.Pkg.Pkg == nil {
 		return ""
 	}
 	return fn.Pkg.Pkg.Path()
+}
+
+// EffectivePkgPath returns fn's defining package path, resolving the shared
+// synthetic functions go/ssa leaves with a nil fn.Pkg:
+//   - a generic INSTANCE ((*T).M[int], Decode[Application]) carries its package on
+//     its Origin — the uninstantiated generic it was created from;
+//   - a $bound / $thunk method-value wrapper carries it on the real method Object
+//     it wraps.
+//
+// It falls back to "" only for a truly package-less synthetic. This is the ONE
+// function-level package-attribution predicate that MUST be used wherever a
+// first-party decision feeds a soundness claim (firstPartyScope, blindspots,
+// taint.firstPartyFuncs): keying on fn.Pkg alone (PkgPath) is what silently
+// severed reachable first-party generic instances and method-value wrappers from
+// the emitted graph — no node, no edge, no blind spot — a false "no path" (C-1).
+// Over-attribution only costs precision; under-attribution costs soundness.
+func EffectivePkgPath(fn *ssa.Function) string {
+	if p := effectivePkg(fn); p != nil {
+		return p.Path()
+	}
+	return ""
+}
+
+// InstanceDiscriminator returns a run-independent secondary sort key that
+// distinguishes functions sharing a RelString display FQN — chiefly generic
+// INSTANCES, whose display name is documented non-unique. It is the effective
+// package path plus the canonical types.TypeString of each type argument, so two
+// instantiations of one generic (or same-named generics reached in different
+// packages) order deterministically instead of on map-iteration order (M-20).
+// Empty for a non-instance, whose FQN is already unique.
+func InstanceDiscriminator(fn *ssa.Function) string {
+	if fn == nil {
+		return ""
+	}
+	targs := fn.TypeArgs()
+	if len(targs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(EffectivePkgPath(fn))
+	for _, t := range targs {
+		b.WriteByte('\x00')
+		b.WriteString(types.TypeString(t, nil))
+	}
+	return b.String()
+}
+
+func effectivePkg(fn *ssa.Function) *types.Package {
+	if fn == nil {
+		return nil
+	}
+	if fn.Pkg != nil && fn.Pkg.Pkg != nil {
+		return fn.Pkg.Pkg
+	}
+	// Generic instance: the Origin (uninstantiated generic) carries the package.
+	if orig := fn.Origin(); orig != nil && orig != fn && orig.Pkg != nil && orig.Pkg.Pkg != nil {
+		return orig.Pkg.Pkg
+	}
+	// $bound / $thunk wrapper (and other object-backed synthetics): the wrapped
+	// method Object carries the package.
+	if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
+		return obj.Pkg()
+	}
+	return nil
 }
 
 // RelFile renders an absolute source filename as a deterministic, byte-identical-

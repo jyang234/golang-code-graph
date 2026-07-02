@@ -5,6 +5,8 @@
 // executed under static analysis.
 package main
 
+import "fmt"
+
 // Recipient mirrors the real PII carrier. Secret is declared a SOURCE FIELD by the
 // field-read test.
 type Recipient struct {
@@ -91,6 +93,95 @@ func sinkPtr(string) {}
 
 func (p *PtrCarrier) leak() { sinkPtr(p.Token) }
 
+// C-3: taint returned THROUGH an interface (invoke) method. Getter.Get is
+// dispatched dynamically; the concrete getter returns a declared source, so the
+// tainted return must flow through the invoke result to the sink. The old
+// return-flow indexed only STATIC callers, so this was a false NO-FLOW. Truth = FLOW.
+type Getter interface{ Get() string }
+
+type piiGetter struct{}
+
+func (piiGetter) Get() string { return sourceIface() }
+
+func sourceIface() string { return "pii" }
+func sinkIface(string)    {}
+
+func caseIfaceReturn() {
+	var g Getter = piiGetter{}
+	sinkIface(g.Get())
+}
+
+// C-4: a declared SOURCE method invoked via an interface. Provider.Provide IS the
+// declared source; invoked through the interface it must still be seeded — the old
+// seed matched sources only at static call sites, so this read Sources==0 → false
+// NO-FLOW. Truth = FLOW.
+type Provider interface{ Provide() string }
+
+type piiProvider struct{}
+
+func (piiProvider) Provide() string { return "pii" }
+
+func sinkProvide(string) {}
+
+func caseIfaceSource() {
+	var p Provider = piiProvider{}
+	sinkProvide(p.Provide())
+}
+
+// C-5: a struct carrying a tainted field, handed WHOLE to unmodeled code. Storing a
+// source into a field taints (type,field); passing the WHOLE struct to an unmodeled
+// callee (fmt.Println) must ESCAPE, not read as a proven no-flow. Truth = ABSTAIN.
+func sourceCarry() string { return "pii" }
+
+type Carrier struct{ Secret string }
+
+func caseStructCarry() {
+	var c Carrier
+	c.Secret = sourceCarry()
+	fmt.Println(c)
+}
+
+// C-3 (arg→param leg): a tainted ARGUMENT passed into an interface method must
+// reach the parameter inside the concrete impl. go/ssa's invoke Args exclude the
+// receiver while the method's Params[0] IS the receiver, so a naive Args[i]→Params[i]
+// taints the receiver and misses the real parameter. Truth = FLOW.
+type ArgSink interface{ Consume(s string) }
+
+type argImpl struct{}
+
+func (argImpl) Consume(s string) { sinkIfaceArg(s) }
+
+func sourceIfaceArg() string { return "pii" }
+func sinkIfaceArg(string)    {}
+
+func caseIfaceArg() {
+	var a ArgSink = argImpl{}
+	a.Consume(sourceIfaceArg())
+}
+
+// C-3 (func-value return leg): a first-party function reached ONLY as a plain func
+// value (not a method, not a static call) that returns a source — its result at the
+// call site must carry the taint. Truth = FLOW.
+func fetchVal() string      { return sourceFuncVal() }
+func sourceFuncVal() string { return "pii" }
+func sinkFuncVal(string)    {}
+
+func caseFuncValReturn() {
+	var f func() string = fetchVal
+	sinkFuncVal(f())
+}
+
+// C-4 / C-1 (generic source): a declared source that is a first-party GENERIC
+// function. Its concrete callee is an instance with a nil ssa.Pkg and a type-arg
+// name, so a fn.Name()+PkgPath matcher never seeds it. Truth = FLOW.
+func GenericSource[T any](t T) string { return "pii" }
+
+func sinkGeneric(string) {}
+
+func caseGenericSource() {
+	sinkGeneric(GenericSource[int](0))
+}
+
 func main() {
 	caseDirect()
 	caseRelay()
@@ -101,4 +192,10 @@ func main() {
 	caseClean()
 	caseSliceIndex()
 	(&PtrCarrier{}).leak()
+	caseIfaceReturn()
+	caseIfaceSource()
+	caseStructCarry()
+	caseIfaceArg()
+	caseFuncValReturn()
+	caseGenericSource()
 }

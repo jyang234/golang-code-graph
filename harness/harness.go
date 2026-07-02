@@ -93,6 +93,16 @@ var (
 	sharedRecorder *tracetest.SpanRecorder
 	sharedProvider *sdktrace.TracerProvider
 	sharedProp     propagation.TextMapPropagator
+
+	// goidCheckOnce probes goid() exactly once per process; goidOK records whether
+	// the runtime stack header still parses. A regression there (a future Go
+	// stack-format change) would silently degrade every span to Goroutine: 0 and
+	// flip capture.Concurrent onto timing-dependent interval overlap — so
+	// NewInProcess surfaces it loudly through TB rather than minting subtly wrong
+	// concurrency claims. Probed under a Once so the cost is paid once, not per
+	// harness.
+	goidCheckOnce sync.Once
+	goidOK        bool
 )
 
 func install() {
@@ -109,6 +119,21 @@ func install() {
 	})
 }
 
+// failUnlessGoidOK fails closed through TB when the goroutine-id probe came back
+// zero: without that signal the structural concurrency claim degrades to
+// timing-dependent interval overlap, so a silently-wrong Concurrent verdict could
+// reach a golden. Refuse to construct a harness rather than mint one. Split out
+// from NewInProcess so the fail-closed branch is unit-testable without a broken
+// runtime.
+func failUnlessGoidOK(t TB, ok bool) {
+	t.Helper()
+	if !ok {
+		t.Fatalf("harness: goid() self-check failed (returned 0) — the runtime stack " +
+			"header no longer parses, so the structural concurrency signal is unavailable; " +
+			"see harness/goid.go")
+	}
+}
+
 // NewInProcess returns a harness over handler (the service's real router) backed
 // by the process-shared in-memory OTel pipeline (installed once). The
 // service-under-test, obtaining its tracer from otel.Tracer, emits into the
@@ -117,6 +142,8 @@ func install() {
 // stamped onto the canonical trace), independent of the shared provider.
 func NewInProcess(t TB, handler http.Handler, opts ...Option) *App {
 	t.Helper()
+	goidCheckOnce.Do(func() { goidOK = goid() != 0 })
+	failUnlessGoidOK(t, goidOK)
 	o := options{service: "service"}
 	for _, fn := range opts {
 		fn(&o)

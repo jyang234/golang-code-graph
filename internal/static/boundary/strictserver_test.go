@@ -84,7 +84,9 @@ func TestStrictServerForwardStarvation(t *testing.T) {
 	}
 
 	// The three wrapper methods are the HTTP entrypoints, and each is a starved
-	// root: a graph root (no caller) whose forward cone is just itself.
+	// root: a graph root (no caller) whose forward cone is just itself. (C-1 splices
+	// the $bound registration wrappers away rather than rendering them, so the real
+	// method stays the caller-less root — the same shape this test always pinned.)
 	wrapperRe := regexp.MustCompile(`ServerInterfaceWrapper\)\.[A-Za-z]+$`)
 	wrappers := 0
 	for fqn := range nodes {

@@ -259,10 +259,15 @@ func TestTxClosureReclaimsGenericWrapper(t *testing.T) {
 	assertReclaimed(t, got, "ValueIfaceCommand).Handle")
 }
 
-// Integration: folding TxClosure's edges into the graph makes the orphaned write
-// VISIBLE from the command — the false-clean fix. Before reclaim, the forward reach of
-// CreateSubscriptionCommand.Handle never crosses its closure, so the INSERT is invisible;
-// after --reclaim it is reachable. base goldens are unaffected because Build never folds.
+// Integration: the TxClosure reclaimer folds a PRECISE, provenance-tagged
+// (via=tx-closure) edge from the command to its own closure. The write is reachable
+// from CreateSubscriptionCommand.Handle in the BASE graph now that C-1 no longer
+// severs the nil-Pkg generic runner instance (RunInTxResult[int]) that carries the
+// path — before C-1, that instance was dropped from scope, so the base graph was
+// false-clean and this reclaimer was the only thing that recovered the write. C-1
+// closes that at the source (a sound RTA over-approximation through the generic
+// runner); the reclaimer's remaining contribution is the exact closure edge with its
+// provenance, which base goldens still never fold.
 func TestTxClosureMakesOrphanedWriteVisible(t *testing.T) {
 	res := analyzeFixture(t, "txrunnersvc")
 	g, err := graphio.Build(res, "")
@@ -271,9 +276,6 @@ func TestTxClosureMakesOrphanedWriteVisible(t *testing.T) {
 	}
 
 	const handle = "(*example.com/txrunnersvc.CreateSubscriptionCommand).Handle"
-	if reachesInsert(g, handle) {
-		t.Fatalf("precondition: the generic-wrapper write should be orphaned (invisible) before reclaim")
-	}
 
 	added := graphio.ApplyReclaimers(g, res)
 	if added == 0 {
@@ -289,7 +291,7 @@ func TestTxClosureMakesOrphanedWriteVisible(t *testing.T) {
 		t.Error("reclaimed edges must carry their via=tx-closure provenance in the graph")
 	}
 	if !reachesInsert(g, handle) {
-		t.Error("after --reclaim the command must reach its orphaned INSERT (the false-clean fix)")
+		t.Error("the command must reach its INSERT after reclaim (the write must never be false-clean)")
 	}
 }
 

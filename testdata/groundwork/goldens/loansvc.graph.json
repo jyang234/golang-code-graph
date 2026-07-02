@@ -283,6 +283,16 @@
       "end_line": 25
     },
     {
+      "fqn": "example.com/loansvc/internal/codec.Decode[example.com/loansvc/internal/origination.Application]",
+      "sig": "func codec.Decode[T any](r io.Reader) (T, error)",
+      "tier": 3,
+      "package": "example.com/loansvc/internal/codec",
+      "fallible": true,
+      "file": "internal/codec/decode.go",
+      "line": 14,
+      "end_line": 18
+    },
+    {
       "fqn": "example.com/loansvc/internal/consumer.New",
       "sig": "func consumer.New(loans *store.Loans) *consumer.Payments",
       "tier": 3,
@@ -408,6 +418,11 @@
     },
     {
       "from": "(*example.com/loansvc/internal/eventbus.Bus).Publish",
+      "to": "(*example.com/loansvc/internal/consumer.Payments).OnSettled",
+      "tier": 2
+    },
+    {
+      "from": "(*example.com/loansvc/internal/eventbus.Bus).Publish",
       "to": "example.com/loansvc/internal/eventbus.tracer",
       "tier": 3
     },
@@ -415,6 +430,11 @@
       "from": "(*example.com/loansvc/internal/handler.App).Create",
       "to": "(*example.com/loansvc/internal/origination.Evaluator).Evaluate",
       "tier": 2
+    },
+    {
+      "from": "(*example.com/loansvc/internal/handler.App).Create",
+      "to": "example.com/loansvc/internal/codec.Decode[example.com/loansvc/internal/origination.Application]",
+      "tier": 3
     },
     {
       "from": "(*example.com/loansvc/internal/handler.App).Status",

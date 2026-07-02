@@ -230,8 +230,19 @@ func checkRelease(rule *config.ObligationRule, fn *ssa.Function, baseDir string,
 			} else {
 				switch r := leakPath(fn, acq, releases, sums, relKey); {
 				case r.leaked:
+					// A concretely-witnessed leak wins over the reassignment abstain: a
+					// leak found on a path past the reassignment is a genuine leak (the
+					// resource is held there — a failed acquire's own arm was already
+					// pruned), so VIOLATED is the sound, actionable verdict, not a
+					// demotion to CANT-PROVE that a violation-only gate would pass (C-2).
 					f.Status = Violated
 					f.Detail = fmt.Sprintf("exit at %s reachable without release", site(fn, r.exit, baseDir, 0))
+				case r.abstain != "":
+					// No leak witnessed, but a reassigned acquire error means the
+					// failed-acquire branch could not be isolated, so SATISFIED is not
+					// sound either (C-2). Disclose the blind spot.
+					f.Status = CantProve
+					f.Detail = r.abstain
 				case r.unknown != "":
 					f.Status = CantProve
 					f.Detail = fmt.Sprintf("release may occur inside %s — beyond proof; name it as a release ref to assert it", r.unknown)
@@ -429,6 +440,7 @@ type leakResult struct {
 	exit    token.Pos // valid iff leaked
 	leaked  bool
 	unknown string // non-empty: a handoff callee the walk could not classify
+	abstain string // non-empty: a failure-branch test on a reassigned err (C-2) — CANT-PROVE
 }
 
 // leakPath walks the CFG forward from the acquire, looking for a function exit
@@ -449,7 +461,7 @@ type leakResult struct {
 // reported only off a path whose handoffs were all provably non-releasing, so
 // the witness is never weaker than the intraprocedural one (D-CX2).
 func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref, sums *Summaries, relKey targetKey) leakResult {
-	errVals := errorValuesOf(acq)
+	ew := errorValuesOf(acq)
 
 	var web map[ssa.Value]bool
 	if sums != nil {
@@ -555,13 +567,26 @@ func leakPath(fn *ssa.Function, acq *ssa.Call, releases []ref, sums *Summaries, 
 				case *ssa.Panic:
 					return exitPos(fn, in), true
 				case *ssa.If:
-					if skip, ok := failureBranch(in, errVals); ok {
-						next := in.Block().Succs[1-skip]
-						if !visited[next] {
-							visited[next] = true
-							return walk(next, 0)
+					if skip, matched, ok := failureBranch(in, ew.all); ok {
+						// Prune only when the tested value is provably the acquire
+						// error (a direct SSA alias, or an alloc load reaching-analysis
+						// proved is reached only by the acquire). A load that could
+						// observe a reassigned err (C-2) must not be pruned: doing so
+						// silently drops a genuinely-leaking branch. We cannot tell
+						// which store the load observes, so abstain (CANT-PROVE).
+						if !ew.direct[matched] && !ew.clean[matched] {
+							if res.abstain == "" {
+								res.abstain = "acquire error is reassigned before a failure check — the failed-acquire branch cannot be isolated from a later leak; split the error variables or name the release ref to assert it"
+							}
+							// fall through: treat as an ordinary branch (both arms explored)
+						} else {
+							next := in.Block().Succs[1-skip]
+							if !visited[next] {
+								visited[next] = true
+								return walk(next, 0)
+							}
+							return token.NoPos, false
 						}
-						return token.NoPos, false
 					}
 				}
 			}
@@ -648,62 +673,209 @@ func deferReleases(d *ssa.Defer, releases []ref) bool {
 	return false
 }
 
-// errorValuesOf collects every SSA value aliasing the acquire's error
-// result(s) — the call itself for a single-result error acquire, the
-// error-typed Extracts for a tuple, each expanded through valueWeb so the
-// failure-branch test is recognized even when err is a named result, is
-// captured by an annotating defer (stored to an alloc and reloaded), or
-// merges through a phi. The narrow direct-Extract version produced false
-// VIOLATED on exactly those idioms.
-func errorValuesOf(acq *ssa.Call) map[ssa.Value]bool {
-	out := map[ssa.Value]bool{}
-	sig := acq.Call.Signature()
-	if sig == nil || sig.Results().Len() == 0 {
-		return out
-	}
-	if sig.Results().Len() == 1 {
-		if isErrorType(sig.Results().At(0).Type()) {
-			for v := range valueWeb(acq) {
-				out[v] = true
-			}
-		}
-		return out
-	}
-	refs := acq.Referrers()
-	if refs == nil {
-		return out
-	}
-	for _, in := range *refs {
-		if ex, ok := in.(*ssa.Extract); ok && isErrorType(sig.Results().At(ex.Index).Type()) {
-			for v := range valueWeb(ex) {
-				out[v] = true
-			}
-		}
-	}
-	return out
+// errWebs describes the acquire error's SSA footprint for failure-branch
+// pruning. The three sets exist because pruning the wrong branch is the C-2
+// false-SATISFIED bug: a reassigned `err` must not let a genuinely-leaking
+// `if err != nil` be pruned as if it were the acquire's own failure test.
+//
+//   - all: every value aliasing the acquire error, INCLUDING loads of any alloc
+//     the error is stored into. This is only for RECOGNIZING that an `if` tests
+//     an error value at all (the named-result / annotating-defer idiom reloads
+//     err from an alloc, so the direct set alone misses those tests → the old
+//     narrow version produced false VIOLATED on that idiom).
+//   - direct: aliases reached without crossing an alloc (Extract/Phi/Convert…).
+//     Each is an SSA register with a single definition, so it is ALWAYS the
+//     acquire error — safe to prune unconditionally.
+//   - clean: loads (`*A`) of an error-carrying alloc A that reaching-definition
+//     analysis proves are reached ONLY by the acquire error (a reassignment to a
+//     foreign value cannot be observed there). Safe to prune. A load NOT in
+//     clean may observe a reassigned value, so pruning it would be unsound —
+//     the walk abstains (CANT-PROVE) instead.
+type errWebs struct {
+	all    map[ssa.Value]bool
+	direct map[ssa.Value]bool
+	clean  map[ssa.Value]bool
 }
 
-// failureBranch recognizes `if <acquireErr> != nil` (or == nil) and returns
-// the index of the failed-acquire successor (the arm where the error is
-// non-nil), which the walk must not follow: a failed acquire holds no resource.
-func failureBranch(ifInstr *ssa.If, errVals map[ssa.Value]bool) (skipSucc int, ok bool) {
+// errorValuesOf collects the acquire error's SSA footprint (see errWebs): the
+// call itself for a single-result error acquire, the error-typed Extracts for a
+// tuple, each expanded through valueWeb (for `all`) and directWeb (for `direct`),
+// plus per-alloc reaching-definition analysis for `clean`.
+func errorValuesOf(acq *ssa.Call) errWebs {
+	ew := errWebs{all: map[ssa.Value]bool{}, direct: map[ssa.Value]bool{}, clean: map[ssa.Value]bool{}}
+	sig := acq.Call.Signature()
+	if sig == nil || sig.Results().Len() == 0 {
+		return ew
+	}
+	var roots []ssa.Value
+	if sig.Results().Len() == 1 {
+		if isErrorType(sig.Results().At(0).Type()) {
+			roots = append(roots, acq)
+		}
+	} else if refs := acq.Referrers(); refs != nil {
+		for _, in := range *refs {
+			if ex, ok := in.(*ssa.Extract); ok && isErrorType(sig.Results().At(ex.Index).Type()) {
+				roots = append(roots, ex)
+			}
+		}
+	}
+	for _, root := range roots {
+		for v := range valueWeb(root) {
+			ew.all[v] = true
+		}
+		for v := range directWeb(root) {
+			ew.direct[v] = true
+		}
+	}
+	// Any alloc that appears in the full web is one the error was stored into.
+	// Mark the loads of it that are provably reached only by the acquire error.
+	fn := acq.Parent()
+	if fn != nil {
+		for v := range ew.all {
+			if alloc, ok := v.(*ssa.Alloc); ok {
+				for ld := range acquireCleanLoads(fn, alloc, ew.direct) {
+					ew.clean[ld] = true
+				}
+			}
+		}
+	}
+	return ew
+}
+
+// directWeb returns the acquire error's aliases reachable WITHOUT crossing an
+// alloc: tuple extracts, phis, and value-preserving conversions. Unlike valueWeb
+// it deliberately does NOT follow a Store into an Alloc and back out through its
+// loads — those loads may observe a later reassignment, and conflating them with
+// the acquire error is exactly what C-2 exploited. Each value here is an SSA
+// register with a single definition, so it is always the acquire error.
+func directWeb(root ssa.Value) map[ssa.Value]bool {
+	web := map[ssa.Value]bool{}
+	var add func(v ssa.Value)
+	add = func(v ssa.Value) {
+		if web[v] {
+			return
+		}
+		web[v] = true
+		refs := v.Referrers()
+		if refs == nil {
+			return
+		}
+		for _, in := range *refs {
+			switch r := in.(type) {
+			case *ssa.Extract, *ssa.Phi, *ssa.MakeInterface, *ssa.ChangeType,
+				*ssa.ChangeInterface, *ssa.Convert, *ssa.TypeAssert:
+				add(r.(ssa.Value))
+			}
+		}
+	}
+	add(root)
+	return web
+}
+
+// acquireCleanLoads computes, by a forward must-analysis over fn's CFG, the loads
+// (`*A`) of error-carrying alloc A that are reached ONLY by the acquire error.
+// A store `*A = v` sets the value to "acquire" when v is a direct alias of the
+// acquire error, leaves it unchanged when v is a self-restore (`*A = *A`, the
+// named-result mechanism re-stores on every `return`), and sets it to "foreign"
+// otherwise (a genuine reassignment). A load is clean iff, at that program point,
+// A definitely still holds the acquire error on every path. Function entry seeds
+// "foreign" (A holds its zero value, not the acquire error); the block meet is
+// AND, so a load after any reassignment on any reaching path is not clean.
+func acquireCleanLoads(fn *ssa.Function, A *ssa.Alloc, direct map[ssa.Value]bool) map[ssa.Value]bool {
+	isSelfLoad := func(v ssa.Value) bool {
+		u, ok := v.(*ssa.UnOp)
+		return ok && u.Op == token.MUL && u.X == A
+	}
+	if len(fn.Blocks) == 0 {
+		return nil
+	}
+	// storeState applies one store's transfer; returns the new "holds acquire" bit.
+	storeState := func(st *ssa.Store, cur bool) bool {
+		switch {
+		case direct[st.Val]:
+			return true
+		case isSelfLoad(st.Val):
+			return cur // transparent: re-stores whatever was there
+		default:
+			return false // reassigned to a foreign value
+		}
+	}
+	transfer := func(b *ssa.BasicBlock, in bool) bool {
+		state := in
+		for _, ins := range b.Instrs {
+			if st, ok := ins.(*ssa.Store); ok && st.Addr == A {
+				state = storeState(st, state)
+			}
+		}
+		return state
+	}
+	entryClean := make(map[*ssa.BasicBlock]bool, len(fn.Blocks))
+	entry0 := fn.Blocks[0]
+	for _, b := range fn.Blocks {
+		entryClean[b] = b != entry0 // optimistic for the AND meet; entry seeded foreign
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, b := range fn.Blocks {
+			in := false
+			if b != entry0 && len(b.Preds) > 0 {
+				in = true
+				for _, p := range b.Preds {
+					if !transfer(p, entryClean[p]) {
+						in = false
+						break
+					}
+				}
+			}
+			if in != entryClean[b] {
+				entryClean[b] = in
+				changed = true
+			}
+		}
+	}
+	clean := map[ssa.Value]bool{}
+	for _, b := range fn.Blocks {
+		state := entryClean[b]
+		for _, ins := range b.Instrs {
+			if u, ok := ins.(*ssa.UnOp); ok && u.Op == token.MUL && u.X == A && state {
+				clean[u] = true
+			}
+			if st, ok := ins.(*ssa.Store); ok && st.Addr == A {
+				state = storeState(st, state)
+			}
+		}
+	}
+	return clean
+}
+
+// failureBranch recognizes `if <acquireErr> != nil` (or == nil) and returns the
+// index of the failed-acquire successor (the arm where the error is non-nil),
+// which the walk must not follow: a failed acquire holds no resource. It also
+// returns the matched error operand so the caller can check (via errWebs) that
+// the tested value is provably the acquire error and not a reassignment — pruning
+// a reassigned `if err != nil` is the C-2 false-SATISFIED bug.
+func failureBranch(ifInstr *ssa.If, errVals map[ssa.Value]bool) (skipSucc int, matched ssa.Value, ok bool) {
 	bin, isBin := ifInstr.Cond.(*ssa.BinOp)
 	if !isBin || len(errVals) == 0 {
-		return 0, false
+		return 0, nil, false
 	}
 	xErr, yNil := errVals[bin.X], isNil(bin.Y)
 	yErr, xNil := errVals[bin.Y], isNil(bin.X)
-	errVsNil := (xErr && yNil) || (yErr && xNil)
-	if !errVsNil {
-		return 0, false
+	switch {
+	case xErr && yNil:
+		matched = bin.X
+	case yErr && xNil:
+		matched = bin.Y
+	default:
+		return 0, nil, false
 	}
 	switch bin.Op.String() {
 	case "!=":
-		return 0, true // true arm (Succs[0]) is the failure path
+		return 0, matched, true // true arm (Succs[0]) is the failure path
 	case "==":
-		return 1, true // false arm (Succs[1]) is the failure path
+		return 1, matched, true // false arm (Succs[1]) is the failure path
 	}
-	return 0, false
+	return 0, nil, false
 }
 
 func isNil(v ssa.Value) bool {

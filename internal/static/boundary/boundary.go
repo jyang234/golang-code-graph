@@ -106,7 +106,12 @@ func Extract(res *analyze.Result) *Contract {
 	published := make(map[string]int)
 	deps := make(map[string]*ExternalDep)
 	for _, n := range res.Graph.Nodes {
-		if !res.Program.IsFirstParty(n.Func.Pkg) {
+		// IsFirstPartyFunc, not IsFirstParty(fn.Pkg): a first-party generic instance
+		// or $bound/$thunk wrapper has a nil fn.Pkg, so keying on the package alone
+		// drops its node here — and with it any publish/HTTP/external boundary call in
+		// its body vanishes from the GATED inter-service contract, a false-clean
+		// contract (the C-1 severance class, in the contract producer).
+		if !res.Program.IsFirstPartyFunc(n.Func) {
 			continue
 		}
 		for _, e := range n.Out {

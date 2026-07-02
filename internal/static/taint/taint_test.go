@@ -25,7 +25,8 @@ func analyzeFixture(t *testing.T) *analyze.Result {
 
 func run(t *testing.T, cfg taint.Config) taint.Report {
 	t.Helper()
-	return taint.Analyze(analyzeFixture(t).Program, cfg)
+	res := analyzeFixture(t)
+	return taint.Analyze(res.Program, res.Graph, cfg)
 }
 
 func src(name string) taint.FuncSpec  { return taint.FuncSpec{Pkg: pkg, Name: name} }
@@ -115,6 +116,102 @@ func TestPointerReceiverFieldSourceIsSeeded(t *testing.T) {
 	}
 }
 
+// TestInterfaceReturnTaintNotProvenClean is the C-3 regression: taint returned
+// through an interface (invoke) method must not silently die. The call graph
+// resolves the invoke to the concrete taint-returning method, so the invoke
+// result carries the taint to the sink → FLOW, never a (false) NO-FLOW.
+func TestInterfaceReturnTaintNotProvenClean(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceIface")},
+		Sinks:       []taint.FuncSpec{sink("sinkIface")},
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("interface-return taint: verdict = NO-FLOW — the invoke result was silently proven clean (C-3)")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("interface-return taint: verdict = %s, want FLOW (escaped=%v flows=%v)", r.Verdict, r.Escaped, r.Flows)
+	}
+}
+
+// TestInterfaceSourceIsSeeded is the C-4 regression: a declared source method
+// invoked via an interface must still be seeded, else Sources==0 → false NO-FLOW.
+func TestInterfaceSourceIsSeeded(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("Provide")},
+		Sinks:       []taint.FuncSpec{sink("sinkProvide")},
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("interface source: verdict = NO-FLOW — the source invoked via interface was never seeded (C-4)")
+	}
+	if r.Sources == 0 {
+		t.Errorf("interface source: Sources==0 — the invoke-site source was not seeded")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("interface source: verdict = %s, want FLOW", r.Verdict)
+	}
+}
+
+// TestStructCarriedFieldEscapes is the C-5 regression: a struct value carrying a
+// tainted field, handed WHOLE to an unmodeled callee (fmt.Println), must escape —
+// tainting the (type,field) key alone left the whole-struct hand-off invisible, a
+// false NO-FLOW. The whole-struct use has no declared sink, so the sound verdict
+// is ABSTAIN.
+func TestStructCarriedFieldEscapes(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceCarry")},
+		Sinks:       []taint.FuncSpec{sink("sinkClean")}, // an unrelated declared sink
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("struct-carried field: verdict = NO-FLOW — the whole-struct hand-off was silently proven clean (C-5)")
+	}
+	if r.Verdict != taint.Abstain || !r.Escaped {
+		t.Errorf("struct-carried field: verdict = %s escaped=%v, want ABSTAIN with an escape site", r.Verdict, r.Escaped)
+	}
+}
+
+// TestInterfaceArgReachesParam is the C-3 arg→param regression: a tainted argument
+// passed into an interface method must reach the parameter inside the concrete impl
+// (the invoke receiver-offset bug tainted the receiver and missed the real param).
+func TestInterfaceArgReachesParam(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceIfaceArg")},
+		Sinks:       []taint.FuncSpec{sink("sinkIfaceArg")},
+	})
+	if r.Verdict != taint.Flow {
+		t.Fatalf("interface arg→param: verdict = %s (escaped=%v flows=%v), want FLOW", r.Verdict, r.Escaped, r.Flows)
+	}
+}
+
+// TestFuncValueReturnFlow is the C-3 func-value regression: return-flow through a
+// plain func value (StaticCallee nil, not an invoke) must not be dropped.
+func TestFuncValueReturnFlow(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceFuncVal")},
+		Sinks:       []taint.FuncSpec{sink("sinkFuncVal")},
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("func-value return-flow: verdict = NO-FLOW — a taint-returning func value was proven clean")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("func-value return-flow: verdict = %s, want FLOW", r.Verdict)
+	}
+}
+
+// TestGenericSourceIsSeeded is the C-4 regression: a declared source that is a
+// first-party generic function must be seeded through its nil-Pkg instance callee.
+func TestGenericSourceIsSeeded(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("GenericSource")},
+		Sinks:       []taint.FuncSpec{sink("sinkGeneric")},
+	})
+	if r.Sources == 0 {
+		t.Errorf("generic source: Sources==0 — the instance callee was not matched/seeded")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("generic source: verdict = %s, want FLOW", r.Verdict)
+	}
+}
+
 // Indexing a tainted slice is an unmodeled frontier, so the propagate switch's
 // default-escape backstop must fire: ABSTAIN, never a (false) NO-FLOW. This is the
 // soundness regression guard for the missing-default bug.
@@ -144,9 +241,10 @@ func TestAnalyzeBySource_Decomposes(t *testing.T) {
 		SourceFields: []taint.FieldSpec{{Pkg: pkg, Type: "Recipient", Field: "Secret"}},
 		Sinks:        []taint.FuncSpec{sink("sinkDirect"), sink("sinkMap"), sink("sinkClean"), sink("sinkFieldRead")},
 	}
-	prog := analyzeFixture(t).Program
-	agg := taint.Analyze(prog, cfg)
-	per := taint.AnalyzeBySource(prog, cfg)
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
+	agg := taint.Analyze(prog, cg, cfg)
+	per := taint.AnalyzeBySource(prog, cg, cfg)
 
 	// One report per declared source, in canonical (sorted) Source order.
 	if len(per) != len(cfg.SourceFuncs)+len(cfg.SourceFields) {
@@ -242,9 +340,10 @@ func combine(vs []taint.Verdict) taint.Verdict {
 // complete (else ABSTAIN, never a false no-flow from a sink-local view).
 func TestAnalyzeBySink_Decomposes(t *testing.T) {
 	cfg := decompCfg()
-	prog := analyzeFixture(t).Program
-	agg := taint.Analyze(prog, cfg)
-	per := taint.AnalyzeBySink(prog, cfg)
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
+	agg := taint.Analyze(prog, cg, cfg)
+	per := taint.AnalyzeBySink(prog, cg, cfg)
 
 	if len(per) != len(cfg.Sinks) {
 		t.Fatalf("want %d per-sink reports, got %d", len(cfg.Sinks), len(per))
@@ -297,10 +396,11 @@ func TestAnalyzeBySink_Decomposes(t *testing.T) {
 // one it has, in either projection.
 func TestAnalyzeBySourceAndSink_Marginalises(t *testing.T) {
 	cfg := decompCfg()
-	prog := analyzeFixture(t).Program
-	matrix := taint.AnalyzeBySourceAndSink(prog, cfg)
-	bySource := taint.AnalyzeBySource(prog, cfg)
-	bySink := taint.AnalyzeBySink(prog, cfg)
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
+	matrix := taint.AnalyzeBySourceAndSink(prog, cg, cfg)
+	bySource := taint.AnalyzeBySource(prog, cg, cfg)
+	bySink := taint.AnalyzeBySink(prog, cg, cfg)
 
 	wantCells := (len(cfg.SourceFuncs) + len(cfg.SourceFields)) * len(cfg.Sinks)
 	if len(matrix) != wantCells {
@@ -338,13 +438,14 @@ func TestDeterministic(t *testing.T) {
 		SourceFuncs: []taint.FuncSpec{src("sourceMap"), src("sourceDirect")},
 		Sinks:       []taint.FuncSpec{sink("sinkMap"), sink("sinkDirect")},
 	}
-	prog := analyzeFixture(t).Program
-	want, err := json.Marshal(taint.Analyze(prog, cfg))
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
+	want, err := json.Marshal(taint.Analyze(prog, cg, cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 25; i++ {
-		got, err := json.Marshal(taint.Analyze(prog, cfg))
+		got, err := json.Marshal(taint.Analyze(prog, cg, cfg))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -364,13 +465,14 @@ func TestAnalyzeBySourceDeterministic(t *testing.T) {
 		SourceFields: []taint.FieldSpec{{Pkg: pkg, Type: "Recipient", Field: "Secret"}},
 		Sinks:        []taint.FuncSpec{sink("sinkMap"), sink("sinkDirect"), sink("sinkFieldRead")},
 	}
-	prog := analyzeFixture(t).Program
-	want, err := json.Marshal(taint.AnalyzeBySource(prog, cfg))
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
+	want, err := json.Marshal(taint.AnalyzeBySource(prog, cg, cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 25; i++ {
-		got, err := json.Marshal(taint.AnalyzeBySource(prog, cfg))
+		got, err := json.Marshal(taint.AnalyzeBySource(prog, cg, cfg))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -385,13 +487,14 @@ func TestAnalyzeBySourceDeterministic(t *testing.T) {
 // matrix order also depends on the per-source iteration, which the sort must canonicalise.
 func TestAnalyzeBySinkAndMatrixDeterministic(t *testing.T) {
 	cfg := decompCfg()
-	prog := analyzeFixture(t).Program
+	fx := analyzeFixture(t)
+	prog, cg := fx.Program, fx.Graph
 	for _, gen := range []struct {
 		name string
 		fn   func() any
 	}{
-		{"by-sink", func() any { return taint.AnalyzeBySink(prog, cfg) }},
-		{"matrix", func() any { return taint.AnalyzeBySourceAndSink(prog, cfg) }},
+		{"by-sink", func() any { return taint.AnalyzeBySink(prog, cg, cfg) }},
+		{"matrix", func() any { return taint.AnalyzeBySourceAndSink(prog, cg, cfg) }},
 	} {
 		want, err := json.Marshal(gen.fn())
 		if err != nil {

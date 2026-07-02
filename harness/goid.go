@@ -13,10 +13,13 @@ import (
 //
 // Go exposes no public goroutine id, so this parses the runtime stack header
 // ("goroutine N [state]:"). That is a deliberate, contained hack confined to the
-// test-harness boundary. It is also best-effort: on any failure it returns 0,
-// and capture.Concurrent then falls back to caller-clock interval overlap. A
-// regression in this parsing therefore degrades to the documented fallback and
-// surfaces as a determinism self-test failure — never a silently wrong golden.
+// test-harness boundary. It is best-effort: on any failure it returns 0, and
+// capture.Concurrent then falls back to caller-clock interval overlap. A silent
+// fallback would degrade every span's structural concurrency signal, so
+// NewInProcess probes goid() once and fails loudly through TB when it returns 0
+// (see the goidCheck in harness.go) — inside this repo that surfaces as a test
+// failure, and in a consumer repo it surfaces at harness construction rather than
+// as a subtly-wrong golden.
 func goid() uint64 {
 	// The first stack line is short ("goroutine 18446744073709551615 [running]:"
 	// is ~40 bytes), but use a comfortable buffer so a future format change can't

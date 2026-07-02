@@ -16,6 +16,12 @@ func seq(members ...*ir.CanonicalSpan) ir.ChildGroup {
 func conc(members ...*ir.CanonicalSpan) ir.ChildGroup {
 	return ir.ChildGroup{Concurrent: true, Members: members}
 }
+func unord(members ...*ir.CanonicalSpan) ir.ChildGroup {
+	return ir.ChildGroup{Unordered: len(members) > 1, Members: members}
+}
+func seqM(mult string, members ...*ir.CanonicalSpan) ir.ChildGroup {
+	return ir.ChildGroup{Multiplicity: mult, Members: members}
+}
 func span(op string, tier int, kids ...ir.ChildGroup) *ir.CanonicalSpan {
 	return &ir.CanonicalSpan{Op: op, Tier: tier, Children: kids}
 }
@@ -133,6 +139,91 @@ func TestSequentialChainContraction(t *testing.T) {
 		root.Children[1].Members[0].Op != "DB postgres INSERT audit" {
 		t.Errorf("sequential order not preserved: %q then %q",
 			root.Children[0].Members[0].Op, root.Children[1].Members[0].Op)
+	}
+}
+
+// TestUnorderedDropDoesNotEraseSurvivor is the C-7 regression: an Unordered group
+// whose FIRST member is a droppable tier-3 node must not erase the surviving
+// tier-1 member. The old code processed only Members[0] under the sequential
+// branch, splicing the tier-3's (empty) children and silently dropping the tier-1
+// DB write from a freshly-minted golden.
+func TestUnorderedDropDoesNotEraseSurvivor(t *testing.T) {
+	root := span("root", 1,
+		unord(
+			span("Auth.check", 3),                // tier-3, drops, sorts first
+			span("DB postgres INSERT ledger", 1), // tier-1, must survive
+		),
+	)
+	Filter(root, keepTier1and2)
+	if len(root.Children) != 1 {
+		t.Fatalf("tier-1 write erased from unordered group: got %d groups %+v", len(root.Children), root.Children)
+	}
+	if got := root.Children[0].Members[0].Op; got != "DB postgres INSERT ledger" {
+		t.Errorf("surviving member = %q, want the tier-1 DB write", got)
+	}
+	// One survivor is no longer an ambiguity: it degrades to a plain sequential group.
+	if root.Children[0].Unordered {
+		t.Error("single-survivor group should no longer be marked Unordered")
+	}
+}
+
+// TestUnorderedKeepFirstDropsRest is the mirror C-7 case: an Unordered group whose
+// FIRST member is kept must still DROP the sub-threshold rest, not leak the whole
+// group. The old keep-first branch appended the entire group unchanged.
+func TestUnorderedKeepFirstDropsRest(t *testing.T) {
+	root := span("root", 1,
+		unord(
+			span("DB postgres INSERT ledger", 1), // tier-1, kept, sorts first
+			span("internalCompute", 3),           // tier-3, must be dropped
+		),
+	)
+	Filter(root, keepTier1and2)
+	if len(root.Children) != 1 || len(root.Children[0].Members) != 1 {
+		t.Fatalf("sub-threshold member leaked into golden: %+v", root.Children)
+	}
+	if got := root.Children[0].Members[0].Op; got != "DB postgres INSERT ledger" {
+		t.Errorf("kept member = %q, want the tier-1 DB write", got)
+	}
+}
+
+// TestUnorderedWrapperPromotedLossless drops a thin tier-3 wrapper inside an
+// unordered group and promotes its single child-group's members into the group,
+// keeping the group unordered and re-sorted.
+func TestUnorderedWrapperPromotedLossless(t *testing.T) {
+	root := span("root", 1,
+		unord(
+			span("HTTP GET /a", 1),
+			span("wrapper", 3, seq(span("DB postgres INSERT b", 1))),
+		),
+	)
+	Filter(root, keepTier1and2)
+	if len(root.Children) != 1 {
+		t.Fatalf("expected one unordered group, got %+v", root.Children)
+	}
+	g := root.Children[0]
+	if !g.Unordered || len(g.Members) != 2 {
+		t.Fatalf("expected unordered pair after lossless promotion, got %+v", g)
+	}
+	if g.Members[0].Op >= g.Members[1].Op {
+		t.Errorf("promoted members not re-sorted by op: %q, %q", g.Members[0].Op, g.Members[1].Op)
+	}
+}
+
+// TestSplicedChildInheritsMultiplicity is the M-26 regression: dropping a wrapper
+// whose sequential group carried a "1..*" loop marker must propagate that marker
+// onto the spliced children, not silently assert "once".
+func TestSplicedChildInheritsMultiplicity(t *testing.T) {
+	root := span("root", 1,
+		seqM("1..*", span("perItem", 3,
+			seq(span("DB postgres INSERT ledger", 1)),
+		)),
+	)
+	Filter(root, keepTier1and2)
+	if len(root.Children) != 1 {
+		t.Fatalf("expected the spliced child, got %+v", root.Children)
+	}
+	if root.Children[0].Multiplicity != "1..*" {
+		t.Errorf("loop multiplicity discarded on splice: %+v", root.Children[0])
 	}
 }
 

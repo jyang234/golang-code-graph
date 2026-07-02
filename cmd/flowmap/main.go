@@ -488,6 +488,7 @@ func cmdTaint(args []string) error {
 	fs := flag.NewFlagSet("taint", flag.ContinueOnError)
 	algo := fs.String("algo", "", `call-graph algorithm: "rta" (default), "vta", "cha"`)
 	gate := fs.Bool("gate", false, "exit non-zero on a FLOW finding (the must-not-flow gate)")
+	strict := fs.Bool("strict", false, "with --gate, also exit non-zero on ABSTAIN (fail closed: an unproven no-flow is not a pass)")
 	asJSON := fs.Bool("json", false, "emit the report as canonical JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -520,7 +521,7 @@ func cmdTaint(args []string) error {
 	// receives", and the (source × sink) matrix the full cross — each marginalises back to
 	// the aggregate, so none invents a verdict the aggregate could not prove. Decompose
 	// computes them all from one whole-program prepare + one per-source pass.
-	d := taint.Decompose(res.Program, tc)
+	d := taint.Decompose(res.Program, res.Graph, tc)
 	if *asJSON {
 		// Embed the aggregate Report (its fields promote to top level) and append the
 		// additive decomposition arrays — the Report type itself is unchanged.
@@ -547,12 +548,39 @@ func cmdTaint(args []string) error {
 		fmt.Print(taint.RenderBySource(d.BySource))
 		fmt.Print(taint.RenderBySink(d.BySink))
 	}
-	// --gate fails on a proven could-flow. ABSTAIN stays a disclosure (a strict
-	// fail-closed mode that also fails on abstain is a follow-up).
-	if *gate && d.Aggregate.Verdict == taint.Flow {
-		return fmt.Errorf("taint: %d source→sink flow(s) found (must-not-flow gate)", len(d.Aggregate.Flows))
+	if *gate {
+		if warn := taintGateDecision(d.Aggregate.Verdict, *strict); warn != "" {
+			fmt.Fprintln(os.Stderr, warn)
+		}
+		return taintGateError(d.Aggregate, *strict)
 	}
 	return nil
+}
+
+// taintGateError is the --gate exit-code rule (M-13). --gate fails on a proven
+// could-flow. ABSTAIN is a disclosure by DEFAULT, but the analysis now escapes the
+// whole interface-dispatch surface (C-3/C-4/C-5), so ABSTAIN is the COMMON outcome —
+// a plain --gate that passes on ABSTAIN is asserting a no-flow it could not prove.
+// --strict makes ABSTAIN a non-zero exit (fail closed). NO-FLOW always passes.
+func taintGateError(rep taint.Report, strict bool) error {
+	switch rep.Verdict {
+	case taint.Flow:
+		return fmt.Errorf("taint: %d source→sink flow(s) found (must-not-flow gate)", len(rep.Flows))
+	case taint.Abstain:
+		if strict {
+			return fmt.Errorf("taint: verdict ABSTAIN and --strict set — no-flow not proven (taint escaped at %d site(s))", len(rep.EscapeSites))
+		}
+	}
+	return nil
+}
+
+// taintGateDecision returns the loud stderr warning to emit under --gate, or "" for
+// none: a plain (non-strict) --gate that is about to PASS on ABSTAIN must say so.
+func taintGateDecision(v taint.Verdict, strict bool) string {
+	if v == taint.Abstain && !strict {
+		return "warning: taint --gate passed on ABSTAIN — no-flow could NOT be proven; rerun with --strict to fail closed"
+	}
+	return ""
 }
 
 // graphEdges adapts the emitted graph's edges to the schemadrift Edge view (From/To

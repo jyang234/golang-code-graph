@@ -50,6 +50,35 @@ func TestRTAReachability(t *testing.T) {
 	mustReach(t, g, markPaid)
 }
 
+// TestNodeOrderDeterministic pins the M-20 tie-break: node order is byte-identical
+// across repeated builds even though the fixture now contains generic instances,
+// whose display FQN (fn.RelString) is documented non-unique. An FQN-only sort over
+// the map-iteration-ordered node set would vary run-to-run on such a tie; the
+// InstanceDiscriminator secondary key makes the order total. (finalize panics on a
+// genuine collision, so a passing build also proves none exists in the fixture.)
+func TestNodeOrderDeterministic(t *testing.T) {
+	var first []string
+	for i := 0; i < 5; i++ {
+		g := buildFixtureGraph(t)
+		order := make([]string, len(g.Nodes))
+		for j, n := range g.Nodes {
+			order[j] = n.FQN
+		}
+		if i == 0 {
+			first = order
+			continue
+		}
+		if len(order) != len(first) {
+			t.Fatalf("node count varied across builds: %d vs %d", len(order), len(first))
+		}
+		for j := range order {
+			if order[j] != first[j] {
+				t.Fatalf("node order varied at %d across builds: %q vs %q", j, order[j], first[j])
+			}
+		}
+	}
+}
+
 func TestGenericInstantiationReachable(t *testing.T) {
 	g := buildFixtureGraph(t)
 	for _, n := range g.Nodes {

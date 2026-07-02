@@ -1,7 +1,7 @@
 ```mermaid
 flowchart LR
     %% static call graph — scope: whole graph; algo: rta
-    %% 17 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
+    %% 18 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
     client_Bureau_Score["client.Bureau.Score ⚠"]:::fallible
     client_Client_Call["client.Client.Call ⚠"]:::fallible
     client_Gateway_Charge["client.Gateway.Charge ⚠"]:::fallible
@@ -43,6 +43,7 @@ flowchart LR
     client_Bureau_Score --> external_credit_bureau_GET__score__id_
     client_Gateway_Charge --> external_payment_gw_POST__charge__id_
     consumer_Payments_OnSettled --> store_Loans_MarkPaid
+    eventbus_Bus_Publish --> consumer_Payments_OnSettled
     handler_App_Create --> origination_Evaluator_Evaluate
     handler_App_Status --> store_Loans_SelectLoan
     origination_Evaluator_Evaluate --> client_Gateway_Charge

@@ -294,6 +294,31 @@
     },
     {
       "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
+      "to": "(*example.com/impeachsvc/internal/admin.Admin).Federate",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
+      "to": "(*example.com/impeachsvc/internal/admin.Admin).Notify",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
+      "to": "(*example.com/impeachsvc/internal/admin.Admin).PurgeLedger",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
+      "to": "(*example.com/impeachsvc/internal/admin.Admin).Reindex",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
+      "to": "(*example.com/impeachsvc/internal/handler.App).Create",
+      "tier": 3
+    },
+    {
+      "from": "(*example.com/impeachsvc/internal/router.Router).ServeHTTP",
       "to": "example.com/impeachsvc/internal/router.matches",
       "tier": 3
     },

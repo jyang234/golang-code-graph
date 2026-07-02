@@ -119,6 +119,39 @@ func TestPostHocUnorderedWhenUntimed(t *testing.T) {
 	}
 }
 
+// TestPostHocSalienceKeepsTier1InUnorderedGroup is the C-7 end-to-end regression:
+// a within-guard Unordered group in a post-hoc golden whose FIRST member (by
+// canonical key) is a droppable tier-3 compute must not erase the surviving tier-1
+// DB/PUBLISH write when salience filtering runs. The old promote.Filter processed
+// only Members[0] of a non-concurrent group, silently dropping the rest.
+func TestPostHocSalienceKeepsTier1InUnorderedGroup(t *testing.T) {
+	spans := []capture.Span{
+		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 1000),
+			Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"}},
+		// "aaa-compute" (internal, tier-3, droppable) sorts before "PUBLISH z.topic"
+		// by op key; the 4ms gap is within the 100ms guard, so they form one
+		// Unordered group with the droppable member first.
+		{ID: "c", ParentID: "root", Kind: ir.KindInternal, Name: "aaa-compute", Start: ms(0, 0), End: ms(0, 1)},
+		{ID: "p", ParentID: "root", Kind: ir.KindProducer, Start: ms(0, 5), End: ms(0, 6),
+			Attrs: map[string]string{"messaging.destination.name": "z.topic"}},
+	}
+	tr := mustCanon(t, capture.CapturedFlow{Flow: "x", Service: "s", Mode: capture.ModePostHoc, Spans: spans, Root: &spans[0], Complete: true})
+	found := false
+	for _, g := range tr.Root.Children {
+		for _, m := range g.Members {
+			switch m.Op {
+			case "PUBLISH z.topic":
+				found = true
+			case "aaa-compute":
+				t.Errorf("sub-threshold compute leaked into the golden: %+v", g)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("tier-1 PUBLISH erased from post-hoc golden by C-7:\n%s", marshal(t, tr))
+	}
+}
+
 // TestInProcessStillSequencesSiblings guards that the guard/unordered logic is
 // scoped to post-hoc: in-process, disjoint siblings stay sequential in
 // happens-before order (the 3-run self-test, not a guard, validates stability).

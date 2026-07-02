@@ -264,12 +264,15 @@ func sortSpans(spans []Span) {
 // Concurrent reports whether two sibling spans ran concurrently (canon §3.3,
 // plan [C2]). It prefers the structural dispatch signal: when goroutine identity
 // is known for both siblings and their parent, two siblings dispatched onto
-// worker goroutines (each different from the parent's goroutine) are a race
-// regardless of how their intervals happen to fall — robust to scheduling jitter
-// and to one leg finishing before the other starts. It falls back to caller-clock
-// interval overlap when the signal is unavailable (parentGoroutine or either
-// span's goroutine is zero) or when at least one sibling ran inline on the
-// parent's goroutine (its order is then the parent's execution order).
+// *distinct* worker goroutines (each different from the parent's goroutine and
+// from each other) are a race regardless of how their intervals happen to fall —
+// robust to scheduling jitter and to one leg finishing before the other starts.
+// It falls back to caller-clock interval overlap when the signal is unavailable
+// (parentGoroutine or either span's goroutine is zero), when at least one sibling
+// ran inline on the parent's goroutine (its order is then the parent's execution
+// order), or when both siblings ran on the *same* worker goroutine: same-goroutine
+// spans are serialized by construction, so their order is a happens-before, never a
+// race, and overlaps() is correctly false for them.
 //
 // All three spans share one process clock here, so interval comparison is sound
 // — unlike cross-service server spans in separate clock domains, which must never
@@ -278,7 +281,11 @@ func Concurrent(a, b Span, parentGoroutine uint64) bool {
 	if parentGoroutine != 0 && a.Goroutine != 0 && b.Goroutine != 0 {
 		aAsync := a.Goroutine != parentGoroutine
 		bAsync := b.Goroutine != parentGoroutine
-		if aAsync && bAsync {
+		// a.Goroutine != b.Goroutine is load-bearing: two sequential spans on one
+		// worker goroutine (both async, but equal to each other) are serialized, not
+		// a race; classifying them Concurrent would let canon reorder them by
+		// canonical key and erase their real happens-before order.
+		if aAsync && bAsync && a.Goroutine != b.Goroutine {
 			return true
 		}
 	}

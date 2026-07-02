@@ -74,6 +74,24 @@ func TestConcurrentStructuralBothAsync(t *testing.T) {
 	}
 }
 
+// TestConcurrentSameWorkerGoroutineSequential is the C-8 regression: two spans on
+// the *same* worker goroutine (both != the parent's goroutine, but equal to each
+// other) are serialized by construction and must not be classified concurrent —
+// even though the old structural branch only compared each to the parent. Their
+// disjoint intervals fall through to overlaps(), which is correctly false.
+func TestConcurrentSameWorkerGoroutineSequential(t *testing.T) {
+	const parent = 1
+	a := Span{ID: "a", Goroutine: 7, Start: t0(0), End: t0(1)}
+	b := Span{ID: "b", Goroutine: 7, Start: t0(2), End: t0(8)}
+	if Concurrent(a, b, parent) {
+		t.Error("two sequential spans on one worker goroutine must not be concurrent")
+	}
+	// Overlapping intervals on the same worker goroutine cannot actually happen
+	// (a single goroutine is serialized), but if the clock is coarse enough to
+	// report overlap the fallback still reports concurrent — that is the interval
+	// signal, not the structural one, and is out of scope for this regression.
+}
+
 // TestConcurrentInlineSiblingSequential covers the fire-and-forget shape: an
 // inline call on the parent's goroutine followed by an async span on another
 // goroutine is sequential (the async span was spawned after the inline call

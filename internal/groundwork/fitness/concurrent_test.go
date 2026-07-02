@@ -105,6 +105,48 @@ func TestConcurrentBlindFrontier(t *testing.T) {
 	}
 }
 
+// TestConcurrentUnresolvedGoDispatchBlinds is the C-6 regression: a graph with a
+// bindable boundary target, ZERO concurrent edges, and a ConcurrentDispatch blind
+// spot (an unresolved `go f()` at a spawning function that never enters the
+// concurrent cone) must not pass vacuously. The old blind probe surveyed only the
+// resolved cone, so it saw nothing and returned silent green even under
+// require_proof; the probe now surveys ConcurrentDispatch blind spots graph-wide.
+func TestConcurrentUnresolvedGoDispatchBlinds(t *testing.T) {
+	mk := func() *graph.Graph {
+		return &graph.Graph{
+			Algo: "rta",
+			Nodes: []graph.Node{
+				{FQN: "example.com/x/app.Handle"},
+				{FQN: "example.com/x/store.deleteRows"},
+			},
+			Edges: []graph.Edge{
+				// A bindable db DELETE reached only synchronously — no concurrent edge.
+				{From: "example.com/x/store.deleteRows", To: "boundary:db DELETE rows", Tier: 1, Boundary: "db"},
+			},
+			BlindSpots: []graph.BlindSpot{
+				// Unresolved `go someFuncValue()`: produces no edge, so nothing enters
+				// the concurrent cone — only this blind spot at the spawning function.
+				{Kind: "ConcurrentDispatch", Site: "example.com/x/app.Handle", Detail: "go f()"},
+			},
+		}
+	}
+	rule := policy.ConcurrentRule{Name: "no-async-deletes", To: []string{"boundary:db DELETE"}}
+
+	res := Check(concurrentPolicy(rule), graph.NewIndex(mk()))
+	if c := res.Cautions(); len(c) != 1 || !strings.Contains(c[0].Summary, "frontier is blind") {
+		t.Fatalf("an unresolved go-dispatch must blind the concurrent probe (caution), got %v", res.Findings)
+	}
+	if len(res.Violations()) != 0 {
+		t.Fatalf("without require_proof the blind dispatch is a caution, not a violation: %v", res.Findings)
+	}
+
+	rule.RequireProof = true
+	res = Check(concurrentPolicy(rule), graph.NewIndex(mk()))
+	if v := res.Violations(); len(v) != 1 || !strings.Contains(v[0].Summary, "require_proof") {
+		t.Fatalf("require_proof must escalate the blind concurrent dispatch, got %v", res.Findings)
+	}
+}
+
 // RF-2: findings are a set, not a multiset. The same function spawned from two
 // goroutine sites — and its boundary effect reached both directly and through
 // the cone — is one finding per (from, target) pair.

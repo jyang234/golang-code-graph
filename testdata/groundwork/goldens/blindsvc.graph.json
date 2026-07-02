@@ -106,6 +106,15 @@
       "file": "internal/notify/notify.go",
       "line": 20,
       "end_line": 20
+    },
+    {
+      "fqn": "example.com/blindsvc/internal/rawmem.Size[int]",
+      "sig": "func rawmem.Size[T any](v T) uintptr",
+      "tier": 3,
+      "package": "example.com/blindsvc/internal/rawmem",
+      "file": "internal/rawmem/rawmem.go",
+      "line": 10,
+      "end_line": 12
     }
   ],
   "edges": [
@@ -159,6 +168,11 @@
     {
       "from": "example.com/blindsvc.run",
       "to": "example.com/blindsvc/internal/notify.New",
+      "tier": 3
+    },
+    {
+      "from": "example.com/blindsvc.run",
+      "to": "example.com/blindsvc/internal/rawmem.Size[int]",
       "tier": 3
     }
   ],

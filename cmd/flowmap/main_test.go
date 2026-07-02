@@ -17,6 +17,7 @@ import (
 	"github.com/jyang234/golang-code-graph/internal/impeach"
 	"github.com/jyang234/golang-code-graph/internal/ingest"
 	"github.com/jyang234/golang-code-graph/internal/static/graphio"
+	"github.com/jyang234/golang-code-graph/internal/static/taint"
 	"github.com/jyang234/golang-code-graph/ir"
 )
 
@@ -231,6 +232,33 @@ func TestTaintRendersPerSourceDecomposition(t *testing.T) {
 		if !strings.Contains(jsonOut, want) {
 			t.Errorf("--json must include the additive %s array:\n%s", want, jsonOut)
 		}
+	}
+}
+
+// TestTaintStrictGate is the M-13 regression: --gate passes on ABSTAIN by default
+// (with a loud warning) but fails closed under --strict; a proven FLOW always
+// fails, and NO-FLOW always passes regardless of --strict.
+func TestTaintStrictGate(t *testing.T) {
+	abstain := taint.Report{Verdict: taint.Abstain, EscapeSites: []string{"x.Fn"}}
+	if err := taintGateError(abstain, false); err != nil {
+		t.Errorf("plain --gate must pass on ABSTAIN (disclosure), got %v", err)
+	}
+	if err := taintGateError(abstain, true); err == nil {
+		t.Error("--strict must fail closed on ABSTAIN")
+	}
+	if taintGateDecision(taint.Abstain, false) == "" {
+		t.Error("a plain --gate about to pass on ABSTAIN must emit a loud warning")
+	}
+	if taintGateDecision(taint.Abstain, true) != "" {
+		t.Error("--strict fails rather than warns, so no pass-warning")
+	}
+
+	flow := taint.Report{Verdict: taint.Flow, Flows: []taint.Finding{{Sink: "x#s", Site: "x.F"}}}
+	if err := taintGateError(flow, false); err == nil {
+		t.Error("--gate must fail on a proven FLOW")
+	}
+	if err := taintGateError(taint.Report{Verdict: taint.NoFlow}, true); err != nil {
+		t.Errorf("NO-FLOW must pass even under --strict, got %v", err)
 	}
 }
 

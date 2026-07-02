@@ -27,11 +27,32 @@ func firstPartyScope(res *analyze.Result) map[*ssa.Function]bool {
 		if features.IsPackageInit(n.Func) {
 			continue
 		}
-		if res.Program.IsFirstParty(n.Func.Pkg) {
+		// IsFirstPartyFunc, not IsFirstParty(fn.Pkg): go/ssa leaves generic instances
+		// and $bound/$thunk method-value wrappers with a nil fn.Pkg, so keying on the
+		// package alone drops those reachable first-party functions from the rendered
+		// graph — and edgeOf then drops every edge into them as "third-party" with no
+		// blind spot, a false "no path" (C-1). A generic instance has a real body and
+		// is RENDERED; a thin $bound/$thunk wrapper is instead SPLICED by edgeOf
+		// (caller → wrapped method), so it is excluded here — rendering it would let a
+		// synthetic "$bound" node displace the real method as the graph's node, source,
+		// entrypoint, and io_budget route (a plumbing name in every verdict).
+		if res.Program.IsFirstPartyFunc(n.Func) && !isSplicedWrapper(n.Func) {
 			s[n.Func] = true
 		}
 	}
 	return s
+}
+
+// isSplicedWrapper reports whether fn is a synthetic method-value / method-
+// expression / promotion wrapper ($bound/$thunk) — a thin forwarder go/ssa gives a
+// nil Pkg whose body just calls the wrapped method. graphio SPLICES these
+// (caller → wrappee) instead of rendering a node, so the real method stays the
+// node/source/entrypoint/route and no "$bound" name leaks into a verdict (the
+// severance is still closed, just without the synthetic node). A generic INSTANCE
+// (TypeArgs != 0) has a real body and is rendered, not spliced; a wrapper with a
+// real (non-nil) Pkg is left as it was before C-1.
+func isSplicedWrapper(fn *ssa.Function) bool {
+	return fn != nil && fn.Pkg == nil && fn.Synthetic != "" && len(fn.TypeArgs()) == 0
 }
 
 // rootFuncSet is the set of root functions, for tier purposes (roots are entries).
@@ -146,10 +167,16 @@ func reachableFirstParty(res *analyze.Result, root *ssa.Function) map[*ssa.Funct
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
-		seen[n.Func] = true
+		// Traverse THROUGH a $bound/$thunk wrapper (follow its out-edges) but do not
+		// add it to the scope set: like firstPartyScope, graphio splices wrappers
+		// rather than rendering them, so the real method behind the wrapper is the
+		// scoped node, not the synthetic forwarder.
+		if !isSplicedWrapper(n.Func) {
+			seen[n.Func] = true
+		}
 		for _, e := range n.Out {
 			c := e.Callee
-			if visited[c] || !res.Program.IsFirstParty(c.Func.Pkg) {
+			if visited[c] || !res.Program.IsFirstPartyFunc(c.Func) {
 				continue
 			}
 			visited[c] = true
