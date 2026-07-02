@@ -141,6 +141,47 @@ func caseStructCarry() {
 	fmt.Println(c)
 }
 
+// C-3 (arg→param leg): a tainted ARGUMENT passed into an interface method must
+// reach the parameter inside the concrete impl. go/ssa's invoke Args exclude the
+// receiver while the method's Params[0] IS the receiver, so a naive Args[i]→Params[i]
+// taints the receiver and misses the real parameter. Truth = FLOW.
+type ArgSink interface{ Consume(s string) }
+
+type argImpl struct{}
+
+func (argImpl) Consume(s string) { sinkIfaceArg(s) }
+
+func sourceIfaceArg() string { return "pii" }
+func sinkIfaceArg(string)    {}
+
+func caseIfaceArg() {
+	var a ArgSink = argImpl{}
+	a.Consume(sourceIfaceArg())
+}
+
+// C-3 (func-value return leg): a first-party function reached ONLY as a plain func
+// value (not a method, not a static call) that returns a source — its result at the
+// call site must carry the taint. Truth = FLOW.
+func fetchVal() string      { return sourceFuncVal() }
+func sourceFuncVal() string { return "pii" }
+func sinkFuncVal(string)    {}
+
+func caseFuncValReturn() {
+	var f func() string = fetchVal
+	sinkFuncVal(f())
+}
+
+// C-4 / C-1 (generic source): a declared source that is a first-party GENERIC
+// function. Its concrete callee is an instance with a nil ssa.Pkg and a type-arg
+// name, so a fn.Name()+PkgPath matcher never seeds it. Truth = FLOW.
+func GenericSource[T any](t T) string { return "pii" }
+
+func sinkGeneric(string) {}
+
+func caseGenericSource() {
+	sinkGeneric(GenericSource[int](0))
+}
+
 func main() {
 	caseDirect()
 	caseRelay()
@@ -154,4 +195,7 @@ func main() {
 	caseIfaceReturn()
 	caseIfaceSource()
 	caseStructCarry()
+	caseIfaceArg()
+	caseFuncValReturn()
+	caseGenericSource()
 }

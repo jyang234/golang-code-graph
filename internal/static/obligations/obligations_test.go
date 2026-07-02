@@ -418,12 +418,16 @@ func TestReassignedErrNotSatisfied(t *testing.T) {
 	}
 	fs := Check(rules, fns, "", nil)
 
+	// LeakAfterReassign genuinely leaks tx: `err = doWork(); if err != nil { return err }`
+	// returns with tx still open. The old failure-branch pruning treated that reassigned
+	// check as the acquire's own failure and pruned the leaking arm → false SATISFIED.
+	// The fix must NOT pass it, and since the leak is concretely witnessed the sound
+	// verdict is VIOLATED (not a demotion to CANT-PROVE a violation-only gate would pass).
 	if f := one(t, fs, "LeakAfterReassign"); f.Status == Satisfied {
 		t.Errorf("LeakAfterReassign = SATISFIED — false universal proof; the reassigned err "+
 			"failure branch was pruned (%s)", f.Detail)
-	} else if f.Status != CantProve {
-		t.Errorf("LeakAfterReassign = %s (%s), want CANT-PROVE (reassignment blinds the "+
-			"failed-acquire branch)", f.Status, f.Detail)
+	} else if f.Status != Violated {
+		t.Errorf("LeakAfterReassign = %s (%s), want VIOLATED (the reassigned check leaks tx)", f.Status, f.Detail)
 	}
 
 	if f := one(t, fs, "NoReassign"); f.Status != Satisfied {

@@ -229,15 +229,20 @@ func checkRelease(rule *config.ObligationRule, fn *ssa.Function, baseDir string,
 				f.Status, f.Detail = CantProve, why
 			} else {
 				switch r := leakPath(fn, acq, releases, sums, relKey); {
-				case r.abstain != "":
-					// Fail closed: a reassigned acquire error means the failed-acquire
-					// branch cannot be isolated, so neither SATISFIED nor VIOLATED is
-					// sound here (C-2). Disclose the blind spot.
-					f.Status = CantProve
-					f.Detail = r.abstain
 				case r.leaked:
+					// A concretely-witnessed leak wins over the reassignment abstain: a
+					// leak found on a path past the reassignment is a genuine leak (the
+					// resource is held there — a failed acquire's own arm was already
+					// pruned), so VIOLATED is the sound, actionable verdict, not a
+					// demotion to CANT-PROVE that a violation-only gate would pass (C-2).
 					f.Status = Violated
 					f.Detail = fmt.Sprintf("exit at %s reachable without release", site(fn, r.exit, baseDir, 0))
+				case r.abstain != "":
+					// No leak witnessed, but a reassigned acquire error means the
+					// failed-acquire branch could not be isolated, so SATISFIED is not
+					// sound either (C-2). Disclose the blind spot.
+					f.Status = CantProve
+					f.Detail = r.abstain
 				case r.unknown != "":
 					f.Status = CantProve
 					f.Detail = fmt.Sprintf("release may occur inside %s — beyond proof; name it as a release ref to assert it", r.unknown)

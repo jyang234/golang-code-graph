@@ -59,7 +59,20 @@ type FuncSpec struct {
 }
 
 func (s FuncSpec) matches(fn *ssa.Function) bool {
-	return fn != nil && features.PkgPath(fn) == s.Pkg && fn.Name() == s.Name
+	return fn != nil && features.EffectivePkgPath(fn) == s.Pkg && matchName(fn) == s.Name
+}
+
+// matchName is the name a FuncSpec matches against. A generic INSTANCE's fn.Name()
+// carries its type arguments ("Decode[pkg.T]") and its fn.Pkg is nil, so matching a
+// declared source/sink that is a first-party generic function on fn.Name()+PkgPath
+// silently fails — a false NO-FLOW (the C-1 severance class, in the source/sink
+// matcher). The instance's Object() is the origin generic's *types.Func, whose Name
+// is the bare "Decode"; fall back to fn.Name() for a synthetic with no object.
+func matchName(fn *ssa.Function) string {
+	if obj := fn.Object(); obj != nil {
+		return obj.Name()
+	}
+	return fn.Name()
 }
 
 // FieldSpec marks reads of a sensitive struct field as a source: "importpath.Type#Field".
@@ -169,7 +182,7 @@ type analysis struct {
 // They are a pure function of prog, so prepare builds them ONCE and analyze reuses them
 // for every cfg — which is what lets AnalyzeBySource run per declared source without
 // re-walking the whole program each time. None of the shared maps/slices is mutated by a
-// run (seed/run only read fieldLoads/callsTo), so sharing them across runs is safe.
+// run (seed/run only read fieldLoads/callsTo/siteCallees), so sharing them across runs is safe.
 type prepared struct {
 	prog        *ssabuild.Program
 	funcs       []*ssa.Function
@@ -210,10 +223,12 @@ func prepare(prog *ssabuild.Program, cg *callgraph.Graph) *prepared {
 				if call, ok := instr.(ssa.CallInstruction); ok {
 					if callee := call.Common().StaticCallee(); callee != nil {
 						p.callsTo[callee] = append(p.callsTo[callee], call)
-					} else if call.Common().IsInvoke() {
-						// Return-flow through an interface method: index the invoke site
-						// against each concrete callee the call graph resolved, so a
-						// taint-returning method taints THIS site's result too (C-3).
+					} else {
+						// Return-flow through a dynamic call (interface OR plain
+						// func-value): index the site against each concrete callee the
+						// call graph resolved, so a taint-returning callee taints THIS
+						// site's result too (C-3). StaticCallee is nil for both, so keying
+						// only on IsInvoke() would drop func-value return-flow.
 						for _, callee := range p.siteCallees[call] {
 							p.callsTo[callee] = append(p.callsTo[callee], call)
 						}
@@ -226,8 +241,11 @@ func prepare(prog *ssabuild.Program, cg *callgraph.Graph) *prepared {
 }
 
 // resolveSiteCallees inverts the call graph into a per-call-site concrete-callee
-// index (nil-safe). It carries every resolved edge — static and invoke alike — but
-// is consulted only where StaticCallee is unavailable (invoke sites).
+// index (nil-safe), restricted to DYNAMIC sites (StaticCallee == nil: interface
+// invokes and plain func-value calls). Those are the only sites its consumers read
+// — calleesOf and the callsTo return-flow indexing both take StaticCallee directly
+// for a static call — so indexing static edges too would be dead weight (roughly
+// the whole edge set on a real program).
 func resolveSiteCallees(cg *callgraph.Graph) map[ssa.CallInstruction][]*ssa.Function {
 	out := map[ssa.CallInstruction][]*ssa.Function{}
 	if cg == nil {
@@ -237,6 +255,9 @@ func resolveSiteCallees(cg *callgraph.Graph) map[ssa.CallInstruction][]*ssa.Func
 		for _, e := range n.Out {
 			if e.Site == nil || e.Callee == nil || e.Callee.Func == nil {
 				continue
+			}
+			if e.Site.Common().StaticCallee() != nil {
+				continue // static site: consumers use StaticCallee(), never this index
 			}
 			out[e.Site] = append(out[e.Site], e.Callee.Func)
 		}
@@ -609,6 +630,17 @@ func (a *analysis) handleCall(call ssa.CallInstruction, v ssa.Value) {
 		a.escape(call)
 		return
 	}
+	// For an invoke (interface) call, common.Args holds the true arguments WITHOUT
+	// the receiver, but the resolved concrete method's Params[0] IS the receiver
+	// (go/ssa). So an argument at Args[i] maps to Params[i+1] for an invoke callee;
+	// for a static/func-value call Args aligns with Params directly. Without this
+	// offset the first real argument's taint lands on the receiver parameter and the
+	// real parameter stays clean — a false NO-FLOW/ABSTAIN through every interface
+	// method (C-3 arg→param leg).
+	paramOffset := 0
+	if common.IsInvoke() {
+		paramOffset = 1
+	}
 	escapes := false
 	for _, callee := range callees {
 		switch {
@@ -616,8 +648,8 @@ func (a *analysis) handleCall(call ssa.CallInstruction, v ssa.Value) {
 			a.recordFlow(call, callee)
 		case a.isFirstParty(callee) && len(callee.Blocks) > 0:
 			for _, i := range argIdx {
-				if i < len(callee.Params) {
-					a.taint(callee.Params[i])
+				if p := i + paramOffset; p < len(callee.Params) {
+					a.taint(callee.Params[p])
 				}
 			}
 		default:

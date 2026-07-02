@@ -169,6 +169,49 @@ func TestStructCarriedFieldEscapes(t *testing.T) {
 	}
 }
 
+// TestInterfaceArgReachesParam is the C-3 arg→param regression: a tainted argument
+// passed into an interface method must reach the parameter inside the concrete impl
+// (the invoke receiver-offset bug tainted the receiver and missed the real param).
+func TestInterfaceArgReachesParam(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceIfaceArg")},
+		Sinks:       []taint.FuncSpec{sink("sinkIfaceArg")},
+	})
+	if r.Verdict != taint.Flow {
+		t.Fatalf("interface arg→param: verdict = %s (escaped=%v flows=%v), want FLOW", r.Verdict, r.Escaped, r.Flows)
+	}
+}
+
+// TestFuncValueReturnFlow is the C-3 func-value regression: return-flow through a
+// plain func value (StaticCallee nil, not an invoke) must not be dropped.
+func TestFuncValueReturnFlow(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("sourceFuncVal")},
+		Sinks:       []taint.FuncSpec{sink("sinkFuncVal")},
+	})
+	if r.Verdict == taint.NoFlow {
+		t.Fatalf("func-value return-flow: verdict = NO-FLOW — a taint-returning func value was proven clean")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("func-value return-flow: verdict = %s, want FLOW", r.Verdict)
+	}
+}
+
+// TestGenericSourceIsSeeded is the C-4 regression: a declared source that is a
+// first-party generic function must be seeded through its nil-Pkg instance callee.
+func TestGenericSourceIsSeeded(t *testing.T) {
+	r := run(t, taint.Config{
+		SourceFuncs: []taint.FuncSpec{src("GenericSource")},
+		Sinks:       []taint.FuncSpec{sink("sinkGeneric")},
+	})
+	if r.Sources == 0 {
+		t.Errorf("generic source: Sources==0 — the instance callee was not matched/seeded")
+	}
+	if r.Verdict != taint.Flow {
+		t.Errorf("generic source: verdict = %s, want FLOW", r.Verdict)
+	}
+}
+
 // Indexing a tainted slice is an unmodeled frontier, so the propagate switch's
 // default-escape backstop must fire: ABSTAIN, never a (false) NO-FLOW. This is the
 // soundness regression guard for the missing-default bug.
