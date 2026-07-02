@@ -529,6 +529,17 @@ func Load(r io.Reader) (*Graph, error) {
 	if g.Nodes == nil {
 		return nil, fmt.Errorf("groundwork/graph: missing nodes (not a flowmap graph?)")
 	}
+	// Fail-closed decoder invariant: an edge's boundary-ness must agree between the
+	// two ways the codebase asks it — the To-prefix (IsBoundary(), what evalReach
+	// and every walk key on) and the Boundary field. A graph with a boundary: To
+	// but an empty Boundary field (or vice versa) is malformed; accepting it lets
+	// the two predicates disagree downstream and mask a real reachable violation as
+	// an "unbindable target" caution (H-5). Refuse here rather than gate on it.
+	for i, e := range g.Edges {
+		if e.IsBoundary() != (e.Boundary != "") {
+			return nil, fmt.Errorf("groundwork/graph: edge %d (%s -> %s) has inconsistent boundary marking: To-prefix=%t but Boundary field=%q", i, e.From, e.To, e.IsBoundary(), e.Boundary)
+		}
+	}
 	return &g, nil
 }
 

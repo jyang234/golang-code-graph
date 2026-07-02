@@ -116,7 +116,12 @@ func bindsAnyTarget(ix *graph.Index, patterns []string) bool {
 		}
 	}
 	for _, e := range ix.Edges() {
-		if e.Boundary != "" && matchAny(e.To, patterns) {
+		// Use e.IsBoundary() (the To-prefix test), the SAME predicate evalReach's
+		// own walk keys on — not e.Boundary != "". A boundary target with a
+		// populated To prefix but an empty Boundary field would otherwise be judged
+		// "binds nothing" here and short-circuit the rule to a caution, masking a
+		// real reachable violation that evalReach would have found (H-5).
+		if e.IsBoundary() && matchAny(e.To, patterns) {
 			return true
 		}
 	}

@@ -58,6 +58,29 @@ func TestLoadRejectsTrailingData(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsInconsistentBoundaryMarking pins the H-5 decoder invariant: an
+// edge's boundary-ness must agree between the To-prefix (IsBoundary(), what the
+// reachability walk keys on) and the Boundary field. A boundary: To with an
+// empty Boundary field — or a Boundary field on a non-boundary To — lets the two
+// predicates disagree downstream and mask a real reachable violation, so Load
+// must fail closed.
+func TestLoadRejectsInconsistentBoundaryMarking(t *testing.T) {
+	cases := map[string]string{
+		"boundary To, empty field":   `{"nodes":[{"fqn":"svc.Purge","sig":"func()"}],"edges":[{"from":"svc.Purge","to":"boundary:db DELETE ledger"}],"blind_spots":[]}`,
+		"non-boundary To, field set": `{"nodes":[{"fqn":"svc.A","sig":"func()"}],"edges":[{"from":"svc.A","to":"svc.B","boundary":"outbound-sync"}],"blind_spots":[]}`,
+	}
+	for name, j := range cases {
+		if _, err := Load(strings.NewReader(j)); err == nil {
+			t.Errorf("%s: expected an error for inconsistent boundary marking, got nil", name)
+		}
+	}
+	// A well-formed boundary edge (prefix + field agree) must still load.
+	const ok = `{"nodes":[{"fqn":"svc.Purge","sig":"func()"}],"edges":[{"from":"svc.Purge","to":"boundary:db DELETE ledger","boundary":"outbound-sync"}],"blind_spots":[]}`
+	if _, err := Load(strings.NewReader(ok)); err != nil {
+		t.Errorf("consistent boundary edge should load, got %v", err)
+	}
+}
+
 // A graph carrying flowmap's recorded algo/caveats must round-trip (the schema
 // must accept the provenance keys it now emits), and the substrate line must
 // echo them. An empty algo reads as "unrecorded", never as a substrate (R3).
@@ -161,7 +184,7 @@ func TestReclaimEdgeRoundTripAndCaveat(t *testing.T) {
 // A base (no --reclaim) graph carries no via, so ReclaimCaveat is silent — the
 // committed, byte-identical default graph must disclose nothing.
 func TestReclaimCaveatSilentOnBaseGraph(t *testing.T) {
-	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db SELECT users"}],"blind_spots":[]}`
+	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db SELECT users","boundary":"outbound-sync"}],"blind_spots":[]}`
 	g, err := Load(strings.NewReader(j))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -177,7 +200,7 @@ func TestReclaimCaveatSilentOnBaseGraph(t *testing.T) {
 func TestSQLFoldCaveatSeparateFromEdgeReclaim(t *testing.T) {
 	const j = `{"algo":"vta","nodes":[{"fqn":"a","sig":"f"}],"edges":[` +
 		`{"from":"a","to":"svc.B","via":"strict-server"},` +
-		`{"from":"a","to":"boundary:db DELETE","via":"sql-constfold"}],"blind_spots":[]}`
+		`{"from":"a","to":"boundary:db DELETE","boundary":"outbound-sync","via":"sql-constfold"}],"blind_spots":[]}`
 	g, err := Load(strings.NewReader(j))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -200,7 +223,7 @@ func TestSQLFoldCaveatSeparateFromEdgeReclaim(t *testing.T) {
 // A folded label with no edge reclaimer leaves ReclaimCaveat silent — only the
 // SQL disclosure fires.
 func TestSQLFoldCaveatAloneLeavesReclaimSilent(t *testing.T) {
-	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db INSERT users","via":"sql-constfold"}],"blind_spots":[]}`
+	const j = `{"nodes":[{"fqn":"a","sig":"f"}],"edges":[{"from":"a","to":"boundary:db INSERT users","boundary":"outbound-sync","via":"sql-constfold"}],"blind_spots":[]}`
 	g, err := Load(strings.NewReader(j))
 	if err != nil {
 		t.Fatalf("Load: %v", err)

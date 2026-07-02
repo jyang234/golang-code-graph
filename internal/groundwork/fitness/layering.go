@@ -106,14 +106,16 @@ func isRootPkg(roots []string, pkg string) bool {
 	return false
 }
 
-// exempted reports whether the edge from→to is allow-listed. From/To in an
-// exception bind at an identifier boundary (policy.MatchPrefix, not bare
-// HasPrefix), so an entry can name one edge, a type, or a package without an
-// exception for "app.Get → store.Find" silently also exempting the unrelated
-// "app.GetUserAvatar → store.FindByID".
+// exempted reports whether the edge from→to is allow-listed. Each side binds
+// through policy.MatchExceptionSide — the SAME matcher PassRule.Allowed uses — so
+// an entry can name one edge, a type, or a package (identifier-boundary prefix,
+// not bare HasPrefix), and a ONE-SIDED entry (only From, or only To) exempts both
+// free-function and method edges identically. Calling MatchPrefix bare here
+// instead let an empty side match a method-shaped edge but not a free function,
+// so a one-sided exception half-worked, split by receiver shape (H-6).
 func exempted(allow []policy.Exception, from, to string) bool {
 	for _, ex := range allow {
-		if policy.MatchPrefix(from, ex.From) && policy.MatchPrefix(to, ex.To) {
+		if policy.MatchExceptionSide(from, ex.From) && policy.MatchExceptionSide(to, ex.To) {
 			return true
 		}
 	}

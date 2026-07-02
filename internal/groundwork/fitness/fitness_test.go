@@ -182,6 +182,37 @@ func TestMustNotReachReachableViolation(t *testing.T) {
 	}
 }
 
+// TestMustNotReachBoundaryEmptyFieldStillBinds pins H-5: an edge whose To
+// carries the boundary: prefix but whose Boundary FIELD is empty must still be
+// recognized as a bindable target by the same predicate evalReach walks on
+// (IsBoundary(), the To-prefix). Before the fix bindsAnyTarget keyed on
+// `Boundary != ""` and short-circuited the rule to a "binds nothing" caution,
+// silently masking the real reachable violation. (graph.Load would now reject
+// this shape; the in-memory graph exercises the fitness predicate directly.)
+func TestMustNotReachBoundaryEmptyFieldStillBinds(t *testing.T) {
+	const from = "(*example.com/svc/internal/handler.Server).Purge"
+	g := &graph.Graph{
+		Nodes: []graph.Node{{FQN: from, Sig: "func()", Tier: 1}},
+		Edges: []graph.Edge{
+			// boundary: To prefix, but the Boundary field was left empty.
+			{From: from, To: "boundary:db DELETE ledger", Tier: 1},
+		},
+	}
+	p := &policy.Policy{Service: "svc", Version: 1, MustNotReach: []policy.ReachRule{{
+		Name: "no-delete", From: []string{from}, To: []string{"boundary:db DELETE"},
+	}}}
+	res := Check(p, graph.NewIndex(g))
+	v := res.Violations()
+	if len(v) != 1 || v[0].Rule != "must_not_reach" {
+		t.Fatalf("want a reachable must_not_reach violation, got findings %v", res.Findings)
+	}
+	for _, c := range res.Cautions() {
+		if c.Rule == "must_not_reach" && strings.Contains(c.Summary, "binds nothing") {
+			t.Fatalf("target was masked as unbindable: %s", c.Summary)
+		}
+	}
+}
+
 func TestMustNotReachNoPathFoundIsCaution(t *testing.T) {
 	g := loadGraph(t, "blindsvc.graph.json")
 	p := &policy.Policy{

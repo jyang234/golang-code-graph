@@ -173,15 +173,27 @@ const EntrypointSelector = "entrypoint:*"
 // writing "boundary:db INSERT users_audit"); an empty side matches anything (an
 // entry must declare at least one side — validated on load).
 func (r *PassRule) Allowed(source, target string) bool {
-	match := func(s, pat string) bool {
-		return pat == "" || MatchPrefix(s, pat)
-	}
 	for _, a := range r.Allow {
-		if match(source, a.From) && match(target, a.To) {
+		if MatchExceptionSide(source, a.From) && MatchExceptionSide(target, a.To) {
 			return true
 		}
 	}
 	return false
+}
+
+// MatchExceptionSide reports whether one side of an allow/exception entry binds
+// the given symbol. An empty pattern is the one-sided wildcard — it matches
+// anything, so an exception can name just a From or just a To (validated on load
+// to declare at least one side). A non-empty pattern binds at an identifier
+// boundary (MatchPrefix), never a bare strings.HasPrefix. This is the SINGLE
+// matcher both the layering `exempted` check and PassRule.Allowed key on: a
+// one-sided entry (e.g. only To set) must exempt a free-function edge and a
+// method edge identically. Splitting it — as `exempted` once did by calling
+// MatchPrefix bare — makes MatchPrefix(from, "") false for a free function but
+// accidentally true for a method-shaped From, so the same exception half-works,
+// split by the receiver shape of the edge it should exempt (H-6).
+func MatchExceptionSide(s, pat string) bool {
+	return pat == "" || MatchPrefix(s, pat)
 }
 
 // IOBudget caps the external write effects reachable from a single entrypoint —
