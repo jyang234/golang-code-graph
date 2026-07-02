@@ -108,6 +108,40 @@ func TestServeMCPSession(t *testing.T) {
 	}
 }
 
+// TestServeMCPMalformedJSONGetsParseError pins the CLI/server fix: malformed JSON
+// on the stdio transport must get a JSON-RPC -32700 parse error (id null), not be
+// silently dropped — a request-bearing client otherwise hangs. A valid notification
+// (no id) still gets no response.
+func TestServeMCPMalformedJSONGetsParseError(t *testing.T) {
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize"`,          // truncated: unparseable
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`, // notification: no response
+	}, "\n") + "\n"
+	var out strings.Builder
+	fleet := newMCPFleet(map[string]*mcpServer{})
+	if err := serveMCP(strings.NewReader(in), &out, fleet); err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *rpcError       `json:"error"`
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one response (parse error only), got %d:\n%s", len(lines), out.String())
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &resp); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != -32700 {
+		t.Errorf("want a -32700 parse error, got %+v", resp.Error)
+	}
+	if string(resp.ID) != "null" {
+		t.Errorf("parse error must carry a null id, got %s", resp.ID)
+	}
+}
+
 // One scripted session against a two-service fleet (loansvc + obligsvc): the
 // no-service entrypoints listing spans the fleet prefixed by service, the
 // fleet-events lens joins loan.approved across both graphs and discloses

@@ -427,8 +427,18 @@ func serveMCP(r io.Reader, w io.Writer, fleet *mcpFleet) error {
 			continue
 		}
 		var req rpcRequest
-		if err := json.Unmarshal(line, &req); err != nil || req.ID == nil {
-			continue // malformed or a notification: nothing to answer
+		if err := json.Unmarshal(line, &req); err != nil {
+			// Malformed JSON: a client that sent a request (not a notification)
+			// would hang forever waiting on a response. Answer with a JSON-RPC parse
+			// error and a null id (the id is unrecoverable from unparseable input),
+			// matching the HTTP transport's 400 rather than silently dropping it.
+			if encErr := enc.Encode(rpcResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &rpcError{Code: -32700, Message: "parse error"}}); encErr != nil {
+				return encErr
+			}
+			continue
+		}
+		if req.ID == nil {
+			continue // a notification: JSON-RPC produces no response
 		}
 		if req.Method == "initialize" {
 			session = fleet.newSession()
