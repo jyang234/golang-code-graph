@@ -1,7 +1,7 @@
 ```mermaid
 flowchart LR
     %% static call graph — scope: whole graph; algo: rta
-    %% 5 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
+    %% 6 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
     %% 4 blind spot/markers on hidden plumbing omitted; pass --all-blind-spots to include
     bus_Bus_Publish["bus.Bus.Publish ⚠"]:::fallible
     handler_Server_Create["handler.Server.Create"]

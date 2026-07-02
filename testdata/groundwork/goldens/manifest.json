@@ -1,7 +1,7 @@
 {
   "blindsvc.graph.json": {
-    "nodes": 11,
-    "edges": 10,
+    "nodes": 12,
+    "edges": 11,
     "blind_spots": 2,
     "entrypoints": 2,
     "obligations": 0,
@@ -36,8 +36,8 @@
     "frontier": 0
   },
   "loansvc.graph.json": {
-    "nodes": 39,
-    "edges": 47,
+    "nodes": 40,
+    "edges": 49,
     "blind_spots": 1,
     "entrypoints": 3,
     "obligations": 0,

@@ -663,7 +663,7 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 		// label and the ssa call site coexist (IT-3 scoping note).
 		var nodeEdges []Edge
 		for _, e := range n.Out {
-			edges := edgeOf(ext, hints, e, scope, o.foldSQL, o.foldBus, callers)
+			edges := edgeOf(ext, hints, e, scope, o.foldSQL, o.foldBus, callers, 0)
 			nodeEdges = append(nodeEdges, edges...)
 			// Record a committed effect only when the site yields exactly ONE — the
 			// unambiguous case. A fold-resolved finite-table write fans the site out
@@ -1093,10 +1093,16 @@ type EntryNotFoundError struct{ Entry string }
 
 func (e *EntryNotFoundError) Error() string { return "no entry point named " + e.Entry }
 
-// edgeOf renders zero or one graph edges for an SSA call edge: a typed boundary
-// edge for publish/HTTP/DB calls, an internal edge for first-party→first-party
-// calls, and nothing for calls into unhinted stdlib/third-party code.
-func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool, foldSQL, foldBus bool, callers map[*ssa.Function][]ssa.CallInstruction) []Edge {
+// spliceDepthCap bounds edgeOf's recursion through chained $bound/$thunk wrappers.
+// Real wrapper chains are at most ~2 deep; the cap only exists so a pathological
+// cycle fails closed (drops the edge) instead of recurring forever.
+const spliceDepthCap = 16
+
+// edgeOf renders graph edges for an SSA call edge: a typed boundary edge for
+// publish/HTTP/DB calls, an internal edge for first-party→first-party calls, the
+// spliced edges of a $bound/$thunk wrapper's target, and nothing for calls into
+// unhinted stdlib/third-party code.
+func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope map[*ssa.Function]bool, foldSQL, foldBus bool, callers map[*ssa.Function][]ssa.CallInstruction, depth int) []Edge {
 	from := e.Caller.Func.RelString(nil)
 	callee := e.Callee.Func
 	f := ext.Edge(e.Caller.Func, callee, e.Site)
@@ -1104,6 +1110,29 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 	concurrent := f.Concurrent
 
 	switch {
+	case isSplicedWrapper(callee):
+		// Splice a thin $bound/$thunk wrapper: the caller reaches whatever the wrapper
+		// forwards to, so re-attribute the wrapper's out-edges to `from` and classify
+		// caller→wrappee normally. This keeps the real method (and any boundary effect
+		// inside or below it) connected WITHOUT rendering a synthetic "$bound" node
+		// (C-1). The original call's concurrency is carried onto the spliced edges: a
+		// `go methodValue()` reaches the wrappee concurrently even though the wrapper's
+		// own body calls it directly. depth bounds the (in practice ≤2) wrapper chain so
+		// a pathological cycle fails closed instead of recurring forever.
+		if depth > spliceDepthCap {
+			return nil
+		}
+		var out []Edge
+		for _, oe := range e.Callee.Out {
+			spliced := &cg.Edge{Caller: e.Caller, Callee: oe.Callee, Site: oe.Site}
+			out = append(out, edgeOf(ext, hints, spliced, scope, foldSQL, foldBus, callers, depth+1)...)
+		}
+		if concurrent {
+			for i := range out {
+				out[i].Concurrent = true
+			}
+		}
+		return out
 	case features.IsPackageInit(callee):
 		// A call to a package initializer is init-ordering plumbing: the
 		// synthesized `init` of every package calls the `init` of each package it

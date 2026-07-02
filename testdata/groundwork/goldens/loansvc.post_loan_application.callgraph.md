@@ -1,7 +1,7 @@
 ```mermaid
 flowchart LR
     %% static call graph — scope: POST /loan-application; algo: rta
-    %% 3 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
+    %% 4 first-party nodes above tier 2 hidden as plumbing; pass --show-plumbing to include
     client_Gateway_Charge["client.Gateway.Charge ⚠"]:::fallible
     handler_App_Create["handler.App.Create"]
     origination_Evaluator_Evaluate["origination.Evaluator.Evaluate ⚠"]:::fallible

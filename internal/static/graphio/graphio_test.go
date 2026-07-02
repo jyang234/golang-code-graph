@@ -19,58 +19,56 @@ func analyzeFixture(t *testing.T) *analyze.Result {
 	return res
 }
 
-// TestC1SyntheticNodesRendered is the C-1 regression: reachable first-party
-// functions that go/ssa leaves with a nil fn.Pkg — a generic INSTANCE and a
-// $bound method-value wrapper — must appear as nodes in Build output (with their
-// edges), not be silently severed as "third-party" with no blind spot. Both shapes
-// are exercised by the loansvc fixture. The synthetic node still names its real
-// package via features.EffectivePkgPath.
+// TestC1SyntheticNodesRendered is the C-1 regression, for both nil-fn.Pkg shapes:
+//   - a generic INSTANCE has a real body and is RENDERED as a node (attributed to
+//     its origin package), not severed as "third-party" with no blind spot;
+//   - a $bound method-value wrapper is a thin forwarder, so it is SPLICED: no
+//     synthetic "$bound" node exists, but the caller connects straight to the
+//     wrapped method (the seam the audit reproduced as a dropped edge). Rendering
+//     the wrapper would let it displace the real method as node/source/route.
+//
+// Both shapes are exercised by the loansvc fixture (the bus subscriber's
+// OnSettled$bound and codec.Decode[Application]).
 func TestC1SyntheticNodesRendered(t *testing.T) {
 	g, err := graphio.Build(analyzeFixture(t), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	nodes := map[string]graphio.Node{}
-	in, out := map[string]int{}, map[string]int{}
 	for _, n := range g.Nodes {
 		nodes[n.FQN] = n
-	}
-	for _, e := range g.Edges {
-		out[e.From]++
-		in[e.To]++
 	}
 
 	const (
 		instance = "example.com/loansvc/internal/codec.Decode[example.com/loansvc/internal/origination.Application]"
-		wrapper  = "(*example.com/loansvc/internal/consumer.Payments).OnSettled$bound"
+		caller   = "(*example.com/loansvc/internal/eventbus.Bus).Publish"
 		wrapped  = "(*example.com/loansvc/internal/consumer.Payments).OnSettled"
 	)
 
-	// (b) a first-party generic instance is a rendered node, attributed to its
-	// origin package (not "" and not a stdlib path).
+	// Generic instance: a rendered node, attributed to its origin package.
 	if n, ok := nodes[instance]; !ok {
 		t.Errorf("generic instance %q absent from Build output (C-1 severance)", instance)
 	} else if n.Package != "example.com/loansvc/internal/codec" {
 		t.Errorf("instance node Package = %q, want its origin package", n.Package)
 	}
 
-	// (a) a $bound method-value wrapper (through a *T receiver) is a rendered node,
-	// and the edge THROUGH it to the wrapped method is present — the seam the audit
-	// reproduced as a dropped edge with no blind spot.
-	if _, ok := nodes[wrapper]; !ok {
-		t.Errorf("$bound method-value wrapper %q absent from Build output (C-1 severance)", wrapper)
-	}
-	if in[wrapper] == 0 {
-		t.Errorf("$bound wrapper %q has no incoming edge — it was severed from its caller", wrapper)
-	}
-	sawWrapperToWrapped := false
-	for _, e := range g.Edges {
-		if e.From == wrapper && e.To == wrapped {
-			sawWrapperToWrapped = true
+	// $bound wrapper: spliced, never a node.
+	for fqn := range nodes {
+		if strings.HasSuffix(fqn, "$bound") || strings.HasSuffix(fqn, "$thunk") {
+			t.Errorf("method-value wrapper %q was rendered as a node; it should be spliced away", fqn)
 		}
 	}
-	if !sawWrapperToWrapped {
-		t.Errorf("edge %q -> %q missing: the wrapper does not splice through to the real method", wrapper, wrapped)
+
+	// The splice connects the wrapper's caller straight to the wrapped method, so
+	// the reachable first-party behavior behind the wrapper is not severed.
+	sawSpliced := false
+	for _, e := range g.Edges {
+		if e.From == caller && e.To == wrapped {
+			sawSpliced = true
+		}
+	}
+	if !sawSpliced {
+		t.Errorf("spliced edge %q -> %q missing: the wrapper's caller was severed from the real method (C-1)", caller, wrapped)
 	}
 }
 
