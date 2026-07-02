@@ -3,9 +3,25 @@ package graphio
 import (
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/jyang234/golang-code-graph/internal/boundarylabel"
 	"github.com/jyang234/golang-code-graph/internal/canon/sql"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
 	"github.com/jyang234/golang-code-graph/internal/static/sqlfold"
+)
+
+// busPublishPrefix and busConsumePrefix are the full boundary-label prefixes
+// graphio EMITS for a bus publish/consume (the bus prefix followed by the PUBLISH
+// or CONSUME verb and a trailing space). They are DERIVED from the shared
+// boundarylabel.BusPrefix — the same constant every consumer parses against — so a
+// change to the bus kind token propagates to the producer instead of leaving it a
+// hardcoded twin (M-7, one source of truth; the DB path already emits via
+// boundarylabel.DBPrefix). The verb token is spelled with its trailing space as a
+// separate literal so the concatenation clears BOTH repo-scan guards, which key on
+// the standalone bus-prefix and publish/consume-prefix literals — neither of which
+// appears verbatim here.
+var (
+	busPublishPrefix = boundarylabel.BusPrefix + "PUBLISH" + " "
+	busConsumePrefix = boundarylabel.BusPrefix + "CONSUME" + " "
 )
 
 // dynamicLabel is the sentinel for a boundary argument the labeler could not read

@@ -1165,9 +1165,9 @@ func edgeOf(ext *features.Extractor, hints *features.HintSet, e *cg.Edge, scope 
 		}
 		return nil
 	case hints.IsPublish(callee):
-		return busEdges(from, "boundary:bus PUBLISH ", e.Site, foldBus, tier, string(f.Boundary), concurrent)
+		return busEdges(from, busPublishPrefix, e.Site, foldBus, tier, string(f.Boundary), concurrent)
 	case hints.IsConsume(callee):
-		return busEdges(from, "boundary:bus CONSUME ", e.Site, foldBus, tier, string(f.Boundary), concurrent)
+		return busEdges(from, busConsumePrefix, e.Site, foldBus, tier, string(f.Boundary), concurrent)
 	case hints.IsHTTP(callee):
 		return []Edge{{From: from, To: "boundary:" + httpLabel(e.Site), Tier: tier, Boundary: string(f.Boundary), Concurrent: concurrent}}
 	case hints.IsDB(callee):
@@ -1354,7 +1354,7 @@ func passthroughReattribute(ext *features.Extractor, e *cg.Edge, tier int, bound
 // effect for partial-effect purposes: a bus publish or a DB mutation. Reads
 // and outbound queries are not "committed" — re-running them is safe.
 func committedEffect(label string) bool {
-	if event, ok := strings.CutPrefix(label, "boundary:bus PUBLISH "); ok {
+	if event, ok := strings.CutPrefix(label, busPublishPrefix); ok {
 		// A dynamic (non-constant) event name is NOT a concretely-named committed
 		// effect — symmetric to the unreadable-SQL DB op below, it is disclosed
 		// via the dynamic/blind-spot channel rather than asserted as a definite

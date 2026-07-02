@@ -131,8 +131,13 @@ func (g *Graph) rootedSubgraph(root string) (*Graph, []string, string, bool) {
 // resolveRoot maps a user-supplied root to a handler FQN. It tries, in order: an
 // exact entry-point Name match, an exact node FQN, an exact entry-point Fn, then a
 // segment-wise route match (so "POST /loan-application" resolves a route the router
-// mounted under a prefix, the same loose match triage uses). The first hit wins;
-// determinism holds because Entrypoints and Nodes are canonically sorted.
+// mounted under a prefix, the same loose match triage uses). The Name-based steps
+// (exact Name and segment-wise route) FAIL CLOSED when more than one DISTINCT
+// handler matches — an ambiguous root abstains rather than resolving at whichever
+// entry sorted first (M-12), symmetric with build-time resolveEntryRoot. A step
+// that matches exactly one handler returns it; determinism holds because the
+// per-step match sets are keyed on the handler Fn and Entrypoints/Nodes are
+// canonically sorted.
 func (g *Graph) resolveRoot(root string) (string, bool) {
 	// Exact Name match is authoritative, but two entrypoints can share a Name and
 	// resolve to DIFFERENT handlers; fail closed on that ambiguity rather than

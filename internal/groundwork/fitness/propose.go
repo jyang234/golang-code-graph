@@ -431,12 +431,14 @@ func concurrentUnclassifiedDB(ix *graph.Index) []string {
 
 // routeUnclassifiedDB returns the sorted distinct unclassified DB effect labels
 // (non-constant SQL the labeler cannot read as a write — "db call" and friends)
-// reachable from any ROUTE: a non-main entrypoint. Scoping to routes — not the
-// whole graph (ix.Edges()) — keeps every section that discloses the db-call
-// frontier in agreement, and makes the route-level "treated as possible writers,
-// excluded from the read-only ratchet, uncounted in the write budget" framing
-// accurate: a migration reachable only from main is not a route and is not what
-// those sections exclude or count.
+// reachable from any ROUTE: an IsRoute entrypoint (caller-less, and not in a
+// composition-root package — the same predicate the enforcer and the budget/
+// read-only proposers use). Scoping to routes — not the whole graph (ix.Edges())
+// — keeps every section that discloses the db-call frontier in agreement, and
+// makes the route-level "treated as possible writers, excluded from the read-only
+// ratchet, uncounted in the write budget" framing accurate: a migration reachable
+// only from a root-package entrypoint is not a route and is not what those
+// sections exclude or count.
 func routeUnclassifiedDB(p *policy.Policy, ix *graph.Index) []string {
 	set := map[string]bool{}
 	for _, s := range ix.Sources() {

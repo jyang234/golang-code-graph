@@ -13,13 +13,16 @@ import (
 
 // checkIOBudget caps the external *write* effects reachable from a single route
 // — the side-effect-blowout guard. Each structural entrypoint (Sources) is judged
-// independently, EXCEPT the composition root (main), which is an entrypoint but
-// not a route and whose startup writes (migrations, seeding) must not be charged
-// against a per-route budget. Reads (DB SELECT, outbound GET, bus consume) do not
-// count, only mutations (DB INSERT/UPDATE/DELETE, bus PUBLISH, outbound
-// POST/PUT/PATCH/DELETE). "Route" is approximated by IsRoute (a non-root
-// entrypoint); the boundary contract refines it to named HTTP routes and bus
-// consumers.
+// independently, EXCEPT entrypoints in a composition-root PACKAGE (every `main`,
+// and any declared layering root), which are startup plumbing, not routes, and
+// whose writes (migrations, seeding) must not be charged against a per-route
+// budget. Reads (DB SELECT, outbound GET, bus consume) do not count, only
+// mutations (DB INSERT/UPDATE/DELETE, bus PUBLISH, outbound POST/PUT/PATCH/DELETE).
+// "Route" is IsRoute (a caller-less entrypoint whose package is not a composition
+// root); the boundary contract refines it to named HTTP routes and bus consumers.
+// The exclusion is per-PACKAGE, not just the `main` function, matching the
+// enforcer's long-standing RootPackages behavior — so a caller-less handler
+// co-located inside a root package is treated as plumbing too.
 func checkIOBudget(p *policy.Policy, ix *graph.Index, r *Result) {
 	if p.IOBudget == nil {
 		return
@@ -172,7 +175,7 @@ func RouteWrites(p *policy.Policy, ix *graph.Index) map[string]RouteIO {
 	out := map[string]RouteIO{}
 	for _, src := range ix.Sources() {
 		if !IsRoute(p, ix, src) {
-			continue // the composition root (main) is an entrypoint but not a route
+			continue // an entrypoint in a composition-root package is plumbing, not a route
 		}
 		cone := append([]string{src}, ix.Reachable(src)...)
 		effects := ix.Effects(cone...)

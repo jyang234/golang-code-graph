@@ -266,30 +266,46 @@ func httpKey(proto, m, peer, rt string) string {
 // behavioral-impeachment join or mis-tier a read as a mutation (M-10, one source
 // of truth). Parity is pinned by TestDBOperationParity in the canon package.
 func DBOperation(attrs map[string]string) string {
-	op := strings.ToUpper(first(attrs, "db.operation", "db.operation.name"))
-	if op == "" {
+	// needTable=false: the verb alone is wanted, so the statement is normalized only
+	// when no operation attribute is present — never just to fill an unused table.
+	op, _ := dbOpAndTable(attrs, false)
+	return op
+}
+
+// dbOpAndTable derives the DB operation verb and, when needTable is set, the
+// primary table from a span's attributes, normalizing the statement AT MOST ONCE.
+// The verb precedence (db.operation / db.operation.name attribute, else the
+// normalized statement) lives here so DBOperation and dbKey share it (M-10) without
+// paying for two sql.Normalize passes over the same statement on the canon hot path
+// (the common raw-SQL span carries neither a db.operation nor a db.sql.table
+// attribute, so op and table would each have triggered their own normalization).
+//
+// The verb is UPPER-CASED and the attribute-supplied table LOWER-CASED so both key
+// identically to the statement-derived forms (sql.Normalize upper-cases the verb
+// and lower-cases the table): otherwise db.sql.table:"Applicants" and a
+// statement-derived "applicants" would mint two op keys for one table, splitting
+// the impeachment join and churning goldens on an instrumentation upgrade (M-25).
+func dbOpAndTable(attrs map[string]string, needTable bool) (op, table string) {
+	op = strings.ToUpper(first(attrs, "db.operation", "db.operation.name"))
+	table = strings.ToLower(first(attrs, "db.sql.table", "db.collection.name"))
+	if op == "" || (needTable && table == "") {
 		if stmt := statement(attrs); stmt != "" {
-			op = sql.Normalize(stmt).Operation
+			n := sql.Normalize(stmt)
+			if op == "" {
+				op = n.Operation
+			}
+			if table == "" {
+				table = n.Table
+			}
 		}
 	}
-	return op
+	return op, table
 }
 
 // dbKey assembles "DB <system> <OPERATION> <table>", keyed on operation and
 // table so identity barely depends on the statement text (canon §8.3).
 func dbKey(system string, attrs map[string]string) string {
-	op := DBOperation(attrs)
-	// Lower-case the attribute-supplied table so it keys identically to the
-	// statement-derived table (sql.Normalize lower-cases that one). Otherwise
-	// db.sql.table:"Applicants" and a statement-derived "applicants" mint two op
-	// keys for one table, splitting the impeachment join and churning goldens on
-	// an instrumentation upgrade (M-25).
-	table := strings.ToLower(first(attrs, "db.sql.table", "db.collection.name"))
-	if table == "" {
-		if stmt := statement(attrs); stmt != "" {
-			table = sql.Normalize(stmt).Table
-		}
-	}
+	op, table := dbOpAndTable(attrs, true)
 	parts := []string{"DB", system}
 	if op != "" {
 		parts = append(parts, op)

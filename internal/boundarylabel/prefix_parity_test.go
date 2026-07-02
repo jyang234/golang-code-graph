@@ -33,7 +33,11 @@ func TestNoHardcodedBoundaryPrefix(t *testing.T) {
 	}
 
 	_, thisFile, _, _ := runtime.Caller(0)
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
+	// boundarylabel lives two levels below the repo root (internal/boundarylabel),
+	// so climb exactly two — not three (the opkey guard this was modeled on sits
+	// one level deeper at internal/canon/opkey). Three would scan the PARENT of the
+	// repo, missing the repo entirely and tripping on unrelated sibling trees.
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
 	homeDir := filepath.Dir(thisFile) // the constants' home — allowed to type the literals
 
 	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {

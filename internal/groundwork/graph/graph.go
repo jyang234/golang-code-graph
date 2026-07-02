@@ -75,10 +75,13 @@ type Graph struct {
 	// commands (flowmap's authoritative main-package set, roots.KindMain).
 	// groundwork decodes it on its own side of the trust boundary —
 	// DisallowUnknownFields would reject the graph otherwise — and round-trips it.
-	// It is a disclosure (no verdict reads it), but the layering proposer
-	// (fitness.proposeLayers) PREFERS it over its structural `.main` heuristic to
-	// pick the composition roots it exempts, so the assembly point is the one the
-	// producer's SSA identified rather than an FQN guess. Omitted for a library (no
+	// The layering proposer (fitness.proposeLayers) PREFERS it over its structural
+	// `.main` heuristic to pick the composition roots it exempts, so the assembly
+	// point is the one the producer's SSA identified rather than an FQN guess. The
+	// io_budget gate ALSO reads it: fitness.IsRoute (via routeRootPkgs) falls back to
+	// it when a policy sets io_budget but declares no layering roots, so a
+	// composition root is not charged as a route — meaning this producer-supplied
+	// field now feeds a verdict, not only a disclosure. Omitted for a library (no
 	// command) or a graph from a pre-field flowmap, where the proposer falls back to
 	// the heuristic.
 	CompositionRoots []string `json:"composition_roots,omitempty"`
