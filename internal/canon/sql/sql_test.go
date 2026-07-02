@@ -266,6 +266,67 @@ func TestNormalizeDollarInIdentifier(t *testing.T) {
 	}
 }
 
+// TestNormalizeQuotedKeywordTable pins the R-2 follow-up: a table whose name is a
+// SQL keyword must be quoted, and re-quoting it for idempotence must NOT lose the
+// Table attribution (which collapses distinct tables under one op key). Table
+// extraction unwraps the re-quoted token back to the bare name.
+func TestNormalizeQuotedKeywordTable(t *testing.T) {
+	cases := []struct {
+		raw, table string
+	}{
+		{`INSERT INTO "order" (id) VALUES (1)`, "order"},
+		{`SELECT * FROM "select"`, "select"},
+		{`DELETE FROM "group" WHERE id = 1`, "group"},
+		{`UPDATE "limit" SET x = 1`, "limit"},
+		{`INSERT INTO "Order" (id) VALUES (1)`, "order"}, // case-folded like bare
+	}
+	for _, c := range cases {
+		n := Normalize(c.raw)
+		if n.Table != c.table {
+			t.Errorf("Normalize(%q).Table = %q, want %q", c.raw, n.Table, c.table)
+		}
+		// And still a fixed point of the normalizer.
+		if once, twice := n.Statement, Normalize(n.Statement).Statement; once != twice {
+			t.Errorf("Normalize(%q) not idempotent: once %q twice %q", c.raw, once, twice)
+		}
+	}
+}
+
+// TestNormalizeDollarLiteralAbuttingIdentRedacted pins the R-2 follow-up: a
+// well-formed dollar-quoted literal must be redacted even when it directly abuts an
+// identifier byte (no separating space), since the token-boundary guard alone would
+// have let its body leak (H-1). The discriminator is a matching close delimiter.
+func TestNormalizeDollarLiteralAbuttingIdentRedacted(t *testing.T) {
+	for _, raw := range []string{
+		`SELECT x AS$$ secret payload $$`, // $$ glued to the AS keyword's tail
+		`SELECT a$$secret$$`,              // glued to an identifier
+	} {
+		got := Normalize(raw).Statement
+		for _, leaked := range []string{"secret", "payload"} {
+			if strings.Contains(strings.ToLower(got), leaked) {
+				t.Errorf("dollar-literal body %q leaked into %q (from %q)", leaked, got, raw)
+			}
+		}
+	}
+}
+
+// TestIsIdentByteGrammar pins the PostgreSQL identifier-continuation byte set this
+// scanner's dollar-quote token-boundary guard depends on. schemadrift.isIdentByte
+// must match this byte-for-byte (the "kept in step" parity claim); pinning both
+// copies to the SAME explicit spec means a silent edit to either now fails its own
+// package's test — the guard CLAUDE.md requires for a rule applied in two places.
+// (schemadrift/parser_test.go carries the identical assertion.)
+func TestIsIdentByteGrammar(t *testing.T) {
+	for c := 0; c < 256; c++ {
+		b := byte(c)
+		want := b == '_' || b == '$' ||
+			(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+		if isIdentByte(b) != want {
+			t.Errorf("isIdentByte(%q) = %v, want %v", b, isIdentByte(b), want)
+		}
+	}
+}
+
 func TestNormalizeDeterministic(t *testing.T) {
 	// Whitespace and placeholder-style variations of the same logical statement
 	// converge.

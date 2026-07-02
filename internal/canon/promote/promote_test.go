@@ -273,6 +273,34 @@ func TestConcurrentWrapperKeepsLoopMarker(t *testing.T) {
 	}
 }
 
+// TestUnorderedWrapperKeepsLoopMarker is the R-3 regression on the UNORDERED branch
+// (appendContracted is invoked separately per group kind): dropping a wrapper whose
+// sole child-group carries a "1..*" marker into an UNORDERED group must likewise not
+// flatten-and-discard the marker.
+func TestUnorderedWrapperKeepsLoopMarker(t *testing.T) {
+	root := span("root", 1,
+		unord(
+			span("HTTP GET /a", 1),
+			span("wrapper", 3, seqM("1..*", span("DB postgres INSERT ledger", 1))),
+		),
+	)
+	Filter(root, keepTier1and2)
+
+	if !hasMultiplicity(root, "1..*") {
+		t.Fatalf("loop multiplicity discarded on unordered promotion: %+v", root.Children)
+	}
+	for _, g := range root.Children {
+		if !g.Unordered {
+			continue
+		}
+		for _, m := range g.Members {
+			if m.Op == "DB postgres INSERT ledger" {
+				t.Errorf("INSERT promoted into the unordered group bare, erasing its 1..* marker: %+v", g)
+			}
+		}
+	}
+}
+
 // TestConcurrentWrapperKeepsUnorderedChild is the second R-3 sub-case: an Unordered
 // child-group flattened into a Concurrent parent would UPGRADE "order unknown" to
 // an asserted race. The wrapper must be retained so the unordered relationship is

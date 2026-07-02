@@ -888,7 +888,9 @@ func allocEscapesToForeignStore(A *ssa.Alloc) bool {
 				return true
 			}
 		case *ssa.MakeClosure:
-			if !closureOnlyDeferred(r) {
+			// Reuse the same deferred-only-capture predicate the ownership check uses
+			// (onlyDeferred), so both agree on what "runs only at exit" means.
+			if !onlyDeferred(r) {
 				return true
 			}
 		case *ssa.Defer:
@@ -901,26 +903,6 @@ func allocEscapesToForeignStore(A *ssa.Alloc) bool {
 		}
 	}
 	return false
-}
-
-// closureOnlyDeferred reports whether a MakeClosure result is used ONLY as the
-// callee of `defer` statements. Such a closure runs at function exit, so a store
-// it makes to a captured alloc cannot affect a mid-function load. Any other use
-// (a direct call, a `go`, being stored/passed for later invocation) can run
-// mid-function and is treated as an escape — fail closed on no referrers too.
-func closureOnlyDeferred(mc *ssa.MakeClosure) bool {
-	refs := mc.Referrers()
-	if refs == nil {
-		return false
-	}
-	used := false
-	for _, in := range *refs {
-		if _, ok := in.(*ssa.Defer); !ok {
-			return false
-		}
-		used = true
-	}
-	return used
 }
 
 // failureBranch recognizes `if <acquireErr> != nil` (or == nil) and returns the

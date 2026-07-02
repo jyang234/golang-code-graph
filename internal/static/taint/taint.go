@@ -23,6 +23,12 @@
 // bodies; taint passed into non-first-party code (other than a declared sink) is an
 // escape, not a silent no-op.
 //
+// The "never a false NO-FLOW" guarantee holds whenever a call graph is supplied
+// (production always does). Its one documented exception is the degraded API-only
+// nil-cg mode: with no graph an interface-dispatched SOURCE cannot be enumerated
+// at its call site and goes un-seeded, so that corner can emit a false NO-FLOW.
+// See Analyze/prepare.
+//
 // Scope (v1, a measured spike — precision is a follow-up, not assumed): no
 // go/pointer; maps/interfaces/channels/closures/reflection are the abstain frontier;
 // the escaped flag is per-analysis (one escape downgrades the whole no-flow claim).
@@ -169,11 +175,6 @@ type analysis struct {
 	// NO-FLOW). Precomputed.
 	siteCallees map[ssa.CallInstruction][]*ssa.Function
 
-	// foreignCaller: first-party functions with a non-first-party caller in the
-	// call graph. A tainted return consumed only by such a caller escapes view
-	// (R-4). Precomputed.
-	foreignCaller map[*ssa.Function]bool
-
 	retTainted map[*ssa.Function]bool
 
 	flows       []Finding
@@ -194,30 +195,22 @@ type prepared struct {
 	fieldLoads  map[fieldKey][]ssa.Value
 	callsTo     map[*ssa.Function][]ssa.CallInstruction
 	siteCallees map[ssa.CallInstruction][]*ssa.Function
-	// foreignCaller holds first-party functions the call graph records a caller for
-	// that is NOT first-party (e.g. a String()/Error() method invoked from the
-	// stdlib, or an exported function called by a third-party library). Such a
-	// caller's frame is outside the descent scope, so a tainted RETURN consumed
-	// there escapes view — handleReturn must set the escape flag, not silently prove
-	// NO-FLOW (R-4). Empty when no call graph was supplied.
-	foreignCaller map[*ssa.Function]bool
 }
 
 // prepare walks prog's first-party code once and builds the cfg-independent indexes.
-// cg (the RTA/VTA call graph) resolves interface/func-value dispatch and records
-// which first-party functions have foreign callers. With a non-nil cg an
-// un-enumerable invoke ARGUMENT escapes (fail closed → ABSTAIN). A nil cg is the
-// API-only degraded mode: invoke sites are un-enumerable, so an interface-dispatched
-// SOURCE goes un-seeded (its call sites resolve to no callee) — a potential false
-// NO-FLOW in that corner. Production always passes a graph; see Analyze.
+// cg (the RTA/VTA call graph) resolves interface/func-value dispatch. With a
+// non-nil cg an un-enumerable invoke ARGUMENT escapes (fail closed → ABSTAIN). A
+// nil cg is the API-only degraded mode: invoke sites are un-enumerable, so an
+// interface-dispatched SOURCE goes un-seeded (its call sites resolve to no callee)
+// — a potential false NO-FLOW in that corner. Production always passes a graph;
+// see Analyze.
 func prepare(prog *ssabuild.Program, cg *callgraph.Graph) *prepared {
 	p := &prepared{
-		prog:          prog,
-		funcs:         firstPartyFuncs(prog),
-		fieldLoads:    map[fieldKey][]ssa.Value{},
-		callsTo:       map[*ssa.Function][]ssa.CallInstruction{},
-		siteCallees:   resolveSiteCallees(cg),
-		foreignCaller: resolveForeignCallers(prog, cg),
+		prog:        prog,
+		funcs:       firstPartyFuncs(prog),
+		fieldLoads:  map[fieldKey][]ssa.Value{},
+		callsTo:     map[*ssa.Function][]ssa.CallInstruction{},
+		siteCallees: resolveSiteCallees(cg),
 	}
 	for _, fn := range p.funcs {
 		for _, b := range fn.Blocks {
@@ -281,40 +274,12 @@ func resolveSiteCallees(cg *callgraph.Graph) map[ssa.CallInstruction][]*ssa.Func
 	return out
 }
 
-// resolveForeignCallers returns the first-party functions that the call graph
-// records at least one NON-first-party caller for. Return-flow (handleReturn)
-// only taints first-party call sites (callsTo), so without this a tainted result
-// consumed solely by a foreign frame — a String()/Error() method dispatched from
-// the stdlib, an exported function used by a third-party library — would propagate
-// nowhere and set no escape, yielding a false NO-FLOW (R-4). A foreign caller is
-// exactly a caller edge NOT already represented in callsTo (which holds only
-// first-party static + call-graph-resolved first-party dynamic sites). Empty when
-// no call graph was supplied — see the nil-cg caveat on Analyze.
-func resolveForeignCallers(prog *ssabuild.Program, cg *callgraph.Graph) map[*ssa.Function]bool {
-	out := map[*ssa.Function]bool{}
-	if cg == nil {
-		return out
-	}
-	for _, n := range cg.Nodes {
-		if n == nil || n.Func == nil || prog.IsFirstPartyFunc(n.Func) {
-			continue // a first-party caller's sites are already indexed in callsTo
-		}
-		for _, e := range n.Out {
-			if e.Callee != nil && e.Callee.Func != nil && prog.IsFirstPartyFunc(e.Callee.Func) {
-				out[e.Callee.Func] = true
-			}
-		}
-	}
-	return out
-}
-
 // Analyze runs the forward taint analysis over prog's first-party code and returns
 // the trichotomy report. cg (the RTA/VTA call graph) resolves interface/func-value
 // dispatch so a flow through an interface method is not silently proven absent
-// (C-3/C-4) and identifies foreign callers so a tainted return consumed outside
-// first-party view escapes (R-4). A nil cg is a degraded, API-only mode: invoke
-// argument sites still escape, but an interface-dispatched SOURCE goes un-seeded
-// (a false-NO-FLOW corner) — the production callers always supply a graph.
+// (C-3/C-4). A nil cg is a degraded, API-only mode: invoke argument sites still
+// escape, but an interface-dispatched SOURCE goes un-seeded (a false-NO-FLOW
+// corner) — the production callers always supply a graph.
 func Analyze(prog *ssabuild.Program, cg *callgraph.Graph, cfg Config) Report {
 	return prepare(prog, cg).analyze(cfg)
 }
@@ -323,18 +288,17 @@ func Analyze(prog *ssabuild.Program, cg *callgraph.Graph, cfg Config) Report {
 // indexes, with its own fresh per-run state.
 func (p *prepared) analyze(cfg Config) Report {
 	a := &analysis{
-		cfg:           cfg,
-		prog:          p.prog,
-		funcs:         p.funcs,
-		fieldLoads:    p.fieldLoads,
-		callsTo:       p.callsTo,
-		siteCallees:   p.siteCallees,
-		foreignCaller: p.foreignCaller,
-		tainted:       map[ssa.Value]bool{},
-		taintedField:  map[fieldKey]bool{},
-		retTainted:    map[*ssa.Function]bool{},
-		flowSeen:      map[Finding]bool{},
-		escapeSites:   map[string]bool{},
+		cfg:          cfg,
+		prog:         p.prog,
+		funcs:        p.funcs,
+		fieldLoads:   p.fieldLoads,
+		callsTo:      p.callsTo,
+		siteCallees:  p.siteCallees,
+		tainted:      map[ssa.Value]bool{},
+		taintedField: map[fieldKey]bool{},
+		retTainted:   map[*ssa.Function]bool{},
+		flowSeen:     map[Finding]bool{},
+		escapeSites:  map[string]bool{},
 	}
 	sources := a.seed()
 	a.run()
@@ -637,18 +601,20 @@ func (a *analysis) handleReturn(ret *ssa.Return, v ssa.Value) {
 			return
 		}
 		a.retTainted[fn] = true
-		if a.foreignCaller[fn] || len(a.callsTo[fn]) == 0 {
-			// fn's tainted result is not accounted for by any FIRST-PARTY caller the
-			// analysis tracks: the call graph records a non-first-party caller
-			// (a String()/Error()/sort.Interface method dispatched from stdlib, an
-			// exported function used by a third-party library — foreignCaller), OR no
-			// tracked caller at all (callsTo empty — the caller's body was never built,
-			// e.g. a stdlib frame that dispatches through reflection, or the function
-			// is an unconsumed API surface). Either way the tainted value leaves
-			// analyzable view, so it escapes — a sound ABSTAIN, never a false NO-FLOW
-			// (R-4). The package doc's "taint into non-first-party code is an escape"
-			// governs return-flow, not just argument-flow. Escaping an unconsumed
-			// return only ever downgrades NO-FLOW to ABSTAIN; it never hides a flow.
+		if len(a.callsTo[fn]) == 0 {
+			// fn returns taint but NO first-party caller the analysis tracks consumes
+			// that result. In this front-end the call graph does not build dependency
+			// bodies, so a return actually consumed by a foreign frame (a
+			// String()/Error()/sort.Interface method dispatched from the stdlib, an
+			// exported function used by a third-party library) is INDISTINGUISHABLE
+			// from a genuinely-unconsumed one — both leave callsTo empty. We cannot
+			// prove the value reaches no sink, so we escape (fail closed → ABSTAIN,
+			// never a false NO-FLOW — R-4), disclosing fn as the escape site. This is
+			// the observable proxy for the review's "escape when a caller outside
+			// callsTo consumes the return"; it over-approximates onto genuinely dead
+			// code too, which only ever downgrades NO-FLOW to ABSTAIN, never hides a
+			// flow. The package doc's "taint into non-first-party code is an escape"
+			// governs return-flow, not just argument-flow.
 			a.escapeFn(fn)
 		}
 		for _, call := range a.callsTo[fn] {

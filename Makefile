@@ -5,12 +5,13 @@
 # `lint` warns loudly when the locally-installed version drifts from this pin.
 GOLANGCI_LINT_VERSION ?= v2.5.0
 
-# The fixture modules (loansvc, impeachsvc) are separate go modules gated by
-# `make fixture`; their trees are excluded from the repo-root gofmt gate so each
-# fixture has ONE owner. Defined once here and referenced only by `fmt-check`
+# Repo-root gofmt exclusion, defined ONCE here and referenced only by `fmt-check`
 # (which `verify` now calls instead of re-inlining the check) so the predicate
-# cannot drift into two copies — CLAUDE.md one-source-of-truth (R-6).
-GOFMT_EXCLUDE = ^testdata/fixtures/(loansvc|impeachsvc)/
+# cannot drift into two copies — CLAUDE.md one-source-of-truth (R-6). Only loansvc
+# is excluded: it is the pre-existing carve-out. impeachsvc is deliberately NOT
+# excluded so it stays gofmt-gated here (the `fixture` target only builds+tests, so
+# excluding it would leave its formatting ungated anywhere — a coverage loss).
+GOFMT_EXCLUDE = ^testdata/fixtures/loansvc/
 
 build:
 	go build ./...

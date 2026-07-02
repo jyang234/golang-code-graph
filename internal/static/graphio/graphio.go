@@ -1117,8 +1117,8 @@ func (e *EntryAmbiguousError) Error() string {
 // fail LOUD (panic), NOT drop the edge: a dropped boundary edge is the fail-OPEN
 // direction for an absence proof — a missing edge reads as "no path" (a false PASS
 // / false NEVER), the worst outcome. A panic on the genuinely-unreachable cycle is
-// the fail-closed choice (CLAUDE.md: a silent wrong result beats a crash, never the
-// reverse).
+// the fail-closed choice (CLAUDE.md: the worst outcome is a confidently-wrong silent
+// result, never a crash — so a loud crash is preferable to a silent wrong edge drop).
 const spliceDepthCap = 16
 
 // edgeOf renders graph edges for an SSA call edge: a typed boundary edge for

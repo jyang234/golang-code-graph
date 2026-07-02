@@ -145,6 +145,23 @@ func TestDollarQuotedCreateDoesNotMaskDrift(t *testing.T) {
 	}
 }
 
+// TestIsIdentByteGrammar pins the PostgreSQL identifier-continuation byte set the
+// dollar-quote token-boundary guard depends on. canon/sql.isIdentByte must match
+// this byte-for-byte (the "kept in step" parity claim); pinning both copies to the
+// SAME explicit spec means a silent edit to either fails its own package's test —
+// the guard CLAUDE.md requires for a rule applied in two places.
+// (canon/sql/sql_test.go carries the identical assertion.)
+func TestIsIdentByteGrammar(t *testing.T) {
+	for c := 0; c < 256; c++ {
+		b := byte(c)
+		want := b == '_' || b == '$' ||
+			(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+		if isIdentByte(b) != want {
+			t.Errorf("isIdentByte(%q) = %v, want %v", b, isIdentByte(b), want)
+		}
+	}
+}
+
 // TestScanDDLUnterminatedDollarQuoteFailsClosed pins the H-12 §3 gap: an
 // UNTERMINATED dollar-quoted body ($$… with no closing $$) must consume to input
 // end (never leak its contents as DDL), the conservative fail-closed direction —

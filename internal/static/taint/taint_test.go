@@ -169,12 +169,14 @@ func TestStructCarriedFieldEscapes(t *testing.T) {
 	}
 }
 
-// TestForeignCallerReturnEscapes is the R-4 regression: a first-party method
+// TestUnconsumedTaintedReturnEscapes is the R-4 regression: a first-party method
 // (SortLeak.Less) whose tainted return is consumed ONLY by a third-party caller
-// (sort's internal Less dispatch) must ESCAPE — the value leaves first-party view.
-// Return-flow taints only first-party callers, so without the foreign-caller escape
-// the taint propagated nowhere and set no escape → a false NO-FLOW.
-func TestForeignCallerReturnEscapes(t *testing.T) {
+// (sort's internal Less dispatch) must ESCAPE. In this front-end the call graph
+// does not build dependency bodies, so that foreign consumption manifests as an
+// EMPTY callsTo — indistinguishable from a genuinely-unconsumed return — and both
+// escape (fail closed → ABSTAIN, never a false NO-FLOW). Before the fix the tainted
+// return propagated nowhere and set no escape → a false NO-FLOW.
+func TestUnconsumedTaintedReturnEscapes(t *testing.T) {
 	r := run(t, taint.Config{
 		SourceFuncs: []taint.FuncSpec{src("sourceSort")},
 		Sinks:       []taint.FuncSpec{sink("sinkClean")}, // an unrelated declared sink

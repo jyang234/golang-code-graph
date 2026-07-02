@@ -217,9 +217,9 @@ their resolution and corrects the plan's overclaims per the review's §5.
 | **R-1** | C-2 false SATISFIED via escape-mediated `err` reassignment | `obligations.allocEscapesToForeignStore` evicts an escaping alloc's loads from `clean` (directly-invoked closure capture or `&err` into a non-deferred call); deferred-only captures survive. `TestEscapeMediatedReassignNotSatisfied` pins both leak vehicles + the CANT-PROVE arm (`ReassignThenRelease`). |
 | **R-2** | M-24 quoted-identifier unwrap broke `Normalize` idempotence; nested block comments leaked; `$`-in-identifier drift | `canon/sql`: re-quote identifiers that are not plain non-keyword idents (`emitIdent`); nest block comments; guard the dollar-quote scan at a token boundary (parity with `schemadrift.isIdentByte`). Seeds + `TestNormalize{QuotedIdentifierIdempotent,NestedBlockComment,DollarInIdentifier}`; `FuzzNormalizeIdempotent` clean. |
 | **R-3** | C-7/M-26 loop marker discarded on Concurrent/Unordered promotion | `promote.promotableIntoGroup` flattens a sole child-group only when lossless (no multiplicity, no ordering upgrade); otherwise retains the wrapper. `TestConcurrentWrapperKeeps{LoopMarker,UnorderedChild}`. |
-| **R-4** | Taint return consumed only by a third-party caller died silently | `handleReturn` escapes when the call graph records a foreign caller (`resolveForeignCallers`) or no first-party caller consumes the return. Taint package/return-flow docs tempered (row 1.3). `TestForeignCallerReturnEscapes`. |
+| **R-4** | Taint return consumed only by a third-party caller died silently | `handleReturn` escapes when NO first-party caller consumes a tainted return (`len(callsTo[fn])==0`). This front-end does not build dependency bodies, so a return actually consumed by a foreign frame is indistinguishable from an unconsumed one — both escape (fail closed → ABSTAIN, disclosed via the escape site). Taint package/return-flow docs tempered (row 1.3). `TestUnconsumedTaintedReturnEscapes`. |
 | **R-5** | Boundary-label grammar recomposed by concatenation, evading the guard | `graph.Index` decoders adopt `boundarylabel.DBPrefix/BusPrefix`; `frontier`/`fitness.budget`/`graphio.mermaid` adopt `KindDB/KindBus`; the repo-scan guard now flags `+ "db "`/`+ "bus "` concatenation. |
-| **R-6** | M-2 CI-parity leftovers | Makefile gofmt exclusion hoisted to one `GOFMT_EXCLUDE` predicate reused by `verify → fmt-check` (no inline copy); lint-version parity guard added (`internal/ciparity`). Go-version split: **recorded deferral**, see below. |
+| **R-6** | M-2 CI-parity leftovers | Makefile gofmt exclusion hoisted to one `GOFMT_EXCLUDE` predicate reused by `verify → fmt-check` (no inline copy); impeachsvc stays gofmt-gated at root (excluding it would drop coverage). Lint-version parity guard added (`internal/ciparity`). Go-version split: **recorded deferral**, see below. |
 
 ### R-6 Go-version split — recorded deliberate deferral
 
@@ -269,3 +269,28 @@ generic-helper effect, H-4 Build-level fixture, H-2 orphans-accepted, H-7
 `NewCautions` BLOCK-path, H-12 unterminated-`$$`, M-13 `--strict` wiring) are
 lower-risk (the fixes themselves are verified by other means) and tracked here as
 follow-ups.
+
+### Adversarial self-review of this round (regressions caught before merge)
+
+A max-effort code review of the R-1…R-6 change-set found and fixed two
+regressions the R-2 SQL fix itself introduced, plus cleanups:
+
+- **R-2 table loss:** re-quoting a keyword-spelled quoted table (`"order"`,
+  `"group"`) left `identAfter`/`updateTable` unable to read the `"`-prefixed token,
+  so `Table` collapsed to `""` and distinct tables merged under one op key. Fixed by
+  unwrapping re-quoted tokens in table extraction (`tableIdent`/`unquoteIdent`),
+  pinned by `TestNormalizeQuotedKeywordTable`.
+- **R-2 redaction weakening:** the dollar-quote token-boundary guard suppressed
+  redaction of a well-formed `$$…$$` literal glued to an identifier byte
+  (`x$$secret$$`), an H-1 leak. Fixed by redacting on a matching close delimiter
+  regardless of adjacency, using the boundary guard only for the no-close case;
+  pinned by `TestNormalizeDollarLiteralAbuttingIdentRedacted`.
+- **R-4 simplification:** the `foreignCaller` index was inert in this front-end
+  (dependency bodies are not built, so no foreign caller edge exists) — removed it
+  and the duplicate call-graph walk; the observable `len(callsTo)==0` proxy is the
+  sound, tested condition. Package doc reconciled with the nil-cg false-NO-FLOW
+  caveat.
+- **Cleanups:** reused the existing `onlyDeferred` instead of a duplicate closure
+  predicate (obligations); pinned the `isIdentByte` cross-package parity with a
+  grammar test in both packages; corrected the inverted CLAUDE.md citation on the
+  graphio splice-cap panic; added the R-3 unordered-parent loop-marker test.

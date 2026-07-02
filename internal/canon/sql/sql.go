@@ -138,26 +138,32 @@ func tokenize(raw string) []string {
 			// whole body so NO byte inside it survives into the canonical statement,
 			// the same redaction promise this file makes for '-literals (H-1). A bare
 			// $N bind placeholder ($1) is NOT a dollar quote and falls through to the
-			// placeholder run below. A '$' that CONTINUES an identifier (previous byte
-			// is an identifier byte — PostgreSQL allows '$' inside identifiers, e.g.
-			// a$b$c) is likewise not an opener: treating it as one reads a legal
-			// identifier's tail as a dollar body and swallows following clauses (Table
-			// drifts to ""), so only attempt the scan at a token boundary. This guard is
-			// the parity partner of schemadrift.stripSQL's isIdentByte(s[i-1]) check;
-			// the two must stay in step.
-			if i == 0 || !isIdentByte(raw[i-1]) {
-				if d := dollarQuoteDelim(raw, i); d > 0 {
-					delim := raw[i : i+d]
-					if k := strings.Index(raw[i+d:], delim); k >= 0 {
-						i += d + k + d // consume body AND the closing delimiter
-					} else {
-						i = n // unterminated body: consume the rest, never leak it
-					}
+			// placeholder run below.
+			if d := dollarQuoteDelim(raw, i); d > 0 {
+				delim := raw[i : i+d]
+				if k := strings.Index(raw[i+d:], delim); k >= 0 {
+					// A well-formed dollar-quoted literal (matching close found): redact
+					// its whole body REGARDLESS of what precedes it, honoring H-1 even
+					// when the literal abuts an identifier byte (x$$secret$$). Requiring a
+					// matching close is what lets an identifier's embedded '$' (a$b$c,
+					// which has no close) fall through below without swallowing the tail.
+					i += d + k + d // consume body AND the closing delimiter
+					toks = append(toks, "?")
+					continue
+				}
+				// No matching close. At a token boundary this is an UNTERMINATED literal
+				// — consume the rest (fail-closed redaction, never leak). Glued to an
+				// identifier byte it is instead an identifier's embedded '$' (a$b$c):
+				// fall through so the tail is NOT swallowed (Table would drift to "").
+				// This token-boundary guard is the parity partner of
+				// schemadrift.stripSQL's isIdentByte(s[i-1]) check; the two stay in step.
+				if i == 0 || !isIdentByte(raw[i-1]) {
+					i = n
 					toks = append(toks, "?")
 					continue
 				}
 			}
-			// Driver placeholder ($1): consume the run.
+			// Driver placeholder ($1) or an identifier-continuation '$': consume the run.
 			i++
 			for i < n && (isIdent(raw[i]) || isDigit(raw[i])) {
 				i++
@@ -254,6 +260,37 @@ func operationAndTable(toks []string) (op, table string) {
 // as bare identifiers, so they must be skipped to reach the real table.
 var updateQualifiers = map[string]bool{"only": true, "low_priority": true, "ignore": true}
 
+// tableIdent returns the table-name value a table-position token carries, and
+// whether the token is a table identifier at all. It accepts a bare lower-case
+// identifier verbatim AND a re-quoted identifier — emitIdent's output for a
+// keyword-spelled or otherwise non-plain name (e.g. `"order"`, `"user"`) — which it
+// unwraps back to the bare name. Without this, a quoted reserved-word table would
+// lose its Table attribution (the token starts with '"', failing isIdent), merging
+// distinct tables under one op key. Returns ok=false for a placeholder ("?"),
+// punctuation, or an upper-cased keyword token.
+func tableIdent(tok string) (string, bool) {
+	if tok == "" {
+		return "", false
+	}
+	if tok[0] == '"' {
+		return unquoteIdent(tok), true
+	}
+	if isIdent(tok[0]) && tok == strings.ToLower(tok) {
+		return tok, true
+	}
+	return "", false
+}
+
+// unquoteIdent reverses emitIdent's re-quoting: it strips the wrapping double
+// quotes and un-doubles any embedded "" back to a single ". The bytes were already
+// lower-cased by emitIdent, so the result matches the bare-identifier form.
+func unquoteIdent(tok string) string {
+	if len(tok) < 2 || tok[0] != '"' || tok[len(tok)-1] != '"' {
+		return tok
+	}
+	return strings.ReplaceAll(tok[1:len(tok)-1], `""`, `"`)
+}
+
 // updateTable returns the target table of an UPDATE, skipping any leading
 // qualifier words so "UPDATE ONLY loans SET ..." yields "loans", not "only".
 func updateTable(toks []string) string {
@@ -262,8 +299,8 @@ func updateTable(toks []string) string {
 		if updateQualifiers[t] {
 			continue
 		}
-		if t != "" && isIdent(t[0]) && t == strings.ToLower(t) {
-			return t
+		if tbl, ok := tableIdent(t); ok {
+			return tbl
 		}
 		break
 	}
@@ -275,9 +312,8 @@ func updateTable(toks []string) string {
 func identAfter(toks []string, after map[string]bool) string {
 	for i := 0; i < len(toks)-1; i++ {
 		if after[toks[i]] {
-			cand := toks[i+1]
-			if cand != "" && isIdent(cand[0]) && cand == strings.ToLower(cand) {
-				return cand
+			if tbl, ok := tableIdent(toks[i+1]); ok {
+				return tbl
 			}
 		}
 	}
