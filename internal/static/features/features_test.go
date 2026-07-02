@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 
 	"github.com/jyang234/golang-code-graph/internal/model"
 	"github.com/jyang234/golang-code-graph/internal/static/features"
@@ -36,6 +37,44 @@ func callTo(fn *ssa.Function, calleeSubstr string) (*ssa.Function, ssa.CallInstr
 		}
 	}
 	return nil, nil
+}
+
+// TestEffectivePkgPathResolvesSynthetics is the C-1 predicate regression: the
+// nil-fn.Pkg synthetics go/ssa produces (a generic INSTANCE, a $bound method-value
+// wrapper) must resolve to their real first-party package through EffectivePkgPath,
+// even though PkgPath (fn.Pkg alone) returns "" for them. A generic instance must
+// also get a non-empty InstanceDiscriminator so the FQN sort tie-break (M-20) is
+// total on documented-non-unique instance names.
+func TestEffectivePkgPathResolvesSynthetics(t *testing.T) {
+	_, prog := setup(t)
+	var sawInstance, sawBound bool
+	for fn := range ssautil.AllFunctions(prog.Prog) {
+		if fn.Pkg != nil {
+			continue // only the synthetics are interesting here
+		}
+		eff := features.EffectivePkgPath(fn)
+		if !prog.IsFirstPartyPath(eff) {
+			continue // stdlib synthetics (e.g. (*net.IP).String) — correctly not first-party
+		}
+		if features.PkgPath(fn) != "" {
+			t.Errorf("PkgPath should be empty for the nil-Pkg synthetic %q", fn.RelString(nil))
+		}
+		if len(fn.TypeArgs()) > 0 {
+			sawInstance = true
+			if features.InstanceDiscriminator(fn) == "" {
+				t.Errorf("generic instance %q has an empty InstanceDiscriminator (M-20 tie-break not total)", fn.RelString(nil))
+			}
+		}
+		if strings.HasSuffix(fn.RelString(nil), "$bound") {
+			sawBound = true
+		}
+	}
+	if !sawInstance {
+		t.Error("fixture precondition: expected a reachable first-party generic instance")
+	}
+	if !sawBound {
+		t.Error("fixture precondition: expected a reachable first-party $bound wrapper")
+	}
 }
 
 func TestHintPredicates(t *testing.T) {

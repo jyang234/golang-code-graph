@@ -706,7 +706,11 @@ func (a *analysis) isSourceField(k fieldKey) bool {
 }
 
 func (a *analysis) isFirstParty(fn *ssa.Function) bool {
-	return fn.Pkg != nil && a.prog.IsFirstParty(fn.Pkg)
+	// IsFirstPartyFunc resolves the nil-fn.Pkg synthetics (generic instances,
+	// $bound/$thunk wrappers); keying on fn.Pkg alone would treat a first-party
+	// generic helper as external and escape into it — a NO-FLOW that should have
+	// descended (C-1).
+	return a.prog.IsFirstPartyFunc(fn)
 }
 
 // --- helpers ---
@@ -776,7 +780,11 @@ func firstPartyFuncs(prog *ssabuild.Program) []*ssa.Function {
 		if fn.Blocks == nil {
 			continue // no body (external or abstract) — nothing to scan
 		}
-		if fn.Pkg != nil && prog.IsFirstParty(fn.Pkg) {
+		// IsFirstPartyFunc resolves the nil-fn.Pkg synthetics (generic instances,
+		// $bound/$thunk wrappers). A source/sink read located only inside a first-party
+		// generic instance that went un-scanned is a false NO-FLOW (C-1) — the same
+		// under-collection class as the omitted *T methods this walk already guards.
+		if prog.IsFirstPartyFunc(fn) {
 			out = append(out, fn)
 		}
 	}

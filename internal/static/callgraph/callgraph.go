@@ -21,6 +21,7 @@ import (
 	"golang.org/x/tools/go/callgraph/vta"
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/jyang234/golang-code-graph/internal/static/features"
 	"github.com/jyang234/golang-code-graph/internal/static/roots"
 	"github.com/jyang234/golang-code-graph/internal/static/ssabuild"
 )
@@ -167,9 +168,28 @@ func (g *Graph) node(fn *ssa.Function) *Node {
 	return n
 }
 
-// finalize sorts nodes and each node's edges into canonical order.
+// finalize sorts nodes and each node's edges into canonical order. The node sort
+// tie-breaks on features.InstanceDiscriminator because a generic instance's FQN
+// (fn.RelString) is documented non-unique: an FQN-only comparator over the
+// map-iteration-ordered node set is nondeterministic on such a tie (M-20). Two
+// distinct functions that share BOTH the FQN and the discriminator are a genuine
+// ambiguity the sort cannot resolve — fail loudly rather than emit a run-varying
+// order (determinism before convenience).
 func (g *Graph) finalize() {
-	sort.Slice(g.Nodes, func(i, j int) bool { return g.Nodes[i].FQN < g.Nodes[j].FQN })
+	sort.Slice(g.Nodes, func(i, j int) bool {
+		a, b := g.Nodes[i], g.Nodes[j]
+		if a.FQN != b.FQN {
+			return a.FQN < b.FQN
+		}
+		ka, kb := features.InstanceDiscriminator(a.Func), features.InstanceDiscriminator(b.Func)
+		if ka != kb {
+			return ka < kb
+		}
+		if a.Func != b.Func {
+			panic(fmt.Sprintf("callgraph: two distinct functions share sort key %q (discriminator %q) — cannot order deterministically", a.FQN, ka))
+		}
+		return false
+	})
 	for _, n := range g.Nodes {
 		sort.Slice(n.Out, func(i, j int) bool { return edgeLess(n.Out[i], n.Out[j]) })
 		sort.Slice(n.In, func(i, j int) bool { return edgeLess(n.In[i], n.In[j]) })

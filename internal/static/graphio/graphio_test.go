@@ -19,6 +19,61 @@ func analyzeFixture(t *testing.T) *analyze.Result {
 	return res
 }
 
+// TestC1SyntheticNodesRendered is the C-1 regression: reachable first-party
+// functions that go/ssa leaves with a nil fn.Pkg — a generic INSTANCE and a
+// $bound method-value wrapper — must appear as nodes in Build output (with their
+// edges), not be silently severed as "third-party" with no blind spot. Both shapes
+// are exercised by the loansvc fixture. The synthetic node still names its real
+// package via features.EffectivePkgPath.
+func TestC1SyntheticNodesRendered(t *testing.T) {
+	g, err := graphio.Build(analyzeFixture(t), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := map[string]graphio.Node{}
+	in, out := map[string]int{}, map[string]int{}
+	for _, n := range g.Nodes {
+		nodes[n.FQN] = n
+	}
+	for _, e := range g.Edges {
+		out[e.From]++
+		in[e.To]++
+	}
+
+	const (
+		instance = "example.com/loansvc/internal/codec.Decode[example.com/loansvc/internal/origination.Application]"
+		wrapper  = "(*example.com/loansvc/internal/consumer.Payments).OnSettled$bound"
+		wrapped  = "(*example.com/loansvc/internal/consumer.Payments).OnSettled"
+	)
+
+	// (b) a first-party generic instance is a rendered node, attributed to its
+	// origin package (not "" and not a stdlib path).
+	if n, ok := nodes[instance]; !ok {
+		t.Errorf("generic instance %q absent from Build output (C-1 severance)", instance)
+	} else if n.Package != "example.com/loansvc/internal/codec" {
+		t.Errorf("instance node Package = %q, want its origin package", n.Package)
+	}
+
+	// (a) a $bound method-value wrapper (through a *T receiver) is a rendered node,
+	// and the edge THROUGH it to the wrapped method is present — the seam the audit
+	// reproduced as a dropped edge with no blind spot.
+	if _, ok := nodes[wrapper]; !ok {
+		t.Errorf("$bound method-value wrapper %q absent from Build output (C-1 severance)", wrapper)
+	}
+	if in[wrapper] == 0 {
+		t.Errorf("$bound wrapper %q has no incoming edge — it was severed from its caller", wrapper)
+	}
+	sawWrapperToWrapped := false
+	for _, e := range g.Edges {
+		if e.From == wrapper && e.To == wrapped {
+			sawWrapperToWrapped = true
+		}
+	}
+	if !sawWrapperToWrapped {
+		t.Errorf("edge %q -> %q missing: the wrapper does not splice through to the real method", wrapper, wrapped)
+	}
+}
+
 // TestGraphIncludesDBEdges is the complement of the boundary contract's DB
 // exclusion: the non-gated graph DOES show DB operations.
 func TestGraphIncludesDBEdges(t *testing.T) {
@@ -152,11 +207,19 @@ func TestNodePositionLocatesDeclaration(t *testing.T) {
 		t.Errorf("Create span = %d..%d, want 30..43", create.Line, create.EndLine)
 	}
 	// Every source-backed node carries a usable span: a relative (never absolute,
-	// never "..") file, a positive start line, and an end at or past the start. (All
-	// loansvc graph nodes are syntax-backed; a synthetic wrapper with no AST omits all
-	// three together, which omitempty handles — there are none in this fixture.)
+	// never "..") file, a positive start line, and an end at or past the start. A
+	// synthetic node with no AST (a $bound/$thunk method-value wrapper C-1 now renders)
+	// has no source position, so File/Line/EndLine omit all three TOGETHER — a
+	// disclosure that fails quiet, never a fabricated line. Assert exactly that
+	// consistency for the synthetic case rather than demanding a span it cannot have.
 	for _, n := range g.Nodes {
-		if n.File == "" || n.Line <= 0 || n.EndLine < n.Line {
+		if n.File == "" {
+			if n.Line != 0 || n.EndLine != 0 {
+				t.Errorf("node %q has a partial span (file empty but line=%d end=%d) — must be all-empty together", n.FQN, n.Line, n.EndLine)
+			}
+			continue // synthetic, no AST — omitempty-quiet is correct
+		}
+		if n.Line <= 0 || n.EndLine < n.Line {
 			t.Errorf("node %q has an unusable span: file=%q line=%d end=%d", n.FQN, n.File, n.Line, n.EndLine)
 		}
 		if strings.HasPrefix(n.File, "..") || strings.HasPrefix(n.File, "/") {
@@ -256,9 +319,14 @@ func TestEntryScoping(t *testing.T) {
 	if scoped.Entrypoint != "POST /loan-application" {
 		t.Errorf("entrypoint = %q", scoped.Entrypoint)
 	}
+	// SelectLoan is reached only through the GET /status handler, so it must be
+	// absent from the POST scope. (MarkPaid is no longer a valid isolation example:
+	// C-1 un-severed the in-process bus path Create → Evaluate → Bus.Publish →
+	// OnSettled$bound → OnSettled → MarkPaid, so a POST synchronously reaches it —
+	// a real path that used to be silently cut at the nil-Pkg $bound wrapper.)
 	for _, n := range scoped.Nodes {
-		if strings.Contains(n.FQN, "MarkPaid") {
-			t.Error("MarkPaid (reached only via the consumer) leaked into the POST scope")
+		if strings.Contains(n.FQN, "SelectLoan") {
+			t.Error("SelectLoan (reached only via GET /status) leaked into the POST scope")
 		}
 	}
 }

@@ -83,8 +83,14 @@ func TestStrictServerForwardStarvation(t *testing.T) {
 		return seen
 	}
 
-	// The three wrapper methods are the HTTP entrypoints, and each is a starved
-	// root: a graph root (no caller) whose forward cone is just itself.
+	// The three wrapper methods are the HTTP entrypoints. Each is reached ONLY through
+	// its own $bound method-value wrapper — the value chi registers as the handler —
+	// which C-1 now renders (before, that nil-Pkg $bound was severed, so the method
+	// looked caller-less). The registration wrapper is not a real caller crossing the
+	// seam: the forward cone PAST each wrapper method (into the strict handler and its
+	// effects) stays severed by design in the un-reclaimed build, which the cone check
+	// pins. `[A-Za-z]+$` excludes the "$bound" nodes themselves (the '$' is not a
+	// letter), so only the three real methods are counted.
 	wrapperRe := regexp.MustCompile(`ServerInterfaceWrapper\)\.[A-Za-z]+$`)
 	wrappers := 0
 	for fqn := range nodes {
@@ -92,9 +98,14 @@ func TestStrictServerForwardStarvation(t *testing.T) {
 			continue
 		}
 		wrappers++
-		if callers[fqn] != 0 {
-			t.Errorf("wrapper %s should be a root (chi registers it); got %d caller(s)", fqn, callers[fqn])
+		// The sole caller is the method's own $bound registration wrapper.
+		if c := callers[fqn]; c != 1 || !nodes[fqn+"$bound"] {
+			t.Errorf("wrapper %s should be reached only via its own $bound registration; got %d caller(s), $bound present=%v", fqn, c, nodes[fqn+"$bound"])
 		}
+		// The forward cone is still just the method itself: the $bound is an INCOMING
+		// caller (the registration), not a callee, and the seam PAST the wrapper into
+		// the strict handler stays severed in the un-reclaimed build. Any effect
+		// entering the forward cone would be a reclaim win.
 		if r := reach(fqn); len(r) != 1 {
 			t.Errorf("STARVATION RECLAIMED for %s: forward cone now has %d node(s) — the seam was crossed. Update this characterization test (that is the win).", fqn, len(r))
 		}

@@ -27,7 +27,12 @@ func firstPartyScope(res *analyze.Result) map[*ssa.Function]bool {
 		if features.IsPackageInit(n.Func) {
 			continue
 		}
-		if res.Program.IsFirstParty(n.Func.Pkg) {
+		// IsFirstPartyFunc, not IsFirstParty(fn.Pkg): go/ssa leaves generic instances
+		// and $bound/$thunk method-value wrappers with a nil fn.Pkg, so keying on the
+		// package alone drops those reachable first-party functions from the rendered
+		// graph — and edgeOf then drops every edge into them as "third-party" with no
+		// blind spot, a false "no path" (C-1).
+		if res.Program.IsFirstPartyFunc(n.Func) {
 			s[n.Func] = true
 		}
 	}
@@ -149,7 +154,7 @@ func reachableFirstParty(res *analyze.Result, root *ssa.Function) map[*ssa.Funct
 		seen[n.Func] = true
 		for _, e := range n.Out {
 			c := e.Callee
-			if visited[c] || !res.Program.IsFirstParty(c.Func.Pkg) {
+			if visited[c] || !res.Program.IsFirstPartyFunc(c.Func) {
 				continue
 			}
 			visited[c] = true

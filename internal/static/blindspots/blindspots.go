@@ -306,7 +306,12 @@ func Detect(res *analyze.Result, hints *features.HintSet) []BlindSpot {
 	// dispatch, in reachable first-party code.
 	for _, n := range res.Graph.Nodes {
 		fn := n.Func
-		if !res.Program.IsFirstParty(fn.Pkg) {
+		// IsFirstPartyFunc, not IsFirstParty(fn.Pkg): a generic instance or
+		// $bound/$thunk wrapper (nil fn.Pkg) is reachable first-party code whose
+		// dynamic dispatch / reflect / non-constant boundary sites must still be
+		// disclosed — dropping them here is how a severed first-party path got no
+		// blind spot at all (C-1). Its node is now in the graph this manifest annotates.
+		if !res.Program.IsFirstPartyFunc(fn) {
 			continue
 		}
 		// init is an RTA seed (it recovers registration addresses), not rendered

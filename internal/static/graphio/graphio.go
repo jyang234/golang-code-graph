@@ -259,11 +259,13 @@ type Node struct {
 	// consumer would otherwise have to recover by string-splitting FQN (a display
 	// string: paren-wrapped receivers, "$1" closure suffixes, generics, promoted
 	// methods), where the first-party/test/external distinction is a typing fact a
-	// parse cannot reliably reconstruct. Pure function of the node (features.PkgPath
-	// of fn.Pkg) and disclosure-only — same trust class as BlindSpot.Package: no
-	// verdict, count, edge, tier, or reachability computation reads it, so it cannot
-	// move a pole. Empty only for a synthetic node with no defining package (a
-	// wrapper with nil fn.Pkg); omitempty spares exactly those.
+	// parse cannot reliably reconstruct. Derived via features.EffectivePkgPath, which
+	// resolves the nil-fn.Pkg synthetics go/ssa produces — a generic INSTANCE through
+	// its Origin, a $bound/$thunk wrapper through its wrapped method Object — so a
+	// rendered instance/wrapper node still names its real package (C-1). Disclosure-
+	// only — same trust class as BlindSpot.Package: no verdict, count, edge, tier, or
+	// reachability computation reads it, so it cannot move a pole. Empty only for a
+	// truly package-less synthetic (none resolves); omitempty spares exactly those.
 	Package  string `json:"package,omitempty"`
 	Fallible bool   `json:"fallible,omitempty"`
 	// File / Line / EndLine locate the node's declaration in source: File is the
@@ -688,7 +690,7 @@ func Build(res *analyze.Result, entry string, opts ...BuildOption) (*Graph, erro
 			FQN:      fn.RelString(nil),
 			Sig:      signatures.Of(fn),
 			Tier:     nodeTier(ext, fn, rootFns[fn], nodeEdges),
-			Package:  features.PkgPath(fn),
+			Package:  features.EffectivePkgPath(fn),
 			Fallible: fallible(fn),
 			File:     file,
 			Line:     line,
@@ -1361,7 +1363,29 @@ func nodeTier(ext *features.Extractor, fn *ssa.Function, isRoot bool, outEdges [
 }
 
 func sortGraph(g *Graph) {
-	sort.Slice(g.Nodes, func(i, j int) bool { return g.Nodes[i].FQN < g.Nodes[j].FQN })
+	// Total order over the node's intrinsic fields, not FQN alone: a generic
+	// instance's display FQN (fn.RelString) is documented non-unique, so an
+	// FQN-only comparator left two same-named instances in build (map-iteration)
+	// order — a latent nondeterminism that went live the moment instances entered
+	// the rendered scope (C-1/M-20). Sig carries the instantiated signature (its
+	// concrete type args), so it disambiguates instances; Package/File/Line break
+	// any residual tie on run-independent data.
+	sort.Slice(g.Nodes, func(i, j int) bool {
+		a, b := g.Nodes[i], g.Nodes[j]
+		if a.FQN != b.FQN {
+			return a.FQN < b.FQN
+		}
+		if a.Sig != b.Sig {
+			return a.Sig < b.Sig
+		}
+		if a.Package != b.Package {
+			return a.Package < b.Package
+		}
+		if a.File != b.File {
+			return a.File < b.File
+		}
+		return a.Line < b.Line
+	})
 	// Total order over every Edge field: a comparator that ignored Boundary and
 	// Concurrent left equal-keyed edges in build order — deterministic only as
 	// long as the pre-sort slice happened to be, a latent output-stability trap.

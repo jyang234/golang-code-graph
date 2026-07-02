@@ -10,6 +10,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 
+	"github.com/jyang234/golang-code-graph/internal/static/features"
 	"github.com/jyang234/golang-code-graph/internal/static/loader"
 )
 
@@ -64,6 +65,16 @@ func (p *Program) IsFirstParty(pkg *ssa.Package) bool {
 	}
 	path := pkg.Pkg.Path()
 	return path == p.ModulePath || hasPathPrefix(path, p.ModulePath)
+}
+
+// IsFirstPartyFunc reports whether fn belongs to the service unit's module,
+// resolving the nil-fn.Pkg synthetic functions (generic instances,
+// $bound/$thunk method-value wrappers) through features.EffectivePkgPath. It is
+// the function-level first-party predicate every SOUNDNESS decision must use:
+// IsFirstParty(fn.Pkg) returns false for those synthetics, silently severing
+// reachable first-party behavior from the graph with no blind spot (C-1).
+func (p *Program) IsFirstPartyFunc(fn *ssa.Function) bool {
+	return p.IsFirstPartyPath(features.EffectivePkgPath(fn))
 }
 
 // IsFirstPartyPath reports whether an import path belongs to the service unit's
