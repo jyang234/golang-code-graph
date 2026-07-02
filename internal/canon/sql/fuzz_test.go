@@ -1,6 +1,44 @@
 package sql
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// FuzzNormalizeNoLiteralLeak is the leak-oriented property test H-1 calls for:
+// NO byte sequence from inside a single-quoted literal may survive into
+// Normalized.Statement. It embeds an arbitrary fuzzer-chosen secret inside a
+// well-formed literal (escaping the two bytes that could end it — \ and ') and
+// asserts the normal form collapses to the fixed skeleton with the literal
+// reduced to a single "?". This is stronger than idempotence: idempotence is
+// blind to a literal that leaks its content the very first pass (the exact H-1
+// backslash-escape bug), whereas this fails the moment any secret byte escapes.
+func FuzzNormalizeNoLiteralLeak(f *testing.F) {
+	for _, s := range []string{
+		"secret-value-42",
+		"O'Brien",
+		`back\slash`,
+		"'; DROP TABLE users; --",
+		"multi\nline\tsecret",
+		"",
+		`\`,
+		`''`,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, secret string) {
+		// Make `secret` a genuine, well-formed literal body: escape backslashes
+		// first (so the \ we add before quotes is not itself re-escaped), then the
+		// single quotes. The only unescaped ' left is our closing delimiter.
+		escaped := strings.ReplaceAll(secret, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+		stmt := "SELECT * FROM t WHERE note = '" + escaped + "'"
+		const want = "SELECT * FROM t WHERE note = ?"
+		if got := Normalize(stmt).Statement; got != want {
+			t.Errorf("literal content leaked into canonical statement:\n secret: %q\n got:    %q\n want:   %q", secret, got, want)
+		}
+	})
+}
 
 // FuzzNormalizeIdempotent makes the SQL normalizer self-checking on two
 // properties that both review rounds' findings violated in spirit:

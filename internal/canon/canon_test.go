@@ -1,8 +1,10 @@
 package canon
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +191,45 @@ func TestRefusesIncomplete(t *testing.T) {
 	}
 }
 
+// TestRefusesParentCycle pins H-2: two spans in a parent cycle each carry a
+// present parent, are never orphan heads, and are unreachable from the root — so
+// build alone would silently drop them and snapshot a tree with zero children.
+// The completeness guard must refuse (ErrIncomplete) instead of minting a false,
+// nearly-empty golden from an untrusted post-hoc trace.
+func TestRefusesParentCycle(t *testing.T) {
+	spans := []capture.Span{
+		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+			Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"}},
+		// a and b point at each other: a 2-cycle, present parents, unreachable.
+		{ID: "a", ParentID: "b", Kind: ir.KindClient, Start: ms(0, 1), End: ms(0, 2),
+			Attrs: map[string]string{"db.system": "postgres", "db.statement": "DELETE FROM ledger WHERE id = 1"}},
+		{ID: "b", ParentID: "a", Kind: ir.KindClient, Start: ms(0, 3), End: ms(0, 4),
+			Attrs: map[string]string{"db.system": "postgres", "db.statement": "DELETE FROM audit_log WHERE id = 1"}},
+	}
+	cf := capture.CapturedFlow{Flow: "x", Service: "s", Spans: spans, Root: &spans[0], Complete: true}
+	if _, err := Canonicalize(cf, nil); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("parent-cycle capture: err = %v, want ErrIncomplete", err)
+	}
+}
+
+// TestRefusesDuplicateSpanID pins the H-2 sibling: two spans sharing one ID
+// collapse into a single assembled node, so the tree accounts for fewer spans
+// than were captured. That shadowing must be refused, not silently snapshotted.
+func TestRefusesDuplicateSpanID(t *testing.T) {
+	spans := []capture.Span{
+		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+			Attrs: map[string]string{"http.request.method": "POST", "http.route": "/x"}},
+		{ID: "dup", ParentID: "root", Kind: ir.KindClient, Start: ms(0, 1), End: ms(0, 2),
+			Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO a (id) VALUES (1)"}},
+		{ID: "dup", ParentID: "root", Kind: ir.KindClient, Start: ms(0, 3), End: ms(0, 4),
+			Attrs: map[string]string{"db.system": "postgres", "db.statement": "INSERT INTO b (id) VALUES (1)"}},
+	}
+	cf := capture.CapturedFlow{Flow: "x", Service: "s", Spans: spans, Root: &spans[0], Complete: true}
+	if _, err := Canonicalize(cf, nil); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("duplicate-ID capture: err = %v, want ErrIncomplete", err)
+	}
+}
+
 // TestLoopCollapse folds N identical sequential subtrees into one representative
 // with a 1..* multiplicity, so item count does not perturb the snapshot.
 func TestLoopCollapse(t *testing.T) {
@@ -279,6 +320,31 @@ func TestRedaction(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("redacted key not recorded in manifest: %v", tr.Discards.Redactions)
+	}
+}
+
+// TestAllowlistedDBStatementStaysNormalized pins H-3: the natural config
+// `attributeAllowlist: ["db.statement"]` must NOT re-inject the raw statement.
+// Raw SQL matches no placeholder shape, so a plain redact() would pass it
+// through verbatim, defeating both the SQL redaction and byte-identity. The
+// projected db.statement must remain the normalized form, with no literal
+// surviving.
+func TestAllowlistedDBStatementStaysNormalized(t *testing.T) {
+	spans := []capture.Span{
+		{ID: "root", Kind: ir.KindServer, Status: capture.StatusOK, Start: ms(0, 0), End: ms(0, 100),
+			Attrs: map[string]string{"http.request.method": "GET", "http.route": "/x"}},
+		{ID: "sel", ParentID: "root", Kind: ir.KindClient, Start: ms(0, 1), End: ms(0, 5),
+			Attrs: map[string]string{"db.system": "postgresql", "db.statement": "SELECT name FROM applicants WHERE ssn = '123-45-6789'"}},
+	}
+	tr := mustCanonCfg(t, capture.CapturedFlow{Flow: "f", Service: "s", Spans: spans, Root: &spans[0], Complete: true},
+		mustConfig(t, "canon:\n  attributeAllowlist: [\"db.statement\"]\n"))
+	got := tr.Root.Children[0].Members[0].Attrs["db.statement"]
+	want := "SELECT name FROM applicants WHERE ssn = ?"
+	if got != want {
+		t.Errorf("allowlisted db.statement = %q, want normalized %q", got, want)
+	}
+	if strings.Contains(got, "123-45-6789") {
+		t.Errorf("raw literal survived into allowlisted db.statement: %q", got)
 	}
 }
 

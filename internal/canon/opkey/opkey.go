@@ -257,7 +257,12 @@ func httpKey(proto, m, peer, rt string) string {
 // table so identity barely depends on the statement text (canon §8.3).
 func dbKey(system string, attrs map[string]string) string {
 	op := strings.ToUpper(first(attrs, "db.operation", "db.operation.name"))
-	table := first(attrs, "db.sql.table", "db.collection.name")
+	// Lower-case the attribute-supplied table so it keys identically to the
+	// statement-derived table (sql.Normalize lower-cases that one). Otherwise
+	// db.sql.table:"Applicants" and a statement-derived "applicants" mint two op
+	// keys for one table, splitting the impeachment join and churning goldens on
+	// an instrumentation upgrade (M-25).
+	table := strings.ToLower(first(attrs, "db.sql.table", "db.collection.name"))
 	if stmt := statement(attrs); stmt != "" {
 		n := sql.Normalize(stmt)
 		if op == "" {

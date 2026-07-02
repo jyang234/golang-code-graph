@@ -42,6 +42,8 @@ func Normalize(raw string) Normalized {
 // tokenize splits raw SQL into tokens, replacing every literal and driver
 // placeholder with the single placeholder token "?". Keywords are upper-cased;
 // other identifiers keep their (lower-cased) form so table names stay stable.
+// Comments (-- …, /* … */) are dropped entirely, and quoted identifiers
+// ("T", `t`) are unwrapped and lower-cased so they key like the bare form.
 func tokenize(raw string) []string {
 	var toks []string
 	i := 0
@@ -51,13 +53,43 @@ func tokenize(raw string) []string {
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			i++
-		case c == '\'' || c == '"':
-			// String literal: scan to the matching quote, honoring '' escapes.
-			q := c
+		case c == '-' && i+1 < n && raw[i+1] == '-':
+			// Line comment (-- …): drop to end of line (or input). Comment payloads
+			// carry per-request volatile data (sqlcommenter key=value pairs) and
+			// identifier-shaped fragments — neither may reach the canonical form
+			// (golden churn + a hidden disclosure channel; M-24).
+			i += 2
+			for i < n && raw[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < n && raw[i+1] == '*':
+			// Block comment (/* … */): drop to the closing delimiter, or to input
+			// end if unterminated (conservative — an unterminated comment eats the
+			// rest, never leaks it). Same rationale as the line comment (M-24).
+			i += 2
+			for i < n {
+				if raw[i] == '*' && i+1 < n && raw[i+1] == '/' {
+					i += 2
+					break
+				}
+				i++
+			}
+		case c == '\'':
+			// String literal: scan to the matching quote, honoring '' doubling AND
+			// backslash escapes (\' \\ …, MySQL/MariaDB default). A backslash consumes
+			// the next byte so an escaped quote does not terminate the literal early
+			// and spill its remainder out as identifier tokens — the redaction promise
+			// is that NO byte from inside a quoted literal survives into the canonical
+			// statement (H-1). Over-consuming (treating \ as an escape even under
+			// NO_BACKSLASH_ESCAPES) only ever widens the "?", never narrows it.
 			i++
 			for i < n {
-				if raw[i] == q {
-					if i+1 < n && raw[i+1] == q {
+				if raw[i] == '\\' {
+					i += 2
+					continue
+				}
+				if raw[i] == '\'' {
+					if i+1 < n && raw[i+1] == '\'' {
 						i += 2
 						continue
 					}
@@ -67,6 +99,30 @@ func tokenize(raw string) []string {
 				i++
 			}
 			toks = append(toks, "?")
+		case c == '"' || c == '`':
+			// Quoted identifier ("Applicants", `orders`): unwrap and lower-case so it
+			// keys identically to the same identifier written bare and Table extraction
+			// still finds it (M-24, M-25). A doubled delimiter ("" or ``) is an escaped
+			// delimiter inside the identifier. Note: unlike a '-literal, an identifier's
+			// bytes DO survive (lower-cased) — a table/column name is structure, not the
+			// volatile value the redaction promise covers.
+			q := c
+			i++
+			var ident strings.Builder
+			for i < n {
+				if raw[i] == q {
+					if i+1 < n && raw[i+1] == q {
+						ident.WriteByte(q)
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				ident.WriteByte(raw[i])
+				i++
+			}
+			toks = append(toks, strings.ToLower(ident.String()))
 		case c == '$' || c == ':' || c == '@':
 			// Driver placeholder ($1, :name, @p1): consume the run.
 			i++

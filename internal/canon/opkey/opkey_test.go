@@ -127,6 +127,29 @@ func TestDBKey(t *testing.T) {
 	}
 }
 
+// TestDBKeyTableCasingConverges pins M-25: an attribute-supplied table with
+// mixed casing (db.sql.table: "Applicants") must key identically to the same
+// table derived (lower-cased) from the statement text. Otherwise one physical
+// table mints two op keys, splitting the impeachment join and churning goldens
+// when instrumentation starts emitting db.sql.table.
+func TestDBKeyTableCasingConverges(t *testing.T) {
+	fromAttr, _ := Of(ir.KindClient, map[string]string{
+		"db.system":    "postgresql",
+		"db.operation": "SELECT",
+		"db.sql.table": "Applicants",
+	}, "")
+	fromStmt, _ := Of(ir.KindClient, map[string]string{
+		"db.system":    "postgresql",
+		"db.statement": "SELECT name FROM applicants WHERE id = $1",
+	}, "")
+	if fromAttr != fromStmt {
+		t.Errorf("table casing split the op key: attr=%q stmt=%q", fromAttr, fromStmt)
+	}
+	if fromAttr != "DB postgresql SELECT applicants" {
+		t.Errorf("attribute-sourced table not lower-cased: %q", fromAttr)
+	}
+}
+
 // TestParseDBKeyRoundTrips pins ParseDBKey as the exact inverse of dbKey at the
 // format's owner: whatever Of emits for a DB span, ParseDBKey must recover the
 // same operation and table. This is the local guard that keeps the

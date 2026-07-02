@@ -81,6 +81,19 @@ func Canonicalize(cf capture.CapturedFlow, cfg *config.Config) (*ir.CanonicalTra
 		rootSpan.Children = append(rootSpan.Children, orphans...)
 	}
 
+	// 3.1 completeness: build + orphan-surfacing between them account for every
+	// span whose parent chain leads to the root or to a missing parent. A span in
+	// a parent cycle (A→B→A) or under a self-parent has a PRESENT parent, is never
+	// an orphan head, and is unreachable from the root — build silently omits it,
+	// so a two-cycle carrying a DELETE could snapshot to an empty tree with no
+	// error. A duplicate span ID collapses two spans into one node the same way.
+	// Both are fail-open holes in the first line of defense against a false golden,
+	// so refuse when the assembled tree does not account for every captured span
+	// (H-2). Post-hoc OTLP from arbitrary collectors is untrusted input.
+	if seen := reachableIDs(byID, root, childrenOf); len(seen) != len(cf.Spans) {
+		return nil, fmt.Errorf("%w: assembled tree accounts for %d distinct spans but the capture carries %d (parent cycle, self-parent, or duplicate span ID)", ErrIncomplete, len(seen), len(cf.Spans))
+	}
+
 	// 3.7 structural normalization: salience filtering as tree contraction. The
 	// root (the tier-1 entry) is never dropped. A sub-threshold internal span is
 	// ALSO kept when it carries an L1 localization tag (flowmap.fqn): it is a
@@ -486,7 +499,25 @@ func (c *canonicalizer) projectAttrs(s *capture.Span) map[string]string {
 		out[capture.FQNTagKey] = fqn
 	}
 	for k := range c.allow {
-		if v, ok := s.Attrs[k]; ok {
+		v, ok := s.Attrs[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "db.statement", "db.query.text":
+			// A raw-SQL key in the allowlist must NOT re-inject the unnormalized
+			// statement: raw SQL matches no placeholder shape, so redact() would
+			// pass it through verbatim, silently defeating both the SQL redaction
+			// and byte-identity (every run's literals differ). Route it through the
+			// same normalizer the explicit projection above uses, and land it under
+			// the canonical db.statement key regardless of spelling so the allow
+			// path and the explicit projection can never disagree (H-3).
+			out["db.statement"] = sqlnorm.Normalize(v).Statement
+		case capture.FQNTagKey:
+			// Already projected verbatim above (a structural code identifier, not a
+			// volatile value); keep it, do not run it through redact().
+			out[k] = v
+		default:
 			out[k] = c.redact(k, v)
 		}
 	}
@@ -535,6 +566,39 @@ func (c *canonicalizer) orphans(spans []capture.Span, byID map[string]*capture.S
 		extra = append(extra, ir.ChildGroup{Members: []*ir.CanonicalSpan{c.build(h, childrenOf)}})
 	}
 	return extra
+}
+
+// reachableIDs returns the set of distinct span IDs the assembly actually
+// accounts for: everything reachable from the root, plus every orphan-head
+// subtree (a span whose parent is absent from the set). It walks the SAME
+// parent→child edges (childrenOf) that build and orphans use, so a span it omits
+// is exactly a span those two omit — a span in a parent cycle or under a
+// self-parent (present parent, never an orphan, unreachable from the root).
+// Comparing len(result) against the captured span count is the completeness
+// guard behind ErrIncomplete (H-2). Iteration order over byID does not matter:
+// the result is a set. The seen-guard also bounds recursion on any cycle.
+func reachableIDs(byID map[string]*capture.Span, root *capture.Span, childrenOf map[string][]*capture.Span) map[string]bool {
+	seen := make(map[string]bool, len(byID))
+	var walk func(s *capture.Span)
+	walk = func(s *capture.Span) {
+		if s == nil || seen[s.ID] {
+			return
+		}
+		seen[s.ID] = true
+		for _, k := range childrenOf[s.ID] {
+			walk(k)
+		}
+	}
+	walk(root)
+	for id, s := range byID {
+		if id == root.ID {
+			continue
+		}
+		if _, ok := byID[s.ParentID]; !ok {
+			walk(s)
+		}
+	}
+	return seen
 }
 
 // discards builds the manifest of dropped dimensions: ids and timing are always
